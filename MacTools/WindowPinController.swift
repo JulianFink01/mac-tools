@@ -280,7 +280,7 @@ final class WindowPinController: ObservableObject {
     }
 
     func showPinnedView(id: UUID) {
-        if case .live(_, _, let panel) = targets[id] { panel.panel.makeKeyAndOrderFront(nil) }
+        if case .live(_, _, let panel) = targets[id] { panel.show() }
         else { openOriginal(id: id) }
     }
 

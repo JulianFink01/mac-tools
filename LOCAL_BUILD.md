@@ -6,7 +6,7 @@ bash Scripts/build-native.sh
 bash Scripts/package-release.sh
 ```
 
-Ergebnis: `build/Release/MacTools.app` und `build/Release/MacTools-0.2.0-universal.dmg`.
+Ergebnis: `build/Release/MacTools.app` und `build/Release/MacTools-universal.dmg`.
 
 Beide App-Architekturen sowie die mitgelieferte ClamAV-Engine sind Universal (arm64 und x86_64). Die lokale App wird mit dem vorhandenen Apple-Development-Zertifikat signiert. Die Auswahl steht ausschließlich im ignorierten `build/code-signing-identity.txt`. Alternativ `MACTOOLS_SIGNING_IDENTITY` setzen. Ohne Auswahl wird ad-hoc signiert und vor erneut nötigen macOS-Freigaben gewarnt. Bei Updates dieselbe Identität beibehalten; der Wechsel von ad-hoc auf das Zertifikat benötigt eine einmalige neue Freigabe. Der Betrieb auf einem anderen Mac bzw. einer anderen macOS-Version muss dort zusätzlich geprüft werden. Für öffentliche Weitergabe ohne Gatekeeper-Warnungen: Developer-ID-Signierung aller enthaltenen Mach-O-Dateien, danach App/Paket notarisiert ausliefern.
 

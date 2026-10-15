@@ -2,7 +2,7 @@
 
 Dein Mac. Deine Werkzeuge. Eine native macOS-App von **[Julian Fink](https://julian.fink-cloud.net)**, gebaut mit Swift, SwiftUI und AppKit.
 
-[MacTools herunterladen](https://github.com/JulianFink01/mac-tools/releases/download/v0.2.0/MacTools-0.2.0-universal.dmg) · [Alle Releases](https://github.com/JulianFink01/mac-tools/releases) · [Meine Website](https://julian.fink-cloud.net)
+[MacTools herunterladen](https://github.com/JulianFink01/mac-tools/releases/latest/download/MacTools-universal.dmg) · [Alle Releases](https://github.com/JulianFink01/mac-tools/releases) · [Meine Website](https://julian.fink-cloud.net)
 
 macOS 13 oder neuer · Universal Binary für Apple Silicon und Intel · lokale Verarbeitung
 
@@ -53,7 +53,7 @@ Dateien werden nicht hochgeladen oder automatisch gelöscht. Dies ist kein Echtz
 
 **Live-Hintergrund:** Videos importieren, auswählen, zufällig wechseln, pausieren und fortsetzen. Darstellung einpassen oder füllen. Enthält ein installierbares macOS-Bildschirmschoner-Modul für das ausgewählte Video; Passwortabfrage und Sperrverhalten verwaltet macOS.
 
-**Fenster vorn halten:** Globales konfigurierbares Tastenkürzel (standardmäßig ⌥⌘P), explizite Fensterwahl und mehrere unabhängig vom Popup gehaltene Fenster. Eigene MacTools-Fenster schweben nativ. Für fremde Fenster prüft MacTools zunächst die tatsächliche Original-Fensterebene. Falls macOS deren Änderung verweigert, erhält das Original eine eigene virtuelle Retina-Fensterfläche und eine lokale schwebende ScreenCaptureKit-Ansicht. Die Maus bedient das Original dort nativ; ein ausschließlich innerhalb der Live-Ansicht gezeichneter Cursor zeigt ihre Position. Hover, Klicks, Scrollen und Tastenkombinationen benötigen dadurch keine app-spezifische Nachbildung. Mit Escape oder am Rand der Ansicht kehrt die Maus zum normalen Bildschirm zurück. Schließen, „Lösen“ und „Original öffnen“ bringen das Originalfenster auf deinen Bildschirm zurück und entfernen seine virtuelle Fläche. Einzelne separate App-Dialoge oder geschützte Inhalte können das Original benötigen; uneingeschränkte Kompatibilität mit jeder App ist nicht zugesichert. Fenstersteuerungs- und Bildschirmaufnahme-Freigaben sind getrennt erforderlich. Keine Aufnahme auf der Festplatte und kein Upload; kein Eingriff in SIP.
+**Fenster vorn halten:** Globales konfigurierbares Tastenkürzel (standardmäßig ⌥⌘P), explizite Fensterwahl und mehrere unabhängig vom Popup gehaltene Fenster. Eigene MacTools-Fenster schweben nativ. Für fremde Fenster prüft MacTools zunächst die tatsächliche Original-Fensterebene. Falls macOS deren Änderung verweigert, erhält das Original eine eigene virtuelle Retina-Fensterfläche und eine lokale schwebende ScreenCaptureKit-Ansicht. Die Maus bedient das Original dort nativ; ScreenCaptureKit zeigt den nativen macOS-Cursor direkt im Live-Bild. Eine zusätzliche Cursor-Zeichenschleife entfällt. Hover, Klicks, Scrollen und Tastenkombinationen benötigen dadurch keine app-spezifische Nachbildung. Mit Escape oder am Rand der Ansicht kehrt die Maus zum normalen Bildschirm zurück. Schließen, „Lösen“ und „Original öffnen“ bringen das Originalfenster auf deinen Bildschirm zurück und entfernen seine virtuelle Fläche. Einzelne separate App-Dialoge oder geschützte Inhalte können das Original benötigen; uneingeschränkte Kompatibilität mit jeder App ist nicht zugesichert. Fenstersteuerungs- und Bildschirmaufnahme-Freigaben sind getrennt erforderlich. Keine Aufnahme auf der Festplatte und kein Upload; kein Eingriff in SIP.
 
 ## Installation und Freigaben
 
@@ -76,6 +76,7 @@ bash Scripts/test-file-browser.sh
 bash Scripts/test-monitoring-persistence.sh
 bash Scripts/test-security.sh
 bash Scripts/test-removal-state.sh
+bash Scripts/test-cursor-boundaries.sh
 bash Scripts/test-app-inventory.sh
 ```
 

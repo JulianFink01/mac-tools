@@ -1,6 +1,14 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import "MacToolsNative.h"
+CGError MTSetCursorWarpSuppression(CFTimeInterval interval) {
+    // CGEventSource's replacement only configures posted events. CGWarp has
+    // no source; Wine uses this scoped compatibility call for that case.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return CGSetLocalEventsSuppressionInterval(interval);
+#pragma clang diagnostic pop
+}
 // Runtime interfaces exposed by CoreGraphics; the test owns the display's
 // lifetime and removes it before it exits. No system protection is changed.
 @interface CGVirtualDisplayDescriptor : NSObject

@@ -12,19 +12,21 @@ private final class PinnedInputPanel: NSPanel {
 
 /// One independently retained live panel per selected source window. No recording or uploads.
 @MainActor
-final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStreamDelegate {
+final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     let source: SCWindow
     let panel: NSPanel
     private let preview: PinnedPreview
     private let axWindow: AXUIElement
     private var stream: SCStream?
     private var stopped = false
+    private var ready = false
     private var sourceSize: CGSize
+    private var frameOutput: PinnedFrameOutput?
+    private var configurationTask: Task<Void, Never>?
     private let windowDisplay: VirtualWindowDisplay
     var onClose: (() -> Void)?
     var onError: ((String) -> Void)?
     var onInputIssue: ((String) -> Void)? { didSet { preview.onInputIssue = onInputIssue } }
-    private(set) var frames = 0
 
     init(source: SCWindow, axWindow: AXUIElement) {
         self.source = source
@@ -78,24 +80,35 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStre
     func start() async throws {
         try await windowDisplay.start()
         preview.sourceFrame = windowDisplay.sourceFrame
-        let config = configuration(size: source.frame.size)
+        let config = configuration(size: sourceSize)
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: source), configuration: config, delegate: self)
         self.stream = stream
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .main)
+        let output = PinnedFrameOutput(layer: preview.displayLayer)
+        frameOutput = output
+        try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: output.queue)
         try await stream.startCapture()
         if stopped { try? await stream.stopCapture(); return }
+        ready = true
+        preview.startInput()
         panel.orderFrontRegardless()
     }
 
+    func show() { if ready && !stopped { panel.makeKeyAndOrderFront(nil) } }
+
     private func configuration(size: CGSize) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
-        let scale = min(2, 4096 / max(1, size.width))
-        config.width = max(2, Int(size.width * scale))
-        config.height = max(2, Int(size.height * scale))
+        // Capture enough pixels for the visible Retina preview, rather than
+        // processing a full 4K original for a 680-point floating window.
+        let visible = preview.bounds.size
+        let factor = min(2, 2560 / max(1, visible.width), 2160 / max(1, visible.height))
+        let width = max(480, visible.width * factor)
+        let ratio = size.height / max(1, size.width)
+        config.width = max(2, Int(min(size.width * 2, width)))
+        config.height = max(2, Int(CGFloat(config.width) * ratio))
         config.scalesToFit = true
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.queueDepth = 3
-        config.showsCursor = false
+        config.showsCursor = true
         config.capturesAudio = false
         if #available(macOS 14.0, *) {
             config.ignoreShadowsSingleWindow = true
@@ -107,7 +120,11 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStre
     func ensureSourcePlacement() { windowDisplay.ensurePlacement() }
 
     func updateSourceFrame(_ frame: CGRect) {
+        guard ready else { return }
         preview.sourceFrame = frame
+        #if DEBUG
+        preview.updateInputGeometryLabel()
+        #endif
         guard frame.size != sourceSize else { return }
         sourceSize = frame.size
         let top = panel.frame.maxY
@@ -115,17 +132,34 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStre
         panel.contentAspectRatio = NSSize(width: max(1, frame.width), height: max(1, frame.height))
         panel.setContentSize(NSSize(width: width, height: max(120, width * frame.height / max(1, frame.width))))
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: top - panel.frame.height))
-        let config = configuration(size: frame.size)
-        Task { [weak self] in try? await self?.stream?.updateConfiguration(config) }
+        scheduleConfiguration()
+    }
+
+    private func scheduleConfiguration() {
+        configurationTask?.cancel()
+        guard !stopped, stream != nil else { return }
+        configurationTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 150_000_000); try Task.checkCancellation() }
+            catch { return }
+            guard let self, !self.stopped else { return }
+            try? await self.stream?.updateConfiguration(self.configuration(size: self.sourceSize))
+        }
+    }
+    func windowDidResize(_ notification: Notification) {
+        scheduleConfiguration()
+        #if DEBUG
+        preview.updateInputGeometryLabel()
+        #endif
     }
 
     func stop() {
         guard !stopped else { return }
         stopped = true
+        configurationTask?.cancel(); configurationTask = nil
         preview.stopInput()
         windowDisplay.stop()
         panel.orderOut(nil)
-        preview.displayLayer.flushAndRemoveImage()
+        frameOutput?.stop(); frameOutput = nil
         let active = stream; stream = nil
         Task { try? await active?.stopCapture() }
     }
@@ -133,25 +167,7 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStre
     func windowWillClose(_ notification: Notification) { onClose?() }
     #if DEBUG
     func windowDidMove(_ notification: Notification) { preview.updateInputGeometryLabel() }
-    func windowDidResize(_ notification: Notification) { preview.updateInputGeometryLabel() }
     #endif
-
-    nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, sampleBuffer.isValid,
-              let entries = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let raw = entries.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete else { return }
-        Task { @MainActor [weak self] in
-            guard let self, !self.stopped else { return }
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [NSMutableDictionary] {
-                attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
-            }
-            if self.preview.displayLayer.status == .failed { self.preview.displayLayer.flush() }
-            if self.preview.displayLayer.isReadyForMoreMediaData {
-                self.preview.displayLayer.enqueue(sampleBuffer)
-                self.frames += 1
-            }
-        }
-    }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
@@ -161,8 +177,8 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamOutput, SCStre
     }
 }
 
-/// The original receives native hardware input on its own display. A local
-/// cursor layer represents that same pointer inside this floating preview.
+/// The original receives native hardware input on its own display, including
+/// its native cursor captured by ScreenCaptureKit.
 private final class PinnedPreview: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
     let pid: pid_t
@@ -171,10 +187,13 @@ private final class PinnedPreview: NSView {
     var sourceFrame: CGRect
     var onInputIssue: ((String) -> Void)? { didSet { cursor.onIssue = onInputIssue } }
     private var tracking: NSTrackingArea?
-    private var inputStopped = false
-    private lazy var cursor = PinnedWindowCursor(view: self, window: sourceWindow, pid: pid,
-        displayID: { [weak self] in self?.windowDisplay.displayID ?? 0 },
-        sourceFrame: { [weak self] in self?.sourceFrame ?? .zero })
+    private var inputStopped = true
+    private lazy var cursor: PinnedWindowCursor = {
+        let value = PinnedWindowCursor(view: self, window: sourceWindow, pid: pid,
+            displayID: { [weak self] in self?.windowDisplay.displayID ?? 0 },
+            sourceFrame: { [weak self] in self?.sourceFrame ?? .zero })
+        return value
+    }()
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var isFlipped: Bool { true }
@@ -215,8 +234,89 @@ private final class PinnedPreview: NSView {
     }
     override func mouseEntered(with event: NSEvent) { enter(event) }
     override func mouseMoved(with event: NSEvent) { enter(event) }
-    override func mouseDown(with event: NSEvent) { enter(event) }
+    override func mouseExited(with event: NSEvent) { cursor.previewExited() }
+    private func forward(_ event: NSEvent) {
+        guard !inputStopped else { return }
+        cursor.forwardPreviewEvent(event, at: convert(event.locationInWindow, from:nil))
+    }
+    override func mouseDown(with event: NSEvent) { forward(event) }
+    override func mouseUp(with event: NSEvent) { forward(event) }
+    override func rightMouseDown(with event: NSEvent) { forward(event) }
+    override func rightMouseUp(with event: NSEvent) { forward(event) }
+    override func otherMouseDown(with event: NSEvent) { forward(event) }
+    override func otherMouseUp(with event: NSEvent) { forward(event) }
+    override func mouseDragged(with event: NSEvent) { forward(event) }
+    override func rightMouseDragged(with event: NSEvent) { forward(event) }
+    override func otherMouseDragged(with event: NSEvent) { forward(event) }
+    override func scrollWheel(with event: NSEvent) { forward(event) }
     // The native mouse-exit caused by entering the private display is expected;
     // the observer returns it only when the translated cursor leaves the view.
+    func startInput() {
+        inputStopped = false
+    }
     func stopInput() { inputStopped = true; cursor.stop() }
+}
+
+/// Video delivery is independent of pointer drawing and AX window monitoring.
+/// On macOS 14+ Apple's renderer explicitly supports background enqueueing.
+private final class PinnedFrameOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    let queue = DispatchQueue(label: "MacTools.pinned.frames", qos: .userInteractive)
+    private let render: (CMSampleBuffer) -> Void
+    private let clear: () -> Void
+    private var stopped = false // accessed only on queue
+    init(layer: AVSampleBufferDisplayLayer) {
+        if #available(macOS 14.0, *) {
+            let renderer = layer.sampleBufferRenderer
+            render = { buffer in
+                if renderer.status == .failed { renderer.flush() }
+                let ready = renderer.isReadyForMoreMediaData
+                if ready { renderer.enqueue(buffer) }
+            }
+            clear = { renderer.flush(removingDisplayedImage: true, completionHandler: nil) }
+        } else {
+            let legacy = LegacyPinnedFrames(layer: layer)
+            render = { legacy.submit($0) }
+            clear = { legacy.stop() }
+        }
+        super.init()
+    }
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard !stopped, type == .screen, buffer.isValid else { return }
+        let entries = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary:false) as? [[SCStreamFrameInfo: Any]]
+        let raw = entries?.first?[.status] as? Int
+        guard let raw, SCFrameStatus(rawValue: raw) == .complete else { return }
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: true) as? [NSMutableDictionary] {
+            attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
+        }
+        render(buffer)
+    }
+    func stop() { queue.async { self.stopped = true; self.clear() } }
+}
+
+/// macOS 13 fallback: keep a single pending image instead of a main-queue backlog.
+private final class LegacyPinnedFrames: @unchecked Sendable {
+    private let layer: AVSampleBufferDisplayLayer
+    private let lock = NSLock()
+    private var latest: CMSampleBuffer?
+    private var scheduled = false
+    private var stopped = false
+    init(layer: AVSampleBufferDisplayLayer) { self.layer = layer }
+    func submit(_ buffer: CMSampleBuffer) {
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        latest = buffer
+        guard !scheduled else { lock.unlock(); return }
+        scheduled = true; lock.unlock()
+        DispatchQueue.main.async {
+            self.lock.lock(); let value = self.stopped ? nil : self.latest
+            self.latest = nil; self.scheduled = false; self.lock.unlock()
+            guard let value else { return }
+            if self.layer.status == .failed { self.layer.flush() }
+            if self.layer.isReadyForMoreMediaData { self.layer.enqueue(value) }
+        }
+    }
+    func stop() {
+        lock.lock(); stopped = true; latest = nil; lock.unlock()
+        DispatchQueue.main.async { self.layer.flushAndRemoveImage() }
+    }
 }

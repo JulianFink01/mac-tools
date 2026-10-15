@@ -17,8 +17,8 @@ import ApplicationServices
         self.window = window; savedFrame = frame; sourceFrame = frame
     }
     func start() async throws {
-        let width = UInt32(max(1280, ceil(savedFrame.width + 120)))
-        let height = UInt32(max(960, ceil(savedFrame.height + 120)))
+        let width = UInt32(max(800, ceil(savedFrame.width + 128)))
+        let height = UInt32(max(600, ceil(savedFrame.height + 128)))
         guard let object = MTCreateWindowDisplay(width, height) else { throw issue("Die virtuelle Fensterfläche konnte nicht angelegt werden.") }
         self.object = object; displayID = MTWindowDisplayID(object)
         do {
