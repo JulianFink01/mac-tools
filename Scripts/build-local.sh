@@ -2,15 +2,16 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="LiveWallpaper"
+APP_NAME="MacTools"
 BUILD_DIR="$PROJECT_ROOT/build"
 DERIVED_DATA="$BUILD_DIR/DerivedData"
 EXPORT_DIR="$BUILD_DIR/Release"
 APP_PATH="$DERIVED_DATA/Build/Products/Release/$APP_NAME.app"
 
 cd "$PROJECT_ROOT"
+python3 Scripts/prepare-clamav.py
 
-rm -rf "$BUILD_DIR/SwiftModuleCache"
+
 mkdir -p "$BUILD_DIR/SwiftModuleCache"
 swift -module-cache-path "$BUILD_DIR/SwiftModuleCache" Tools/generate_app_icon.swift
 
@@ -23,11 +24,11 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=YES \
   build
 
-rm -rf "$EXPORT_DIR"
+
 mkdir -p "$EXPORT_DIR"
 ditto "$APP_PATH" "$EXPORT_DIR/$APP_NAME.app"
 
-codesign --force --deep --sign - "$EXPORT_DIR/$APP_NAME.app"
+bash Scripts/sign-app.sh "$EXPORT_DIR/$APP_NAME.app"
 
 echo "Built local release:"
 echo "$EXPORT_DIR/$APP_NAME.app"

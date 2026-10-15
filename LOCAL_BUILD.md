@@ -1,84 +1,35 @@
-# Lokale Build-Anleitung
-
-Diese Anleitung baut LiveWallpaper so, dass die App lokal dauerhaft funktioniert, auch ohne Apple Developer Account.
-
-## Kurzfassung
+# Lokaler Build und Anwendungspaket
 
 ```sh
-cd /Users/julianfink/Documents/new-world/LiveWallpaper
-chmod +x Scripts/build-local.sh
-Scripts/build-local.sh
+python3 Scripts/prepare-clamav.py
+bash Scripts/build-native.sh
+bash Scripts/package-release.sh
 ```
 
-Danach liegt die App hier:
+Ergebnis: `build/Release/MacTools.app` und `build/Release/MacTools-0.2.0-universal.dmg`.
 
-```text
-/Users/julianfink/Documents/new-world/LiveWallpaper/build/Release/LiveWallpaper.app
-```
+Beide App-Architekturen sowie die mitgelieferte ClamAV-Engine sind Universal (arm64 und x86_64). Die lokale App wird mit dem vorhandenen Apple-Development-Zertifikat signiert. Die Auswahl steht ausschließlich im ignorierten `build/code-signing-identity.txt`. Alternativ `MACTOOLS_SIGNING_IDENTITY` setzen. Ohne Auswahl wird ad-hoc signiert und vor erneut nötigen macOS-Freigaben gewarnt. Bei Updates dieselbe Identität beibehalten; der Wechsel von ad-hoc auf das Zertifikat benötigt eine einmalige neue Freigabe. Der Betrieb auf einem anderen Mac bzw. einer anderen macOS-Version muss dort zusätzlich geprüft werden. Für öffentliche Weitergabe ohne Gatekeeper-Warnungen: Developer-ID-Signierung aller enthaltenen Mach-O-Dateien, danach App/Paket notarisiert ausliefern.
 
-Kopiere oder verschiebe diese App nach:
-
-```text
-/Applications/LiveWallpaper.app
-```
-
-Starte sie danach einmal aus `/Applications`. Wenn du `Start at Login` aktivierst, bleibt der Login-Item-Pfad stabil.
-
-Wenn `SMAppService.mainApp` für einen lokalen/ad-hoc signierten Build `notFound` meldet, nutzt LiveWallpaper automatisch einen lokalen LaunchAgent-Fallback in `~/Library/LaunchAgents/com.julianfink.LiveWallpaper.login.plist`.
-
-## Warum nach /Applications?
-
-macOS Login Items merken sich die App-Bundle-Identität und den App-Pfad. Wenn du die App aus `DerivedData` oder einem temporären Build-Ordner startest, kann der Start-at-Login-Eintrag später ins Leere zeigen.
-
-Für lokalen Dauerbetrieb ist daher empfehlenswert:
-
-1. Release bauen.
-2. `LiveWallpaper.app` nach `/Applications` legen.
-3. App aus `/Applications` starten.
-4. In der App `Start at Login` aktivieren.
-
-Wenn du später eine neue Version baust, ersetze die App in `/Applications`, starte diese neue Kopie einmal manuell und prüfe den Toggle erneut.
-
-Der Start-at-Login-Toggle bevorzugt `SMAppService.mainApp`. Falls macOS diese lokale App-Kopie nicht über ServiceManagement registrieren kann, schreibt und lädt die App stattdessen einen User-LaunchAgent. In System Settings erscheint dieser Fallback unter `App Background Activity`, nicht zwingend in der oberen `Open at Login`-Liste. Das ist für lokale Nutzung robust; für öffentliche Distribution bleibt Developer-ID-Signierung plus Notarization der sauberere Weg.
-
-## Ohne Apple Developer Account
-
-Das Script signiert ad-hoc mit:
+Für einen aktuellen Startbestand der Virensignaturen:
 
 ```sh
-codesign --sign -
+mkdir -p build/clamav-database
+cat > build/clamav-database/freshclam.conf <<'CONFIG'
+DatabaseMirror database.clamav.net
+ConnectTimeout 15
+ReceiveTimeout 60
+CONFIG
+CVD_CERTS_DIR="$PWD/Vendor/ClamAV/etc/certs" Vendor/ClamAV/bin/freshclam \
+  --config-file=build/clamav-database/freshclam.conf \
+  --datadir="$PWD/build/clamav-database" \
+  --cvdcertsdir="$PWD/Vendor/ClamAV/etc/certs" --stdout
+mkdir -p Vendor/ClamAV/database
+cp build/clamav-database/*.cvd Vendor/ClamAV/database/
+cp build/clamav-database/*.sign Vendor/ClamAV/database/
 ```
 
-Das reicht für die lokale Nutzung auf deinem Mac. Für andere Nutzer kann Gatekeeper trotzdem warnen, weil die App nicht mit Developer ID signiert und nicht notarisiert ist.
+Anschließend App/Paket neu bauen. Die App kopiert den Startbestand bei Bedarf in ihr beschreibbares Datenverzeichnis und aktualisiert ihn selbst. Eine neu vorbereitete Engine ohne Startbestand benötigt beim ersten Scan Internetzugriff.
 
-## Mit Apple Developer Account
+Die offiziellen Downloads werden gegen die im Vorbereitungsskript festgelegten SHA-256-Werte geprüft. Originalquellen, Lizenztexte und Änderungen am Laufzeit-Suchpfad liegen im ausgelieferten `Contents/Resources/ClamAV/`.
 
-Für öffentliche Distribution:
-
-1. Bundle Identifier im Xcode-Projekt auf deine echte Reverse-DNS-ID setzen.
-2. `DEVELOPMENT_TEAM` in Xcode setzen.
-3. Release mit Developer ID Application signieren.
-4. Archiv notarizen.
-5. App staplen oder in ein signiertes DMG packen.
-
-Beispielhaft:
-
-```sh
-xcodebuild -project LiveWallpaper.xcodeproj -scheme LiveWallpaper -configuration Release archive -archivePath build/LiveWallpaper.xcarchive
-xcrun notarytool submit build/LiveWallpaper.zip --keychain-profile YOUR_PROFILE --wait
-xcrun stapler staple /Applications/LiveWallpaper.app
-```
-
-Passe die Befehle an dein Zertifikat, dein Notary-Profil und dein Distributionsformat an.
-
-## Dock-Icon vs. Menüleisten-App
-
-LiveWallpaper ist produktionsnah als Menüleisten-App gebaut. Deshalb ist `LSUIElement` aktiv und die App erscheint nicht im Dock.
-
-Sichtbare Orte:
-
-- Menüleiste
-- Finder-App-Icon
-- Login Items in den Systemeinstellungen
-
-Wenn du während der Entwicklung ein Dock-Icon möchtest, setze in `LiveWallpaper/Info.plist` den Wert von `LSUIElement` temporär auf `false` oder entferne den Key.
+Für einen stabilen Autostart MacTools nach `/Applications` kopieren und dort starten. Bestehende LiveWallpaper-Daten bleiben erhalten. Der Projektordner kann weiterhin `LiveWallpaper` heißen; App, Source-Verzeichnis, Xcode-Projekt und Scheme heißen MacTools.

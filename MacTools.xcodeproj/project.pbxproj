@@ -1,0 +1,487 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A0001010000000000000001 /* AspectMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000010000000000000001 /* AspectMode.swift */; };
+		0A0001020000000000000001 /* WallpaperVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000020000000000000001 /* WallpaperVideo.swift */; };
+		0A0001030000000000000001 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000030000000000000001 /* SettingsStore.swift */; };
+		0A0001040000000000000001 /* VideoLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000040000000000000001 /* VideoLibraryStore.swift */; };
+		0A0001050000000000000001 /* WallpaperPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000050000000000000001 /* WallpaperPlayerView.swift */; };
+		0A0001060000000000000001 /* WallpaperWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000060000000000000001 /* WallpaperWindow.swift */; };
+		0A0001070000000000000001 /* WallpaperController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000070000000000000001 /* WallpaperController.swift */; };
+		0A0001080000000000000001 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000080000000000000001 /* MenuBarController.swift */; };
+		0A0001090000000000000001 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000090000000000000001 /* LibraryView.swift */; };
+		0A00010A0000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A00000A0000000000000001 /* SettingsView.swift */; };
+		0A00010B0000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A00000B0000000000000001 /* AppDelegate.swift */; };
+		0A00010C0000000000000001 /* MacToolsApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A00000C0000000000000001 /* MacToolsApp.swift */; };
+		0A00010D0000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A00000F0000000000000001 /* Assets.xcassets */; };
+		0A00010E0000000000000001 /* LaunchAgentLoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000100000000000000001 /* LaunchAgentLoginItem.swift */; };
+		0A0001110000000000000001 /* DiskScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000110000000000000001 /* DiskScanner.swift */; };
+		0A0001120000000000000001 /* DiskScanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000120000000000000001 /* DiskScanStore.swift */; };
+		0A0001130000000000000001 /* DiskDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000130000000000000001 /* DiskDashboardView.swift */; };
+		0A0001140000000000000001 /* SecurityScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000140000000000000001 /* SecurityScanner.swift */; };
+		0A0001150000000000000001 /* MacToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000150000000000000001 /* MacToolsView.swift */; };
+		0A0001160000000000000001 /* ScreenSaverSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000160000000000000001 /* ScreenSaverSupport.swift */; };
+        BB0000010000000000000001 = {isa = PBXBuildFile; fileRef = BB0000020000000000000001; };
+        BB0000030000000000000001 = {isa = PBXBuildFile; fileRef = BB0000040000000000000001; };
+		0A0001170000000000000001 /* FileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000170000000000000001; };
+		0A0001180000000000000001 /* AutomaticScans.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000180000000000000001; };
+		0A0001190000000000000001 /* ClamAV in Resources */ = {isa = PBXBuildFile; fileRef = 0A0000190000000000000001; };
+		0A00011A0000000000000001 /* WindowPinController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A00001A0000000000000001; };
+        0A00011B0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00001B0000000000000001; };
+        0A00011C0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00001C0000000000000001; };
+        0A00011D0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00001D0000000000000001; };
+        0A00011E0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00001E0000000000000001; };
+        0A00011F0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00001F0000000000000001; };
+        0A0001210000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000210000000000000001; };
+		0A0001220000000000000001 /* LivePinnedWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000220000000000000001 /* LivePinnedWindow.swift */; };
+		0A0001230000000000000001 /* DiskScanCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000230000000000000001 /* DiskScanCache.swift */; };
+		0A0001240000000000000001 /* OriginalWindowLevel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000240000000000000001 /* OriginalWindowLevel.swift */; };
+		0A0001250000000000000001 /* VirtualWindowDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000250000000000000001; };
+		0A0001260000000000000001 /* PinnedWindowCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000260000000000000001; };
+		0A0001270000000000000001 /* VirtualWindowDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000270000000000000001; };
+0A0001290000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000290000000000000001; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0A0000010000000000000001 /* AspectMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectMode.swift; sourceTree = "<group>"; };
+		0A0000020000000000000001 /* WallpaperVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperVideo.swift; sourceTree = "<group>"; };
+		0A0000030000000000000001 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		0A0000040000000000000001 /* VideoLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLibraryStore.swift; sourceTree = "<group>"; };
+		0A0000050000000000000001 /* WallpaperPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperPlayerView.swift; sourceTree = "<group>"; };
+		0A0000060000000000000001 /* WallpaperWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperWindow.swift; sourceTree = "<group>"; };
+		0A0000070000000000000001 /* WallpaperController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperController.swift; sourceTree = "<group>"; };
+		0A0000080000000000000001 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
+		0A0000090000000000000001 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		0A00000A0000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		0A00000B0000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		0A00000C0000000000000001 /* MacToolsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacToolsApp.swift; sourceTree = "<group>"; };
+		0A00000D0000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0A00000E0000000000000001 /* MacTools.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacTools.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A00000F0000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		0A0000100000000000000001 /* LaunchAgentLoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAgentLoginItem.swift; sourceTree = "<group>"; };
+		0A0000110000000000000001 /* DiskScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskScanner.swift; sourceTree = "<group>"; };
+		0A0000120000000000000001 /* DiskScanStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskScanStore.swift; sourceTree = "<group>"; };
+		0A0000130000000000000001 /* DiskDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskDashboardView.swift; sourceTree = "<group>"; };
+		0A0000140000000000000001 /* SecurityScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScanner.swift; sourceTree = "<group>"; };
+		0A0000150000000000000001 /* MacToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacToolsView.swift; sourceTree = "<group>"; };
+		0A0000160000000000000001 /* ScreenSaverSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSaverSupport.swift; sourceTree = "<group>"; };
+        BB0000020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacToolsScreenSaver/MacToolsScreenSaverView.swift; sourceTree = SOURCE_ROOT; };
+        BB0000040000000000000001 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = MacToolsScreenSaver.saver; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A0000170000000000000001 /* FileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileActions.swift; sourceTree = "<group>"; };
+		0A0000180000000000000001 /* AutomaticScans.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticScans.swift; sourceTree = "<group>"; };
+		0A0000190000000000000001 /* ClamAV */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/ClamAV; sourceTree = SOURCE_ROOT; };
+		0A00001A0000000000000001 /* WindowPinController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPinController.swift; sourceTree = "<group>"; };
+        0A00001B0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMonitor.swift; sourceTree = "<group>"; };
+        0A00001C0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMonitorView.swift; sourceTree = "<group>"; };
+        0A00001D0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorDetailView.swift; sourceTree = "<group>"; };
+        0A00001E0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManagerStore.swift; sourceTree = "<group>"; };
+        0A00001F0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
+        0A0000210000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserIndex.swift; sourceTree = "<group>"; };
+		0A0000220000000000000001 /* LivePinnedWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePinnedWindow.swift; sourceTree = "<group>"; };
+		0A0000230000000000000001 /* DiskScanCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskScanCache.swift; sourceTree = "<group>"; };
+		0A0000240000000000000001 /* OriginalWindowLevel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OriginalWindowLevel.swift; sourceTree = "<group>"; };
+		0A0000250000000000000001 /* VirtualWindowDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualWindowDisplay.swift; sourceTree = "<group>"; };
+		0A0000260000000000000001 /* PinnedWindowCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedWindowCursor.swift; sourceTree = "<group>"; };
+		0A0000270000000000000001 /* VirtualWindowDisplay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = VirtualWindowDisplay.m; sourceTree = "<group>"; };
+		0A0000280000000000000001 /* MacToolsNative.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MacToolsNative.h; sourceTree = "<group>"; };
+0A0000290000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScanPanel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+        BB0000050000000000000001 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (BB0000030000000000000001,); name = "Embed Screen Saver"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+/* Begin PBXContainerItemProxy section */
+        BB0000060000000000000001 = {isa = PBXContainerItemProxy; containerPortal = 0A0006010000000000000001; proxyType = 1; remoteGlobalIDString = BB0000100000000000000001; remoteInfo = MacToolsScreenSaver; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
+        BB0000070000000000000001 = {isa = PBXTargetDependency; target = BB0000100000000000000001; targetProxy = BB0000060000000000000001; };
+/* End PBXTargetDependency section */
+/* Begin PBXFrameworksBuildPhase section */
+		0A0002010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A0003010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				0A0003020000000000000001 /* MacTools */,
+                0A0000190000000000000001,
+                BB0000020000000000000001,
+				0A0003030000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0A0003020000000000000001 /* MacTools */ = {
+			isa = PBXGroup;
+			children = (
+                0A0000290000000000000001,
+				0A00000C0000000000000001 /* MacToolsApp.swift */,
+                0A00001A0000000000000001,
+                0A0000210000000000000001,
+                0A00001F0000000000000001,
+                0A00001E0000000000000001,
+                0A00001D0000000000000001,
+                0A00001C0000000000000001,
+                0A00001B0000000000000001,
+                0A0000180000000000000001,
+                0A0000170000000000000001,
+				0A0000160000000000000001 /* ScreenSaverSupport.swift */,
+				0A0000150000000000000001 /* MacToolsView.swift */,
+				0A0000140000000000000001 /* SecurityScanner.swift */,
+				0A0000130000000000000001 /* DiskDashboardView.swift */,
+				0A0000120000000000000001 /* DiskScanStore.swift */,
+				0A0000110000000000000001 /* DiskScanner.swift */,
+				0A00000B0000000000000001 /* AppDelegate.swift */,
+				0A0000070000000000000001 /* WallpaperController.swift */,
+				0A0000060000000000000001 /* WallpaperWindow.swift */,
+				0A0000050000000000000001 /* WallpaperPlayerView.swift */,
+				0A0000040000000000000001 /* VideoLibraryStore.swift */,
+				0A0000020000000000000001 /* WallpaperVideo.swift */,
+				0A0000030000000000000001 /* SettingsStore.swift */,
+				0A0000100000000000000001 /* LaunchAgentLoginItem.swift */,
+				0A0000080000000000000001 /* MenuBarController.swift */,
+				0A0000090000000000000001 /* LibraryView.swift */,
+				0A00000A0000000000000001 /* SettingsView.swift */,
+				0A0000010000000000000001 /* AspectMode.swift */,
+				0A00000F0000000000000001 /* Assets.xcassets */,
+				0A00000D0000000000000001 /* Info.plist */,
+
+                0A0000220000000000000001,
+                0A0000230000000000000001,
+                0A0000240000000000000001,
+                0A0000250000000000000001,
+                0A0000260000000000000001,
+                0A0000270000000000000001,
+                0A0000280000000000000001, );
+			path = MacTools;
+			sourceTree = "<group>";
+		};
+		0A0003030000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0A00000E0000000000000001 /* MacTools.app */,
+                BB0000040000000000000001,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0A0004010000000000000001 /* MacTools */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A0007010000000000000001 /* Build configuration list for PBXNativeTarget "MacTools" */;
+			buildPhases = (
+				0A0005010000000000000001 /* Sources */,
+				0A0002010000000000000001 /* Frameworks */,
+				0A0005020000000000000001 /* Resources */,
+                BB0000050000000000000001,
+			);
+			buildRules = (
+			);
+			dependencies = (BB0000070000000000000001,);
+			name = MacTools;
+			productName = MacTools;
+			productReference = 0A00000E0000000000000001 /* MacTools.app */;
+			productType = "com.apple.product-type.application";
+		};
+        BB0000100000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = BB0000110000000000000001; buildPhases = (BB0000120000000000000001,); buildRules = (); dependencies = (); name = MacToolsScreenSaver; productName = MacToolsScreenSaver; productReference = BB0000040000000000000001; productType = "com.apple.product-type.bundle"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0A0006010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					0A0004010000000000000001 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = 0A0006020000000000000001 /* Build configuration list for PBXProject "MacTools" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0A0003010000000000000001;
+			productRefGroup = 0A0003030000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+                BB0000100000000000000001,
+				0A0004010000000000000001 /* MacTools */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0A0005020000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A00010D0000000000000001 /* Assets.xcassets in Resources */,
+                0A0001190000000000000001,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0A0005010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+                0A0001290000000000000001,
+				0A0001010000000000000001 /* AspectMode.swift in Sources */,
+				0A0001020000000000000001 /* WallpaperVideo.swift in Sources */,
+				0A0001030000000000000001 /* SettingsStore.swift in Sources */,
+				0A0001040000000000000001 /* VideoLibraryStore.swift in Sources */,
+				0A0001050000000000000001 /* WallpaperPlayerView.swift in Sources */,
+				0A0001060000000000000001 /* WallpaperWindow.swift in Sources */,
+				0A0001070000000000000001 /* WallpaperController.swift in Sources */,
+				0A0001080000000000000001 /* MenuBarController.swift in Sources */,
+				0A0001090000000000000001 /* LibraryView.swift in Sources */,
+				0A00010A0000000000000001 /* SettingsView.swift in Sources */,
+				0A00010B0000000000000001 /* AppDelegate.swift in Sources */,
+				0A00010C0000000000000001 /* MacToolsApp.swift in Sources */,
+                0A00011A0000000000000001,
+                0A0001210000000000000001,
+                0A00011F0000000000000001,
+                0A00011E0000000000000001,
+                0A00011D0000000000000001,
+                0A00011C0000000000000001,
+                0A00011B0000000000000001,
+                0A0001180000000000000001,
+                0A0001170000000000000001,
+				0A0001160000000000000001 /* ScreenSaverSupport.swift in Sources */,
+				0A0001150000000000000001 /* MacToolsView.swift in Sources */,
+				0A0001140000000000000001 /* SecurityScanner.swift in Sources */,
+				0A0001130000000000000001 /* DiskDashboardView.swift in Sources */,
+				0A0001120000000000000001 /* DiskScanStore.swift in Sources */,
+				0A0001110000000000000001 /* DiskScanner.swift in Sources */,
+				0A00010E0000000000000001 /* LaunchAgentLoginItem.swift in Sources */,
+
+                0A0001220000000000000001,
+                0A0001230000000000000001,
+                0A0001240000000000000001,
+                0A0001250000000000000001,
+                0A0001260000000000000001,
+                0A0001270000000000000001, );
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+        BB0000120000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BB0000010000000000000001,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0A0008010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		0A0008020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES_AGGRESSIVE;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		0A0009010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacTools/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.LiveWallpaper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_TYPE = "com.apple.product-type.application";
+				SWIFT_OBJC_BRIDGING_HEADER = MacTools/MacToolsNative.h;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0A0009020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacTools/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.LiveWallpaper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_TYPE = "com.apple.product-type.application";
+				SWIFT_OBJC_BRIDGING_HEADER = MacTools/MacToolsNative.h;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+        BB0000130000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "-"; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = MacToolsScreenSaver/Info.plist; MACOSX_DEPLOYMENT_TARGET = 13.0; PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.MacTools.ScreenSaver; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; WRAPPER_EXTENSION = saver; SKIP_INSTALL = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@loader_path/../Frameworks",); }; name = Debug; };
+        BB0000140000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "-"; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = MacToolsScreenSaver/Info.plist; MACOSX_DEPLOYMENT_TARGET = 13.0; PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.MacTools.ScreenSaver; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; WRAPPER_EXTENSION = saver; SKIP_INSTALL = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@loader_path/../Frameworks",); }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0A0006020000000000000001 /* Build configuration list for PBXProject "MacTools" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A0008010000000000000001 /* Debug */,
+				0A0008020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A0007010000000000000001 /* Build configuration list for PBXNativeTarget "MacTools" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A0009010000000000000001 /* Debug */,
+				0A0009020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+        BB0000110000000000000001 = {isa = XCConfigurationList; buildConfigurations = (BB0000130000000000000001, BB0000140000000000000001,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = 0A0006010000000000000001 /* Project object */;
+}

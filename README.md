@@ -1,145 +1,84 @@
-# LiveWallpaper
+# MacTools
 
-LiveWallpaper is a native macOS menu-bar app that plays a local video as a desktop live wallpaper after the user has logged in.
+Dein Mac. Deine Werkzeuge. Eine native macOS-App von **[Julian Fink](https://julian.fink-cloud.net)**, gebaut mit Swift, SwiftUI und AppKit.
 
-The app is intentionally built with public Apple APIs only:
+[MacTools herunterladen](https://github.com/JulianFink01/mac-tools/releases/download/v0.2.0/MacTools-0.2.0-universal.dmg) · [Alle Releases](https://github.com/JulianFink01/mac-tools/releases) · [Meine Website](https://julian.fink-cloud.net)
 
-- Swift and SwiftUI for the app and library UI
-- AppKit for the desktop wallpaper windows
-- AVFoundation for playback, looping and thumbnails
-- ServiceManagement / `SMAppService.mainApp` for Start at Login
-- macOS 13.0 or newer
+macOS 13 oder neuer · Universal Binary für Apple Silicon und Intel · lokale Verarbeitung
 
-## What Works in v0.1
+## Systemmonitor und Menüleiste
 
-- Import `.mp4`, `.mov` and `.m4v` files through an `NSOpenPanel`
-- Copy imported videos into `~/Library/Application Support/LiveWallpaper/Videos/`
-- Store the video library in `~/Library/Application Support/LiveWallpaper/library.json`
-- Generate thumbnails in `~/Library/Application Support/LiveWallpaper/Thumbnails/`
-- Set the selected video as the current live wallpaper
-- Play the video in a loop using `AVQueuePlayer` and `AVPlayerLooper`
-- Create one borderless `NSWindow` per `NSScreen`
-- Ignore mouse events so desktop clicks are not blocked by the wallpaper window
-- Show the wallpaper window on all Spaces
-- Pause and resume playback
-- Pause on system sleep and resume after wake when the user had not paused manually
-- Persist current video, pause state, aspect mode and Start at Login preference
-- Menu-bar controls for Open Library, Pause/Resume, Random Wallpaper, Start at Login and Quit
-- Bundled app icon and visible menu-bar item
+![MacTools-Systemmonitor mit nativer Fenster-Kopfleiste](docs/screenshots/mactools-monitor.png)
 
-## Important macOS Limitations
+Die Startansicht zeigt echte Messwerte für CPU, RAM, GPU, Datenträger und Netzwerk. Karten mit Verlauf führen zu Detailansichten: CPU-Kerne, Speicherdruck, Apps/Wired/komprimierter RAM, Swap und Top-Prozesse. Messwerte werden alle zwei Sekunden aktualisiert; Verläufe bleiben lokal gespeichert. GPU-Daten erscheinen nur, wenn macOS sie bereitstellt.
 
-### Login Screen
+CPU-, RAM-, GPU- und Disk-Widgets lassen sich in den Einstellungen einzeln aktivieren. Das Schnellpanel bietet aktuelle Werte, Speicherbelegung und Schnellaktionen. Priorisierte Live-Ereignisse – Funde, laufende Scans und angeheftete Fenster – stehen oben; zwischen Ereignissen kann man wischen oder mit Pfeilen wechseln. Angeheftete Fenster lassen sich einzeln lösen.
 
-A normal third-party macOS app cannot cleanly animate or replace the real macOS Login Screen wallpaper before the user logs in. LiveWallpaper implements automatic launch after user login with `SMAppService.mainApp`; it does not try to run before login.
 
-### Desktop Window Level
+Die Duplikat-Abbildung verwendet eigene Beispieldateien.
 
-macOS does not expose a perfect public API for "replace the Finder desktop background but stay below desktop icons". LiveWallpaper uses a public window-level compromise:
+## Disk & Sicherheit
 
-```swift
-let desktopLevel = CGWindowLevelForKey(.desktopWindow)
-level = NSWindow.Level(rawValue: Int(desktopLevel + 1))
-```
+Ein Gesamtscan erfasst den ausgewählten Ordner oder das Volume ohne feste Dateigrenze und verbindet Speicheranalyse, Duplikatprüfung und anschließende Virenprüfung. Die Dateiliste ist schon während der Inhaltsprüfung nutzbar.
 
-The window is above the static desktop background and below normal app windows. Depending on macOS/Finder behavior, desktop icon layering can vary. The app avoids private APIs on purpose.
+- Ordner öffnen über die gesamte Zeile, Breadcrumbs, aktueller Pfad, Zurück/Vorwärts und eine Ebene höher.
+- Große Dateien, Dateitypen, Ordnergrößen, Dateizahlen und Verlauf abgeschlossener Scans.
+- Logische Größe, tatsächlich gemeldete Dateibelegung und freier Volume-Speicher werden getrennt dargestellt. Sparse-Dateien und APFS-Kopien können deutlich weniger Platz belegen als ihre logische Größe.
+- Persistente Ergebnisse einschließlich Dateilisten, Ordnern und Duplikaten. Große Berichte werden atomar in Blöcken gespeichert und nach Neustart im Hintergrund geladen.
+- Fortschritt unten in der Seitenleiste und im Schnellpanel. Zugriffshinweise stehen nur in der Übersicht; geänderte laufende Datenbanken und Cloud-Platzhalter sind neutrale Scan-Informationen.
 
-## System Requirements
+### Duplikate bewusst auswählen
 
-- macOS 13 Ventura or newer
-- Xcode 15 or newer recommended
-- Local video files in `.mp4`, `.mov` or `.m4v` format
+![Duplikate mit Medien- und Dokumentfilter und getrennten Zählern](docs/screenshots/mactools-duplicates.png)
 
-## Build in Xcode
+Standardmäßig zeigt der Filter Bilder, GIFs, Videos, Audio, PDFs, Office-Dateien und CSV. Der Filter lässt sich ausschalten; getrennte Zähler zeigen Medien/Dokumente und alle Dateitypen.
 
-1. Open `LiveWallpaper.xcodeproj`.
-2. Select the `LiveWallpaper` scheme.
-3. Choose `My Mac` as the run destination.
-4. Build and run.
+Die Erkennung prüft Dateigröße, liest bei großen Dateien zunächst Ausschnitte und bestätigt Übereinstimmungen mit vollständigem SHA-256. Bis zu vier begrenzte Arbeiter und ein Cache für unveränderte Dateien beschleunigen weitere Scans. Der Cache berücksichtigt Dateiidentität, Größe sowie Änderungszeiten inklusive ctime. Hardlinks zählen einmal; Symlinks werden nicht verfolgt und Cloud-Dateien werden für die Inhaltsprüfung nicht automatisch heruntergeladen.
 
-The app is configured as an `LSUIElement` menu-bar app, so it appears in the menu bar rather than the Dock. On first launch, if the library is empty, the Library window opens automatically.
+Dateien lassen sich vergleichen und **nur nach ausdrücklicher Auswahl und Bestätigung** in den Papierkorb verschieben. Auch App-, Library-, Projekt- und WhatsApp-Dateien sind manuell auswählbar. Heikle Pfade sind orange markiert; der Löschdialog erläutert mögliche Folgen. „Alle Kopien dieser Gruppe auswählen“ wählt auch große Gruppen gesammelt aus. Mindestens eine Kopie bleibt erhalten. **Keine automatische Bereinigung.** Beim Entfernen werden Dateimetadaten kontrolliert; danach werden nur die tatsächlich entfernten Einträge und ihre Statistiken aktualisiert und gespeichert. Es folgt kein automatischer Neu- oder Virenscan. Löschungen werden zentral an Dateilisten, Duplikate und Virenfunde weitergegeben; auch entfernte App-Daten werden berücksichtigt.
 
-For a durable local build that you can keep using, see [LOCAL_BUILD.md](LOCAL_BUILD.md).
+### Lokaler Virenscan
 
-## Build from Terminal
+ClamAV-Engine, Bibliotheken und initiale Signaturen gehören zum Anwendungspaket; Homebrew ist für die Benutzung nicht erforderlich. Schutzdaten lassen sich aktualisieren. Der tägliche Gesamtscan führt Speicher-, Duplikat- und Virenprüfung gemeinsam aus. Warnkarten beschränken sich auf Funde, fehlgeschlagene Prüfungen, Signaturprobleme und akut knappen Speicher; einzelne ausgelassene Dateien stehen im Scan-Ergebnis.
 
-```sh
-xcodebuild -project LiveWallpaper.xcodeproj -scheme LiveWallpaper -configuration Debug build
-```
+Die Virenprüfung nutzt beim Gesamtscan dessen Dateiliste. Bis zu vier begrenzte parallele Worker laden ihre Engine jeweils einmal; die Anzahl berücksichtigt CPU und verfügbaren Systemspeicher. Aktuell identische und durch den Disk-Scan bestätigte Inhalte werden einmal geprüft; Funde werden den entsprechenden Kopien zugeordnet. Geänderte Dateien werden nicht zusammengefasst. Die Oberfläche zeigt Vorbereitungsphase, gemeinsamen Dateifortschritt, Workerzahl, Durchsatz, aktuelle Datei und Funde. Kleine Dateien werden zuerst geprüft. Dateien über 2 GiB werden ausdrücklich als nicht geprüft gezählt; je Datei gelten außerdem 400 MiB entpackter Prüfinhalt und 30 Sekunden Engine-Zeitlimit. Erreichte Limits erscheinen im Ergebnis und gelten nicht als Entwarnung. Die Virenprüfung kann für die gespeicherte Dateiliste erneut gestartet werden, ohne einen neuen Duplikatscan auszulösen. EICAR-Testdateien werden ausdrücklich als Test erkannt.
 
-For a local Release app with generated icons and ad-hoc signing:
+Die Fundliste zeigt verdächtige Dateien und harmlose EICAR-Testdateien getrennt von eingeklappten Prüflimits. Einzelne Dateien und eine manuelle Mehrfachauswahl lassen sich direkt nach Bestätigung in den Papierkorb verschieben, auch aus gespeicherten Ergebnissen. Entfernte Einträge bleiben nach Neustart entfernt; dafür wird kein neuer Scan gestartet. Der ursprüngliche technische Prüfbericht bleibt als Historie erhalten.
+
+Dateien werden nicht hochgeladen oder automatisch gelöscht. Dies ist kein Echtzeitschutz. Alte Signaturen, nicht zugängliche Inhalte und Engine-Limits werden sichtbar; unbekannte Malware kann übersehen werden. Ein vollständiger Virenscan über Millionen Dateien kann trotz Optimierungen längere Zeit benötigen.
+
+## Weitere Tools
+
+**Apps:** Installierte Anwendungen mit zugehörigen Daten anzeigen und ausgewählte Bestandteile in den Papierkorb verschieben. Exakte Bundle-ID-Zuordnung, Hinweis auf Namenszuordnungen, Schutz gemeinsamer Daten und Sperre gegen Selbst-Deinstallation.
+
+**Live-Hintergrund:** Videos importieren, auswählen, zufällig wechseln, pausieren und fortsetzen. Darstellung einpassen oder füllen. Enthält ein installierbares macOS-Bildschirmschoner-Modul für das ausgewählte Video; Passwortabfrage und Sperrverhalten verwaltet macOS.
+
+**Fenster vorn halten:** Globales konfigurierbares Tastenkürzel (standardmäßig ⌥⌘P), explizite Fensterwahl und mehrere unabhängig vom Popup gehaltene Fenster. Eigene MacTools-Fenster schweben nativ. Für fremde Fenster prüft MacTools zunächst die tatsächliche Original-Fensterebene. Falls macOS deren Änderung verweigert, erhält das Original eine eigene virtuelle Retina-Fensterfläche und eine lokale schwebende ScreenCaptureKit-Ansicht. Die Maus bedient das Original dort nativ; ein ausschließlich innerhalb der Live-Ansicht gezeichneter Cursor zeigt ihre Position. Hover, Klicks, Scrollen und Tastenkombinationen benötigen dadurch keine app-spezifische Nachbildung. Mit Escape oder am Rand der Ansicht kehrt die Maus zum normalen Bildschirm zurück. Schließen, „Lösen“ und „Original öffnen“ bringen das Originalfenster auf deinen Bildschirm zurück und entfernen seine virtuelle Fläche. Einzelne separate App-Dialoge oder geschützte Inhalte können das Original benötigen; uneingeschränkte Kompatibilität mit jeder App ist nicht zugesichert. Fenstersteuerungs- und Bildschirmaufnahme-Freigaben sind getrennt erforderlich. Keine Aufnahme auf der Festplatte und kein Upload; kein Eingriff in SIP.
+
+## Installation und Freigaben
+
+1. DMG aus dem GitHub-Release laden und `MacTools.app` nach `Programme` ziehen.
+2. App starten; Systemmonitor, Menüleisten-Widgets und Schnellpanel sind verfügbar.
+3. Benötigte macOS-Freigaben in den jeweiligen Tool-Einstellungen prüfen. Festplattenvollzugriff hilft beim Lesen geschützter Dateien; Fenstersteuerung und Bildschirmaufnahme werden nur für die Fensterfunktion benötigt.
+
+**Das aktuelle Paket ist lokal mit einem Apple-Development-Zertifikat signiert, nicht mit Developer ID notarisiert.** Auf anderen Macs kann Gatekeeper den Start zunächst verweigern. Die Veröffentlichung ist kein Nachweis einer Apple-Notarisierung. Für eine reibungslose öffentliche Distribution ist ein notarisiertes Developer-ID-Release noch offen.
+
+Die etablierte Bundle-ID `com.julianfink.LiveWallpaper` und der Datenordner `~/Library/Application Support/LiveWallpaper/` bleiben für bestehende Installationen erhalten. Neue ClamAV-Daten liegen unter `~/Library/Application Support/MacTools/ClamAV/`.
+
+## Lokal bauen und prüfen
 
 ```sh
-chmod +x Scripts/build-local.sh
-Scripts/build-local.sh
+bash Scripts/build-native.sh
+bash Scripts/package-release.sh
+bash Scripts/test-scanner.sh
+bash Scripts/test-scan-cache.sh
+bash Scripts/test-file-browser.sh
+bash Scripts/test-monitoring-persistence.sh
+bash Scripts/test-security.sh
+bash Scripts/test-removal-state.sh
+bash Scripts/test-app-inventory.sh
 ```
 
-The resulting app is written to `build/Release/LiveWallpaper.app`. Move it to `/Applications` before enabling Start at Login so macOS stores a stable Login Item path.
+Xcode-Projekt: `MacTools.xcodeproj`. Der native Build erstellt Apple-Silicon- und Intel-Binaries sowie das Bildschirmschoner-Modul. Die optionale Signieridentität wird lokal gewählt; es werden keine Zertifikate oder Schlüssel ins Repository aufgenommen. ClamAV-Vendoring ist in [Vendor/README.md](Vendor/README.md) dokumentiert. Enthaltene Drittanbieter-Lizenzen werden mit dem Anwendungspaket ausgeliefert.
 
-## App Data Locations
-
-LiveWallpaper stores user data outside the app bundle:
-
-```text
-~/Library/Application Support/LiveWallpaper/
-├── Videos/
-├── Thumbnails/
-└── library.json
-```
-
-Settings such as the current video ID, pause state, aspect mode and Start at Login preference are stored in `UserDefaults`.
-
-## App Icon
-
-The icon assets are generated deterministically by:
-
-```sh
-swift -module-cache-path ./build/SwiftModuleCache Tools/generate_app_icon.swift
-```
-
-Xcode compiles `LiveWallpaper/Assets.xcassets` into `AppIcon.icns` and `Assets.car`.
-
-## Architecture
-
-```text
-LiveWallpaperApp.swift       SwiftUI app entry point
-AppDelegate.swift            App lifecycle, sleep/wake, screens, menu wiring
-MenuBarController.swift      NSStatusItem menu
-WallpaperController.swift    Per-screen wallpaper windows and playback
-WallpaperWindow.swift        Borderless non-interactive desktop-level window
-WallpaperPlayerView.swift    NSView backed by AVPlayerLayer
-VideoLibraryStore.swift      Import, JSON persistence, thumbnail generation
-WallpaperVideo.swift         Codable video metadata model
-SettingsStore.swift          UserDefaults and SMAppService state
-LibraryView.swift            SwiftUI video library UI
-SettingsView.swift           SwiftUI settings UI
-AspectMode.swift             Fill/Fit playback mode
-```
-
-`WallpaperController` already models wallpaper output per screen, even though v0.1 intentionally uses the same selected video on every monitor. This keeps the code ready for later per-monitor assignments.
-
-## Distribution Notes
-
-For public distribution without Gatekeeper friction, sign the app with a Developer ID Application certificate and notarize it with Apple.
-
-Without an Apple Developer account, you can build and run locally with ad-hoc or local signing, but other users will see Gatekeeper warnings when opening the app.
-
-This project is not structured for Mac App Store distribution. It does not add sandbox-specific architecture or App Store purchase/update flows.
-
-## Known v0.1 Tradeoffs
-
-- Same video is used on all monitors.
-- No battery-aware pausing yet.
-- No fullscreen-app detection yet.
-- No custom app icon yet.
-- Start at Login may require user approval in System Settings, depending on macOS state and signing.
-- The desktop-icon layering behavior depends on public macOS window-level behavior and may not be perfect on every OS version.
-
-## Suggested Next Steps
-
-- Add per-monitor video selection.
-- Add battery and low-power-mode pause policies.
-- Add detection for fullscreen foreground apps.
-- Add drag-and-drop importing.
-- Add a proper app icon and signed release workflow.
-- Add lightweight UI tests around import and settings persistence.
+Prüfstand und bekannte Grenzen: [VERIFICATION.md](VERIFICATION.md).

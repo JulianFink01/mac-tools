@@ -11,9 +11,9 @@ struct IconSlot {
 
 let projectRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let appIconDirectory = projectRoot
-    .appendingPathComponent("LiveWallpaper/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
+    .appendingPathComponent("MacTools/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
 let menuBarIconDirectory = projectRoot
-    .appendingPathComponent("LiveWallpaper/Assets.xcassets/MenuBarIcon.imageset", isDirectory: true)
+    .appendingPathComponent("MacTools/Assets.xcassets/MenuBarIcon.imageset", isDirectory: true)
 
 let slots = [
     IconSlot(size: 16, scale: 1, filename: "AppIcon-16.png"),
@@ -39,80 +39,46 @@ for slot in slots {
 try writePNG(drawMenuBarIcon(pixels: 18), to: menuBarIconDirectory.appendingPathComponent("MenuBarIcon.png"))
 try writePNG(drawMenuBarIcon(pixels: 36), to: menuBarIconDirectory.appendingPathComponent("MenuBarIcon@2x.png"))
 
-print("Generated LiveWallpaper app icons in \(appIconDirectory.path)")
+print("Generated MacTools app icons in \(appIconDirectory.path)")
 
 func drawAppIcon(pixels: Int) -> NSBitmapImageRep {
-    let bounds = NSRect(x: 0, y: 0, width: pixels, height: pixels)
+    let p = CGFloat(pixels)
     return drawBitmap(pixels: pixels) {
         NSGraphicsContext.current?.imageInterpolation = .high
-
-        let radius = CGFloat(pixels) * 0.225
-        let outer = NSBezierPath(roundedRect: bounds.insetBy(dx: CGFloat(pixels) * 0.035, dy: CGFloat(pixels) * 0.035), xRadius: radius, yRadius: radius)
-        NSColor(calibratedRed: 0.04, green: 0.06, blue: 0.10, alpha: 1).setFill()
-        outer.fill()
-
-        let gradient = NSGradient(colors: [
-            NSColor(calibratedRed: 0.03, green: 0.15, blue: 0.22, alpha: 1),
-            NSColor(calibratedRed: 0.06, green: 0.09, blue: 0.20, alpha: 1),
-            NSColor(calibratedRed: 0.15, green: 0.06, blue: 0.20, alpha: 1)
-        ])!
-        gradient.draw(in: outer, angle: 45)
-
-        let horizonRect = bounds.insetBy(dx: CGFloat(pixels) * 0.09, dy: CGFloat(pixels) * 0.13)
-        let horizon = NSBezierPath(roundedRect: horizonRect, xRadius: CGFloat(pixels) * 0.16, yRadius: CGFloat(pixels) * 0.16)
-        NSColor(calibratedWhite: 1, alpha: 0.09).setStroke()
-        horizon.lineWidth = max(1, CGFloat(pixels) * 0.014)
-        horizon.stroke()
-
-        for index in 0..<5 {
-            let y = CGFloat(pixels) * (0.30 + CGFloat(index) * 0.09)
-            let wave = NSBezierPath()
-            wave.move(to: NSPoint(x: CGFloat(pixels) * 0.15, y: y))
-            wave.curve(
-                to: NSPoint(x: CGFloat(pixels) * 0.85, y: y + CGFloat(pixels) * 0.015),
-                controlPoint1: NSPoint(x: CGFloat(pixels) * 0.33, y: y + CGFloat(pixels) * 0.065),
-                controlPoint2: NSPoint(x: CGFloat(pixels) * 0.58, y: y - CGFloat(pixels) * 0.045)
-            )
-            NSColor(calibratedRed: 0.13, green: 0.86, blue: 0.84, alpha: 0.16).setStroke()
-            wave.lineWidth = max(1, CGFloat(pixels) * 0.012)
-            wave.stroke()
+        let tile = NSBezierPath(roundedRect: NSRect(x: p * 0.04, y: p * 0.04, width: p * 0.92, height: p * 0.92), xRadius: p * 0.21, yRadius: p * 0.21)
+        NSGradient(colors: [NSColor(calibratedRed: 0.10, green: 0.22, blue: 0.30, alpha: 1), NSColor(calibratedRed: 0.04, green: 0.10, blue: 0.17, alpha: 1)])!.draw(in: tile, angle: 90)
+        // A silver Mac display, a calm blue screen, and a single tool badge.
+        let monitor = NSBezierPath(roundedRect: NSRect(x: p * 0.15, y: p * 0.32, width: p * 0.70, height: p * 0.46), xRadius: p * 0.045, yRadius: p * 0.045)
+        let shadow = NSShadow(); shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        shadow.shadowOffset = NSSize(width: 0, height: -p * 0.018); shadow.shadowBlurRadius = p * 0.04
+        NSGraphicsContext.saveGraphicsState(); shadow.set()
+        NSGradient(colors: [NSColor(calibratedWhite: 0.93, alpha: 1), NSColor(calibratedWhite: 0.62, alpha: 1)])!.draw(in: monitor, angle: 90)
+        NSGraphicsContext.restoreGraphicsState()
+        let screen = NSBezierPath(roundedRect: NSRect(x: p * 0.18, y: p * 0.39, width: p * 0.64, height: p * 0.36), xRadius: p * 0.022, yRadius: p * 0.022)
+        NSGradient(colors: [NSColor(calibratedRed: 0.19, green: 0.71, blue: 0.77, alpha: 1), NSColor(calibratedRed: 0.12, green: 0.37, blue: 0.64, alpha: 1)])!.draw(in: screen, angle: 45)
+        let landscape = NSBezierPath()
+        landscape.move(to: NSPoint(x: p * 0.18, y: p * 0.40))
+        landscape.curve(to: NSPoint(x: p * 0.82, y: p * 0.50), controlPoint1: NSPoint(x: p * 0.38, y: p * 0.66), controlPoint2: NSPoint(x: p * 0.59, y: p * 0.33))
+        landscape.line(to: NSPoint(x: p * 0.82, y: p * 0.39)); landscape.line(to: NSPoint(x: p * 0.18, y: p * 0.39)); landscape.close()
+        NSColor(calibratedRed: 0.41, green: 0.91, blue: 0.84, alpha: 0.75).setFill(); landscape.fill()
+        let stand = NSBezierPath(roundedRect: NSRect(x: p * 0.45, y: p * 0.22, width: p * 0.10, height: p * 0.12), xRadius: p * 0.02, yRadius: p * 0.02)
+        NSColor(calibratedWhite: 0.72, alpha: 1).setFill(); stand.fill()
+        let foot = NSBezierPath(roundedRect: NSRect(x: p * 0.32, y: p * 0.20, width: p * 0.36, height: p * 0.045), xRadius: p * 0.02, yRadius: p * 0.02)
+        NSColor(calibratedWhite: 0.88, alpha: 1).setFill(); foot.fill()
+        let badge = NSBezierPath(ovalIn: NSRect(x: p * 0.62, y: p * 0.14, width: p * 0.27, height: p * 0.27))
+        NSColor(calibratedRed: 0.98, green: 0.69, blue: 0.25, alpha: 1).setFill(); badge.fill()
+        if let tool = NSImage(systemSymbolName: "wrench.fill", accessibilityDescription: nil)?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [NSColor(calibratedRed: 0.16, green: 0.19, blue: 0.23, alpha: 1)])) {
+            tool.draw(in: NSRect(x: p * 0.67, y: p * 0.19, width: p * 0.17, height: p * 0.17))
         }
-
-        let playPath = NSBezierPath()
-        playPath.move(to: NSPoint(x: CGFloat(pixels) * 0.40, y: CGFloat(pixels) * 0.34))
-        playPath.line(to: NSPoint(x: CGFloat(pixels) * 0.40, y: CGFloat(pixels) * 0.66))
-        playPath.line(to: NSPoint(x: CGFloat(pixels) * 0.68, y: CGFloat(pixels) * 0.50))
-        playPath.close()
-
-        NSColor(calibratedRed: 0.25, green: 0.98, blue: 0.90, alpha: 1).setFill()
-        playPath.fill()
-
-        NSColor(calibratedWhite: 1, alpha: 0.20).setStroke()
-        playPath.lineWidth = max(1, CGFloat(pixels) * 0.01)
-        playPath.stroke()
-
-        let glossRect = NSRect(x: CGFloat(pixels) * 0.11, y: CGFloat(pixels) * 0.64, width: CGFloat(pixels) * 0.78, height: CGFloat(pixels) * 0.18)
-        let gloss = NSBezierPath(roundedRect: glossRect, xRadius: CGFloat(pixels) * 0.10, yRadius: CGFloat(pixels) * 0.10)
-        NSColor(calibratedWhite: 1, alpha: 0.08).setFill()
-        gloss.fill()
     }
 }
 
 func drawMenuBarIcon(pixels: Int) -> NSBitmapImageRep {
     let p = CGFloat(pixels)
     return drawBitmap(pixels: pixels) {
-        NSColor.white.setStroke()
-        let frame = NSBezierPath(roundedRect: NSRect(x: p * 0.10, y: p * 0.18, width: p * 0.80, height: p * 0.60), xRadius: p * 0.10, yRadius: p * 0.10)
-        frame.lineWidth = max(1.2, p * 0.09)
-        frame.stroke()
-
-        let play = NSBezierPath()
-        play.move(to: NSPoint(x: p * 0.42, y: p * 0.35))
-        play.line(to: NSPoint(x: p * 0.42, y: p * 0.65))
-        play.line(to: NSPoint(x: p * 0.65, y: p * 0.50))
-        play.close()
-        NSColor.white.setFill()
-        play.fill()
+        if let tool = NSImage(systemSymbolName: "wrench.and.screwdriver", accessibilityDescription: nil)?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.white])) {
+            tool.draw(in: NSRect(x: p * 0.08, y: p * 0.08, width: p * 0.84, height: p * 0.84))
+        }
     }
 }
 
