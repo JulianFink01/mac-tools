@@ -31,7 +31,7 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     init(source: SCWindow, axWindow: AXUIElement) {
         self.source = source
         self.axWindow = axWindow
-        windowDisplay = VirtualWindowDisplay(window: axWindow, frame: source.frame)
+        windowDisplay = VirtualWindowDisplay(window: axWindow, frame: source.frame, safeMode: source.frame.width > 1536 || source.frame.height > 960)
         sourceSize = source.frame.size
         let width = min(680, max(280, source.frame.width))
         let height = max(160, width * source.frame.height / max(1, source.frame.width))
@@ -80,6 +80,7 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     func start() async throws {
         try await windowDisplay.start()
         preview.sourceFrame = windowDisplay.sourceFrame
+        sourceSize = windowDisplay.sourceFrame.size
         let config = configuration(size: sourceSize)
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: source), configuration: config, delegate: self)
         self.stream = stream

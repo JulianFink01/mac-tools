@@ -121,6 +121,7 @@ enum AppInventory {
 
 @MainActor
 final class AppManagerStore: ObservableObject {
+    static let shared = AppManagerStore()
     @Published private(set) var apps: [InstalledApp] = []
     @Published private(set) var plan: AppRemovalPlan?
     @Published private(set) var busy = false

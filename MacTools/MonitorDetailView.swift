@@ -45,7 +45,7 @@ struct MemoryPressureIndicator: View {
                     Rectangle().fill(color).frame(width: 3, height: 30).offset(y: -15)
                         .rotationEffect(.degrees(-90 + position * 180))
                 }
-            }.frame(width: 84, height: 84).frame(height: 48, alignment: .top).clipped()
+            }.frame(width: 84, height: 84).padding(5).frame(height: 52, alignment: .top).clipped()
             Text(label).font(.caption.weight(.semibold)).foregroundStyle(color)
             Text("Speicherdruck").font(.caption2).foregroundStyle(.secondary)
         }.accessibilityElement(children: .ignore).accessibilityLabel("Speicherdruck: " + label)

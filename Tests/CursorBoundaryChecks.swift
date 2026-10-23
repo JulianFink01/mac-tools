@@ -1,6 +1,15 @@
 import AppKit
 @main struct CursorBoundaryChecks {
     static func main() {
+        // A live event stream owns immediate exits. The position fallback only
+        // takes over after delivery stops, even after a long time in the source.
+        for tick in 1...36_000 {
+            let now = Double(tick) / 30
+            precondition(!PinnedCursorRecovery.shouldSample(now:now,lastMotion:now-0.008))
+        }
+        precondition(!PinnedCursorRecovery.shouldSample(now:21.05,lastMotion:21))
+        precondition(PinnedCursorRecovery.shouldSample(now:21.15,lastMotion:21))
+        precondition(PinnedCursorRecovery.shouldSample(now:3600,lastMotion:21))
         var gate = PinnedCursorEntryGate()
         for _ in 0..<10_000 {
             gate.returned(inside:false)

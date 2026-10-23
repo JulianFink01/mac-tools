@@ -69,8 +69,12 @@ final class WindowPinController: ObservableObject {
             self?.refreshAccessibilityPermission()
         } }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-            guard let context else { return OSStatus(eventNotHandledErr) }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            var id = EventHotKeyID()
+            guard GetEventParameter(event,EventParamName(kEventParamDirectObject),EventParamType(typeEventHotKeyID),nil,
+                MemoryLayout<EventHotKeyID>.size,nil,&id) == noErr,
+                id.signature == 0x4D544F50, id.id == 1 else { return OSStatus(eventNotHandledErr) }
             let controller = Unmanaged<WindowPinController>.fromOpaque(context).takeUnretainedValue()
             Task { @MainActor in controller.performShortcutAction() }
             return noErr

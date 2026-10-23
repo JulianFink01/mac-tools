@@ -7,7 +7,7 @@ struct DiskDashboardView: View {
     @ObservedObject var security: SecurityScanStore
     @ObservedObject private var actions = FileActions.shared
     @ObservedObject private var automatic = AutomaticScans.shared
-    @StateObject private var fileBrowser = FileBrowserStore()
+    @ObservedObject private var fileBrowser = FileBrowserStore.shared
     @State private var filePage = 0
     @State private var folderPage = 0
     @State private var largestPage = 0
@@ -30,9 +30,20 @@ struct DiskDashboardView: View {
     private let tabs = ["Übersicht", "Dateien & Ordner", "Duplikate", "Virenscan", "Warnungen"]
     private let colors: [Color] = [.cyan, .purple, .orange, .green, .pink, .blue, .gray]
 
+    private func tabIcon(_ tab: String) -> String {
+        switch tab {
+        case "Übersicht": return "chart.bar.xaxis"
+        case "Dateien & Ordner": return "folder"
+        case "Duplikate": return "square.on.square"
+        case "Virenscan": return "shield"
+        default: return "exclamationmark.triangle"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+            ToolTabBar(selection: $navigation.diskTab, options: tabs.map { ToolTab(value: $0, title: $0, icon: tabIcon($0)) }, accessibilityName: "Disk & Sicherheit")
             if tab == "Übersicht" {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -142,7 +153,7 @@ struct DiskDashboardView: View {
         case "Dateien & Ordner": return "Entdecke große Dateien und finde heraus, welche Ordner den meisten Platz belegen."
         case "Duplikate": return "Vergleiche identische Dateien und bereinige die Kopien, die du nicht mehr brauchst."
         case "Virenscan": return "Prüfe deine Dateien auf bekannte Bedrohungen und sieh, ob etwas deine Aufmerksamkeit braucht."
-        case "Warnungen": return "Alle Hinweise zu Speicher, Virenfunden und Scanproblemen an einem Ort."
+        case "Warnungen": return "Kritische Meldungen zu Speicher und Sicherheit."
         default: return "Sieh, was deinen Speicher belegt, und behalte die Sicherheit deiner Dateien im Blick."
         }
     }
@@ -489,28 +500,19 @@ struct DiskDashboardView: View {
     }
 
     private func coverage(_ result: DiskScanResult) -> some View {
-        let actionable = result.omissions?.unavailable ?? (result.warningSamples.contains { !$0.contains("während des Scans verändert") && !$0.contains("Nur in der Cloud") } ? result.skipped : 0)
-        return Group {
-            if result.reachedLimit || actionable > 0 {
-                panel(result.reachedLimit ? "Älteres Teilergebnis" : "Nicht lesbare Dateien") {
-                    if result.reachedLimit { Text("Dieser ältere Scan hatte eine Dateigrenze. Neue Scans erfassen den gesamten gewählten Bereich.").font(.caption) }
-                    if actionable > 0 {
+        Group {
+            if result.skipped > 0 || result.reachedLimit {
+                DisclosureGroup("Scan-Details · \(result.skipped.formatted()) Dateien nicht vollständig geprüft") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Einzelne geschützte oder während des Scans geänderte Dateien sind kein kritischer Befund. Diese Dateien werden bei der automatischen Bereinigung ausgelassen.")
+                        if result.reachedLimit { Text("Dieses ältere Ergebnis hatte eine Dateigrenze. Neue Scans erfassen den gesamten gewählten Bereich.") }
+                        ForEach(result.warningSamples, id: \.self) { Text($0).textSelection(.enabled) }
                         HStack {
                             Button("Zugriff prüfen") { store.checkAccess() }.disabled(store.isCheckingAccess)
                             Button("Festplattenvollzugriff") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!) }
                         }
-                        if !store.accessStatus.isEmpty { Text(store.accessStatus).font(.caption) }
-                        DisclosureGroup("\(actionable.formatted()) Zugriffsprobleme · Details") {
-                            ForEach(result.warningSamples, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
-                        }
-                    }
-                }.foregroundStyle(.orange)
-            } else if result.skipped > 0 {
-                DisclosureGroup("Scan-Informationen") {
-                    if let omitted = result.omissions {
-                        Text("\(omitted.changing.formatted()) während des Scans geänderte Dateien · \(omitted.cloudOnly.formatted()) Cloud-Dateien ohne lokale Inhalte.")
-                    } else { Text("Dieser ältere Scan enthält übersprungene Inhaltsprüfungen. Die gespeicherten Beispiele zeigen laufend geänderte Dateien; eine genaue Aufteilung wurde damals nicht gespeichert.") }
-                    Text("Diese Dateien werden bei der automatischen Bereinigung ausgelassen. Kein Eingriff nötig.")
+                        if !store.accessStatus.isEmpty { Text(store.accessStatus) }
+                    }.padding(.top, 8)
                 }.font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -545,17 +547,19 @@ struct DiskDashboardView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text(diskBytes(file.bytes)).font(.callout.monospacedDigit().bold())
-                    .help("Logische Dateigröße. Eine virtuelle Sparse-Platte kann deutlich weniger Speicher belegen.")
-                if file.bytes > 1_048_576 {
+                Text(diskBytes(file.displayedBytes)).font(.callout.monospacedDigit().bold())
+                    .help(file.isManagedVirtualDisk ? "Tatsächlich belegter Speicher. Virtuelle Maximalgröße: " + diskBytes(file.bytes) : "Logische Dateigröße")
+                if file.isManagedVirtualDisk {
+                    Label("Virtuelle Festplatte · geschützt", systemImage: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                } else if file.bytes > 1_048_576 {
                     Text("Belegt: " + diskBytes(file.allocatedBytes)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         .help("Von macOS gemeldete Dateibelegung beim Scan. Die logische Dateigröße ist kein Maß dafür, wie viel Speicher das Entfernen freigibt.")
                 }
-                Text(percent(file.bytes, of: total)).font(.caption2).foregroundStyle(.secondary)
+                if !file.isManagedVirtualDisk { Text(percent(file.bytes, of: total)).font(.caption2).foregroundStyle(.secondary) }
             }
             Button { preview = FilePreviewSelection(files: [file]) } label: { Image(systemName: "eye") }
                 .help("Dateivorschau")
-            if allowTrash {
+            if allowTrash && !file.isManagedVirtualDisk {
                 Button {
                     pendingTrash = [file]; confirmTrash = true
                 } label: { Image(systemName: "trash") }

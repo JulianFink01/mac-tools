@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 
 /// Native input occurs on the pinned original's private display. ScreenCaptureKit
 /// includes the native cursor; this observer only handles escape and view edges.
@@ -17,6 +18,11 @@ final class PinnedWindowCursor {
     private var activationObserver: NSObjectProtocol?
     private var lastSourcePoint = CGPoint.zero
     private var entryGate = PinnedCursorEntryGate()
+    private var lastMotionAt: TimeInterval = 0
+    private var boundaryTimer: Timer?
+    private var escapeHotKey: EventHotKeyRef?
+    private var escapeHandler: EventHandlerRef?
+    private static let escapeSignature: OSType = 0x4D544543 // MTEC
     private lazy var forwardingSource: CGEventSource? = {
         let source = CGEventSource(stateID:.combinedSessionState)
         source?.localEventsSuppressionInterval = 0
@@ -47,9 +53,14 @@ final class PinnedWindowCursor {
         guard entryGate.admit(inside:mapped != nil,explicit:explicitInput), displayID() != 0,
               CGDisplayBounds(displayID()).contains(CGPoint(x:frame.midX,y:frame.midY)),
               let view, let point = mapped else { return false }
-        guard installTap() else { onIssue?("Die native Maussteuerung konnte nicht gestartet werden. Prüfe den Bedienungshilfen-Zugriff."); return false }
+        guard installEscapeKey() else { onIssue?("Escape konnte für die Fensteransicht nicht reserviert werden. Die Maussteuerung wurde nicht gestartet."); return false }
+        guard installTap() else {
+            removeEscapeKey()
+            onIssue?("Die native Maussteuerung konnte nicht gestartet werden. Prüfe den Bedienungshilfen-Zugriff."); return false
+        }
         previousPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         active = true; lastSourcePoint = point
+        lastMotionAt = ProcessInfo.processInfo.systemUptime
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,object:nil,queue:.main) { [weak self] notice in
             guard let app = notice.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, let self, self.active else { return }
             // Switching applications must immediately return the physical cursor.
@@ -68,6 +79,7 @@ final class PinnedWindowCursor {
         let activationEnd = ProcessInfo.processInfo.systemUptime
         #endif
         movePointer(to:point)
+        startBoundaryCheck()
         #if DEBUG
         let pointerEnd = ProcessInfo.processInfo.systemUptime
         view.setAccessibilityHelp(pointerStatus + String(format:"; raise=%.1f ms, activate=%.1f ms, move=%.1f ms",
@@ -77,8 +89,10 @@ final class PinnedWindowCursor {
         return true
     }
     private func installTap() -> Bool {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: true); return true }
-        let types: [CGEventType] = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.otherMouseDragged,.leftMouseDown,.rightMouseDown,.leftMouseUp,.rightMouseUp,.keyDown]
+        if let tap, CFMachPortIsValid(tap) { CGEvent.tapEnable(tap: tap, enable: true); return true }
+        removeTap()
+        // Keep keyboard/secure-input changes separate from boundary observation.
+        let types: [CGEventType] = [.mouseMoved,.leftMouseDragged,.rightMouseDragged,.otherMouseDragged]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask, callback: { _, type, event, context in
             if let context { Unmanaged<PinnedWindowCursor>.fromOpaque(context).takeUnretainedValue().observe(type: type, event: event) }
@@ -96,13 +110,10 @@ final class PinnedWindowCursor {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }; return
         }
-        if type == .keyDown {
-            if event.getIntegerValueField(.keyboardEventKeycode) == 53 { leave() }
-            return
-        }
         // Button events remain completely native. Only actual pointer motion
         // decides whether to leave the view, never a queued click location.
         guard [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(type) else { return }
+        lastMotionAt = ProcessInfo.processInfo.systemUptime
         let frame = sourceFrame()
         lastSourcePoint = event.location
         let delta = CGPoint(x:CGFloat(event.getIntegerValueField(.mouseEventDeltaX)), y:CGFloat(event.getIntegerValueField(.mouseEventDeltaY)))
@@ -114,6 +125,57 @@ final class PinnedWindowCursor {
         if let outside = PinnedCursorGeometry.exitPoint(at: current, delta: delta, frame: frame) {
             lastSourcePoint = outside; leave()
         }
+    }
+    private func installEscapeKey() -> Bool {
+        if escapeHotKey != nil { return true }
+        var spec = EventTypeSpec(eventClass:OSType(kEventClassKeyboard),eventKind:UInt32(kEventHotKeyPressed))
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _,event,context in
+            guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            var id = EventHotKeyID()
+            guard GetEventParameter(event,EventParamName(kEventParamDirectObject),EventParamType(typeEventHotKeyID),nil,
+                MemoryLayout<EventHotKeyID>.size,nil,&id) == noErr,
+                id.signature == PinnedWindowCursor.escapeSignature, id.id == 1 else { return OSStatus(eventNotHandledErr) }
+            let cursor = Unmanaged<PinnedWindowCursor>.fromOpaque(context).takeUnretainedValue()
+            cursor.leave()
+            return noErr
+        },1,&spec,Unmanaged.passUnretained(self).toOpaque(),&escapeHandler)
+        guard installed == noErr else { return false }
+        let registered = RegisterEventHotKey(53,0,EventHotKeyID(signature:Self.escapeSignature,id:1),
+            GetApplicationEventTarget(),0,&escapeHotKey)
+        if registered != noErr { removeEscapeKey(); return false }
+        return true
+    }
+    private func removeEscapeKey() {
+        if let escapeHotKey { UnregisterEventHotKey(escapeHotKey) }; escapeHotKey = nil
+        if let escapeHandler { RemoveEventHandler(escapeHandler) }; escapeHandler = nil
+    }
+    private func startBoundaryCheck() {
+        boundaryTimer?.invalidate()
+        // Only while controlling a source. No AX calls, drawing or recurring
+        // warps: physical position remains available if the event tap goes quiet.
+        let timer = Timer(timeInterval:1 / 30,repeats:true) { [weak self] _ in self?.checkBoundary() }
+        boundaryTimer = timer
+        RunLoop.main.add(timer,forMode:.common)
+    }
+    private func checkBoundary() {
+        guard active else { return }
+        guard let view, let window = view.window, window.isVisible else { leave(); return }
+        if let tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap:tap) {
+            // Normal boundary exits continue to use immediate motion callbacks.
+        } else if !installTap() {
+            leave(); return
+        }
+        // The fallback must not race a live motion callback during a handoff.
+        // Only take over after the observer has actually gone quiet.
+        guard PinnedCursorRecovery.shouldSample(now:ProcessInfo.processInfo.systemUptime,lastMotion:lastMotionAt),
+              let point = CGEvent(source:nil)?.location else { return }
+        lastSourcePoint = point
+        if PinnedCursorGeometry.exitPoint(at:point,delta:.zero,frame:sourceFrame()) != nil { leave() }
+    }
+    private func removeTap() {
+        if let tap { CGEvent.tapEnable(tap:tap,enable:false); CFMachPortInvalidate(tap) }
+        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(),runLoopSource,.commonModes) }
+        tap = nil; runLoopSource = nil
     }
     private var scale: CGFloat {
         guard let view else { return 1 }
@@ -167,6 +229,8 @@ final class PinnedWindowCursor {
     func leave(restoreFocus: Bool = true) {
         guard active else { return }
         active = false
+        boundaryTimer?.invalidate(); boundaryTimer = nil
+        removeEscapeKey()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }; activationObserver = nil
         if let view, let window = view.window {
@@ -210,11 +274,18 @@ final class PinnedWindowCursor {
     }
     func stop() {
         leave()
-        if let tap { CGEvent.tapEnable(tap:tap,enable:false); CFMachPortInvalidate(tap) }
-        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(),runLoopSource,.commonModes) }
-        tap = nil; runLoopSource = nil
+        removeTap()
     }
-    deinit { if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }; if let tap { CFMachPortInvalidate(tap) } }
+    deinit {
+        boundaryTimer?.invalidate()
+        removeEscapeKey()
+        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        removeTap()
+    }
+}
+
+enum PinnedCursorRecovery {
+    static func shouldSample(now: TimeInterval, lastMotion: TimeInterval) -> Bool { now - lastMotion >= 0.1 }
 }
 
 /// Escape/app switching waits for an actual exit; boundary crossing does not

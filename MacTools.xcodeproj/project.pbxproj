@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B12345000000000000000201 /* MacToolsMCP.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12345000000000000000101 /* MacToolsMCP.swift */; };
+		B12345000000000000000200 /* LocalToolBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12345000000000000000100 /* LocalToolBridge.swift */; };
+        AC0000030000000000000001 = {isa = PBXBuildFile; fileRef = AC0000040000000000000001; };
+        AC0000010000000000000001 = {isa = PBXBuildFile; fileRef = AC0000020000000000000001; };
 		0A0001010000000000000001 /* AspectMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000010000000000000001 /* AspectMode.swift */; };
 		0A0001020000000000000001 /* WallpaperVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000020000000000000001 /* WallpaperVideo.swift */; };
 		0A0001030000000000000001 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000030000000000000001 /* SettingsStore.swift */; };
@@ -46,9 +50,30 @@
 		0A0001260000000000000001 /* PinnedWindowCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000260000000000000001; };
 		0A0001270000000000000001 /* VirtualWindowDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A0000270000000000000001; };
 0A0001290000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000290000000000000001; };
+        0A00012A0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002A0000000000000001; };
+        0A00012B0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002B0000000000000001; };
+        0A00012C0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002C0000000000000001; };
+        0A00012D0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002D0000000000000001; };
+        0A00012E0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002E0000000000000001; };
+        0A00012F0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00002F0000000000000001; };
+        0A0001300000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000300000000000000001; };
+        0A0001310000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000310000000000000001; };
+        0A0001320000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000320000000000000001; };
+        0A0001330000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000330000000000000001; };
+        0A0001340000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000340000000000000001; };
+        0A0001350000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000350000000000000001; };
+        0A0001360000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000360000000000000001; };
+        0A0001370000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000370000000000000001; };
+        0A0001380000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000380000000000000001; };
+        0A0001390000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000390000000000000001; };
+        0A00013A0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00003A0000000000000001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		B12345000000000000000101 /* MacToolsMCP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacToolsMCP.swift; sourceTree = "<group>"; };
+		B12345000000000000000100 /* LocalToolBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalToolBridge.swift; sourceTree = "<group>"; };
+        AC0000040000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexFeaturesView.swift; sourceTree = "<group>"; };
+        AC0000020000000000000001 = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/Mermaid; sourceTree = SOURCE_ROOT; };
 		0A0000010000000000000001 /* AspectMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AspectMode.swift; sourceTree = "<group>"; };
 		0A0000020000000000000001 /* WallpaperVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperVideo.swift; sourceTree = "<group>"; };
 		0A0000030000000000000001 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
@@ -91,6 +116,23 @@
 		0A0000270000000000000001 /* VirtualWindowDisplay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = VirtualWindowDisplay.m; sourceTree = "<group>"; };
 		0A0000280000000000000001 /* MacToolsNative.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MacToolsNative.h; sourceTree = "<group>"; };
 0A0000290000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScanPanel.swift; sourceTree = "<group>"; };
+        0A00002A0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConnection.swift; sourceTree = "<group>"; };
+        0A00002B0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexStore.swift; sourceTree = "<group>"; };
+        0A00002C0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexChatsView.swift; sourceTree = "<group>"; };
+        0A00002D0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingStore.swift; sourceTree = "<group>"; };
+        0A00002E0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDesktopConnection.swift; sourceTree = "<group>"; };
+        0A00002F0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCommand.swift; sourceTree = "<group>"; };
+        0A0000300000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContainerStore.swift; sourceTree = "<group>"; };
+        0A0000310000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsView.swift; sourceTree = "<group>"; };
+        0A0000320000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexComposerModels.swift; sourceTree = "<group>"; };
+        0A0000330000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexComposerControls.swift; sourceTree = "<group>"; };
+        0A0000340000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickPanelWidgets.swift; sourceTree = "<group>"; };
+        0A0000350000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateMCPStore.swift; sourceTree = "<group>"; };
+        0A0000360000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateMCPView.swift; sourceTree = "<group>"; };
+        0A0000370000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexChatImage.swift; sourceTree = "<group>"; };
+        0A0000380000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexMenuStatsView.swift; sourceTree = "<group>"; };
+        0A0000390000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexActivityView.swift; sourceTree = "<group>"; };
+        0A00003A0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMCPClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -126,6 +168,25 @@
 		0A0003020000000000000001 /* MacTools */ = {
 			isa = PBXGroup;
 			children = (
+                0A00002E0000000000000001,
+                B12345000000000000000100,
+                B12345000000000000000101,
+                0A00002F0000000000000001,
+                0A0000300000000000000001,
+                0A0000320000000000000001,
+                0A0000330000000000000001,
+                0A0000340000000000000001,
+                0A0000390000000000000001,
+                0A00003A0000000000000001,
+                0A0000380000000000000001,
+                0A0000370000000000000001,
+                0A0000360000000000000001,
+                0A0000350000000000000001,
+                0A0000310000000000000001,
+                0A00002D0000000000000001,
+                0A00002A0000000000000001,
+                0A00002B0000000000000001,
+                0A00002C0000000000000001,
                 0A0000290000000000000001,
 				0A00000C0000000000000001 /* MacToolsApp.swift */,
                 0A00001A0000000000000001,
@@ -139,6 +200,7 @@
                 0A0000170000000000000001,
 				0A0000160000000000000001 /* ScreenSaverSupport.swift */,
 				0A0000150000000000000001 /* MacToolsView.swift */,
+                AC0000040000000000000001,
 				0A0000140000000000000001 /* SecurityScanner.swift */,
 				0A0000130000000000000001 /* DiskDashboardView.swift */,
 				0A0000120000000000000001 /* DiskScanStore.swift */,
@@ -238,6 +300,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A00010D0000000000000001 /* Assets.xcassets in Resources */,
+                AC0000010000000000000001,
                 0A0001190000000000000001,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -249,6 +312,25 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                0A00012E0000000000000001,
+                B12345000000000000000200,
+                B12345000000000000000201,
+                0A00012F0000000000000001,
+                0A0001300000000000000001,
+                0A0001320000000000000001,
+                0A0001330000000000000001,
+                0A0001340000000000000001,
+                0A0001390000000000000001,
+                0A00013A0000000000000001,
+                0A0001380000000000000001,
+                0A0001370000000000000001,
+                0A0001360000000000000001,
+                0A0001350000000000000001,
+                0A0001310000000000000001,
+                0A00012D0000000000000001,
+                0A00012A0000000000000001,
+                0A00012B0000000000000001,
+                0A00012C0000000000000001,
                 0A0001290000000000000001,
 				0A0001010000000000000001 /* AspectMode.swift in Sources */,
 				0A0001020000000000000001 /* WallpaperVideo.swift in Sources */,
@@ -273,6 +355,7 @@
                 0A0001170000000000000001,
 				0A0001160000000000000001 /* ScreenSaverSupport.swift in Sources */,
 				0A0001150000000000000001 /* MacToolsView.swift in Sources */,
+                AC0000030000000000000001,
 				0A0001140000000000000001 /* SecurityScanner.swift in Sources */,
 				0A0001130000000000000001 /* DiskDashboardView.swift in Sources */,
 				0A0001120000000000000001 /* DiskScanStore.swift in Sources */,
@@ -411,17 +494,18 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 45;
 				DEVELOPMENT_TEAM = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MacTools/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = MacTools/MacTools.entitlements;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.2.1;
+				MARKETING_VERSION = 0.2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.LiveWallpaper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PRODUCT_TYPE = "com.apple.product-type.application";
@@ -436,18 +520,19 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 45;
 				DEVELOPMENT_TEAM = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MacTools/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = MacTools/MacTools.entitlements;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.2.1;
+				MARKETING_VERSION = 0.2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.julianfink.LiveWallpaper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PRODUCT_TYPE = "com.apple.product-type.application";

@@ -45,7 +45,7 @@ final class FileActions: ObservableObject {
                         continue
                     }
                     do {
-                        try Self.validate(file)
+                        try Self.validateForRemoval(file)
                         try FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
                         moved.append(file.path)
                     } catch { failures.append("\(file.url.lastPathComponent): \(error.localizedDescription)") }
@@ -61,6 +61,10 @@ final class FileActions: ObservableObject {
         }
     }
 
+    nonisolated static func validateForRemoval(_ file: DiskFile) throws {
+        guard !file.isManagedVirtualDisk else { throw FileActionError.managedDisk }
+        try validate(file)
+    }
     nonisolated static func validate(_ file: DiskFile) throws {
         var info = stat()
         guard lstat(file.path, &info) == 0,
@@ -74,8 +78,13 @@ final class FileActions: ObservableObject {
 }
 
 private enum FileActionError: LocalizedError {
-    case changed
-    var errorDescription: String? { "Datei fehlt oder wurde seit dem Scan verändert. Bitte erneut scannen." }
+    case changed, managedDisk
+    var errorDescription: String? {
+        switch self {
+        case .changed: return "Datei fehlt oder wurde seit dem Scan verändert. Bitte erneut scannen."
+        case .managedDisk: return "Verwaltete virtuelle Festplatte. Bitte Daten über Docker oder die zugehörige VM-App bereinigen."
+        }
+    }
 }
 
 struct FilePreviewSelection: Identifiable {

@@ -19,8 +19,13 @@ struct MacToolsApp: App {
             CommandGroup(after: .appInfo) {
                 Button("MacTools öffnen") { appDelegate.presentMainWindow() }
                     .keyboardShortcut("o")
+                Button("Alle Werkzeuge") { appDelegate.presentMainWindow(section: .tools) }
+                Button("Container öffnen") { appDelegate.presentMainWindow(section: .containers) }
                 Button("Disk & Sicherheit öffnen") { appDelegate.presentMainWindow(section: .disk) }
                     .keyboardShortcut("d")
+                Button("Neues Codex-Chatfenster") { CodexPopupController.shared.show() }
+                Button("Codex-Statistik") { SettingsStore.shared.setPinned(.codex, enabled: true); NotificationCenter.default.post(name: .showCodexMenuStats, object: nil) }
+                Button("Codex-Chats öffnen") { appDelegate.presentMainWindow(section: .codex) }
                 Button("Systemmonitor öffnen") { appDelegate.presentMainWindow(section: .monitoring) }
                 Button("Schnellaktionen") { NotificationCenter.default.post(name: .showMacToolsQuickPanel, object: nil) }
                 Button("Live-Hintergrund öffnen") { appDelegate.presentMainWindow(section: .wallpaper) }

@@ -1,9 +1,129 @@
 import Foundation
+import AppKit
 
 @main
 struct MonitoringPersistenceChecks {
     @MainActor
     static func main() async throws {
+        let privateDomain = "MacTools.PrivateVisibility." + UUID().uuidString
+        let privateDefaults = UserDefaults(suiteName: privateDomain)!
+        privateDefaults.set(["InfraPilot", "AlphaTrader", "Codex-Chats"],forKey:"sidebarFavoriteTools")
+        privateDefaults.set(["InfraPilot", "AlphaTrader", "Codex-Chats"],forKey:"sidebarFavoriteOrder")
+        privateDefaults.set(["InfraPilot", "AlphaTrader", "Codex-Chats"],forKey:"pinnedMenuTools")
+        let publicSettings = SettingsStore(defaults:privateDefaults)
+        precondition(!PrivateMCPAccess.enabled && !publicSettings.sidebarFavorites.contains(.infrapilot) && !publicSettings.sidebarFavorites.contains(.alphaTrader))
+        precondition(publicSettings.pinnedTools == [.codex])
+        publicSettings.setPinned(.infrapilot,enabled:true); publicSettings.setSidebarFavorite(.alphaTrader,enabled:true)
+        precondition(publicSettings.pinnedTools == [.codex] && !publicSettings.sidebarTools.contains(.alphaTrader))
+        privateDefaults.removePersistentDomain(forName:privateDomain)
+        print("PASS: public build hides private integrations even with copied private favorites and rejects enabling them")
+        let warning = { (title: String) in ScanWarning(id: UUID(), date: Date(), title: title, detail: "fixture").isImportant }
+        precondition(!warning("Nicht lesbare Dateien") && !warning("Disk-Scan fehlgeschlagen") && warning("Verdächtige Dateien gefunden") && warning("Kritisch wenig Speicher"))
+        let pinDomain = "MacTools.ToolPins." + UUID().uuidString
+        let pinDefaults = UserDefaults(suiteName: pinDomain)!
+        let pinSettings = SettingsStore(defaults: pinDefaults)
+        pinSettings.setPinned(.codex, enabled: true); pinSettings.setPinned(.containers, enabled: true)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedTools == [.codex, .containers])
+        pinSettings.setPinned(.codex, enabled: false)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedTools == [.containers])
+        pinSettings.quickPanelCompactVolume = true; pinSettings.quickPanelEventTabs = false
+        precondition(SettingsStore(defaults: pinDefaults).quickPanelCompactVolume && !SettingsStore(defaults: pinDefaults).quickPanelEventTabs)
+        pinSettings.quickPanelWidgets = [.cpu, .codex, .volume]
+        pinSettings.moveQuickWidget(.volume, to: 0)
+        precondition(SettingsStore(defaults: pinDefaults).quickPanelWidgets == [.volume, .cpu, .codex])
+        pinSettings.quickPanelWidgets = []
+        precondition(SettingsStore(defaults: pinDefaults).quickPanelWidgets.isEmpty)
+        pinSettings.setSidebarFavorite(.windows, enabled: true)
+        precondition(SettingsStore(defaults: pinDefaults).sidebarTools.contains(.windows))
+        let eventPages = QuickPanelCardLayout.eventPages(ids: ["infra", "trader", "docker1", "docker2", "docker3"], containerIDs: ["docker1", "docker2", "docker3"], rows: 4)
+        precondition(eventPages == [["infra", "trader", "docker1", "docker2"], ["docker3"]])
+        let spareEvents = QuickPanelCardLayout.counts(widgets: [.liveFeed], height: 500, multipleRunningChats: false, eventCount: 8, compactVolume: false, eventTabs: false)
+        precondition(spareEvents.events == 4)
+        for section in ToolNavigation.Section.pinnable { pinSettings.setSidebarFavorite(section, enabled: false) }
+        precondition(SettingsStore(defaults: pinDefaults).sidebarTools.isEmpty)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedTools == [.containers], "Sidebar preferences must be independent from macOS menu pins")
+        pinSettings.setSidebarFavorite(.codex, enabled: true); pinSettings.setSidebarFavorite(.apps, enabled: true)
+        pinSettings.moveSidebar(.apps, before: .codex)
+        precondition(SettingsStore(defaults: pinDefaults).sidebarFavorites == [.apps, .codex])
+        let favoriteFolder = "/tmp/MacTools-FolderFixture"
+        pinSettings.setSidebarFolder(favoriteFolder, enabled: true)
+        pinSettings.moveSidebarEntry(.folder(favoriteFolder), before: .tool(.apps))
+        precondition(SettingsStore(defaults: pinDefaults).sidebarEntries == [.folder(favoriteFolder), .tool(.apps), .tool(.codex)])
+        precondition(!pinSettings.pinnedCodexFolders.contains(favoriteFolder), "App folder favorite must not create a macOS menu item")
+        pinSettings.setChatPinned("test-pinned-chat", enabled: true); pinSettings.setChatPinned("test-pinned-chat", enabled: true)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedCodexChats == ["test-pinned-chat"])
+        pinSettings.setChatPinned("test-pinned-chat", enabled: false)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedCodexChats.isEmpty)
+        pinSettings.pinCodexFolder(favoriteFolder)
+        pinSettings.setSidebarFolder(favoriteFolder, enabled: false)
+        precondition(SettingsStore(defaults: pinDefaults).pinnedCodexFolders.contains(favoriteFolder), "Removing an App favorite must preserve the separate macOS pin")
+        _ = NSApplication.shared
+        let firstWindowDomain = "MacTools.WindowQA." + UUID().uuidString, secondWindowDomain = "MacTools.WindowQA." + UUID().uuidString
+        let firstWindowDefaults = UserDefaults(suiteName: firstWindowDomain)!, secondWindowDefaults = UserDefaults(suiteName: secondWindowDomain)!
+        firstWindowDefaults.set(true, forKey: "alwaysOnTop"); secondWindowDefaults.set(true, forKey: "alwaysOnTop")
+        let mainSelection = CodexStore.shared.selectedID
+        let firstWindow = CodexChatWindowController(id: UUID(), chatID: "first-window", defaults: firstWindowDefaults)
+        let secondWindow = CodexChatWindowController(id: UUID(), chatID: "second-window", defaults: secondWindowDefaults)
+        precondition(firstWindow.store !== secondWindow.store && firstWindow.store !== CodexStore.shared)
+        firstWindow.store.drafts["first-window"] = "erster Entwurf"; secondWindow.store.drafts["second-window"] = "zweiter Entwurf"
+        firstWindow.store.workingDirectory = "/tmp/first-window"; secondWindow.store.workingDirectory = "/tmp/second-window"
+        firstWindow.store.enqueue("nur im ersten Fenster", in: "first-window")
+        precondition(secondWindow.store.queuedMessages.isEmpty && firstWindow.store.queuedMessages["first-window"]?.count == 1)
+        firstWindow.store.newChat()
+        precondition(firstWindow.store.hasPendingWork, "Closing a window must preserve queued work for a previously selected chat")
+        precondition(secondWindow.store.selectedID == "second-window" && CodexStore.shared.selectedID == mainSelection)
+        precondition(secondWindow.store.drafts["second-window"] == "zweiter Entwurf" && secondWindow.store.workingDirectory == "/tmp/second-window")
+        firstWindow.alwaysOnTop = false
+        precondition(firstWindow.window?.level == .normal && secondWindow.window?.level == .floating && secondWindow.alwaysOnTop)
+        let restoredWindowStore = CodexStore(defaults: secondWindowDefaults, followAllChats: false)
+        precondition(restoredWindowStore.drafts["second-window"] == "zweiter Entwurf")
+        firstWindow.stop(); secondWindow.stop(); firstWindow.window?.close(); secondWindow.window?.close()
+        firstWindowDefaults.removePersistentDomain(forName: firstWindowDomain); secondWindowDefaults.removePersistentDomain(forName: secondWindowDomain)
+        print("PASS: independent native chat windows, selections, drafts, queues, folders and per-window floating levels; main selection unchanged")
+        let nativeItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        var nativeRemoved = 0
+        let visibility = StatusItemVisibility(item: nativeItem, name: "MacTools.QA." + UUID().uuidString, userRemoval: { true }) {
+            nativeRemoved += 1; pinSettings.setPinned(.containers, enabled: false)
+        }
+        nativeItem.isVisible = false
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(nativeRemoved == 1 && !SettingsStore(defaults: pinDefaults).pinnedTools.contains(.containers))
+        visibility.invalidate(); NSStatusBar.system.removeStatusItem(nativeItem)
+        let nonUserItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        var unexpectedRemoval = false
+        let nonUserVisibility = StatusItemVisibility(item: nonUserItem, name: "MacTools.QA.Internal." + UUID().uuidString, userRemoval: { false }) { unexpectedRemoval = true }
+        nonUserItem.isVisible = false; try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(!unexpectedRemoval, "Internal visibility changes must not erase user pins")
+        nonUserVisibility.invalidate(); NSStatusBar.system.removeStatusItem(nonUserItem)
+        precondition(QuickPanelWidget.rows([.codex, .codexLimit, .cpu], usagePlacement: "chats").first == [.codexLimit, .codex])
+        precondition(QuickPanelWidget.rows([.codexLimit, .codex, .cpu], usagePlacement: "chats").first == [.codexLimit, .codex])
+        let metrics = QuickPanelWidget.rows([.codexLimit, .cpu, .ram, .gpu, .disk], usagePlacement: "metrics")
+        precondition(metrics.map(\.count) == [3, 2], "Five metrics should not produce a clipped fifth column")
+        precondition(QuickPanelCardLayout.page(selectedID: "docker", fallback: 1, ids: ["scan", "audio", "docker"], rows: 1) == 2)
+        precondition(QuickPanelCardLayout.page(selectedID: "docker", fallback: 2, ids: ["audio", "docker"], rows: 1) == 1)
+        precondition(QuickPanelCardLayout.page(selectedID: "docker", fallback: 2, ids: ["audio", "docker"], rows: 2) == 0)
+        precondition(QuickPanelCardLayout.page(selectedID: "gone", fallback: 3, ids: ["audio"], rows: 1) == 0)
+        print("PASS: selected Docker card survives insertion, removal and adaptive row changes")
+        let shared = QuickPanelCardLayout.counts(widgets: [.codexLimit, .codex], height: 144, multipleRunningChats: true, eventCount: 0, compactVolume: false, eventTabs: false, usagePlacement: "chats")
+        precondition(shared.codex == 2, "Both chats use the height already allocated to the large limit chart")
+        let spacious = QuickPanelCardLayout.counts(widgets: [.codex, .liveFeed], height: 400, multipleRunningChats: true, eventCount: 3, compactVolume: false, eventTabs: false)
+        precondition(spacious.codex == 2 && spacious.events == 3)
+        let tight = QuickPanelCardLayout.counts(widgets: [.codex, .liveFeed], height: 240, multipleRunningChats: true, eventCount: 3, compactVolume: false, eventTabs: false)
+        precondition(tight.codex == 2 && tight.events == 1, "Codex receives the only spare row")
+        let oneRunning = QuickPanelCardLayout.counts(widgets: [.codex, .liveFeed], height: 240, multipleRunningChats: false, eventCount: 3, compactVolume: false, eventTabs: false)
+        precondition(oneRunning.codex == 1 && oneRunning.events == 2)
+        let goal = CodexGoal(["objective": "Testziel", "status": "usageLimited", "tokensUsed": 200, "timeUsedSeconds": 335657])!
+        precondition(goal.label == "Zielnutzung begrenzt" && goal.tokens == 200 && goal.budget == nil && !goal.isRunning && goal.durationLabel == "93 Std. 14 Min.")
+        print("PASS: native status-item visibility removal persists; sidebar order survives recreation; visible goal status data")
+        pinDefaults.removePersistentDomain(forName: pinDomain)
+        print("PASS: only critical warnings; menu tool preferences persist and unpin independently")
+        let virtual = DiskFile(path: "/tmp/Docker.raw", bytes: 500_000_000_000, allocatedBytes: 23_800_000_000, modified: nil, identity: "fixture")
+        precondition(virtual.displayedBytes == 23_800_000_000 && virtual.isManagedVirtualDisk)
+        do { try FileActions.validateForRemoval(virtual); fatalError("VM deletion must be blocked before filesystem access") } catch { precondition(error.localizedDescription.contains("virtuelle Festplatte")) }
+        let viewport = VirtualWindowDisplay.surfaceSize(for: CGSize(width: 3440, height: 1440), safeMode: true)
+        precondition(viewport.width <= 1536 && viewport.height <= 960 && abs(viewport.width / viewport.height - 3440.0 / 1440.0) < 0.01)
+        precondition(VirtualWindowDisplay.surfaceSize(for: CGSize(width: 1000, height: 700), safeMode: false) == CGSize(width: 1000, height: 700))
+        print("PASS: widget order/removal persistence; VM physical size and deletion backstop; bounded display geometry")
         let manager = FileManager.default
         let directory = manager.temporaryDirectory.appendingPathComponent("MacTools-persistence-\(UUID().uuidString)")
         let fixture = directory.appendingPathComponent("files")

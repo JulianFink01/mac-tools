@@ -8,7 +8,7 @@ struct ScanWarning: Codable, Identifiable {
     let title: String
     let detail: String
     var isImportant: Bool {
-        !["Disk-Scan unvollständig", "Prüfung mit Einschränkungen", "Testdatei erkannt – Schutzprüfung erfolgreich"].contains(title)
+        title.hasPrefix("Kritisch") || ["Verdächtige Dateien gefunden", "Virenschutz nicht verfügbar"].contains(title)
     }
 }
 
@@ -153,8 +153,8 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
     }
 
     private func inspect(_ result: DiskScanResult) {
-        if result.volumeTotal > 0 && (result.volumeFree < 10_000_000_000 || Double(result.volumeFree) / Double(result.volumeTotal) < 0.1) {
-            warn("Wenig freier Speicher", detail: "Nur noch \(diskBytes(result.volumeFree)) auf dem Volume frei.")
+        if result.volumeTotal > 0 && (result.volumeFree < 2_000_000_000) {
+            warn("Kritisch wenig Speicher", detail: "Nur noch \(diskBytes(result.volumeFree)) auf dem Volume frei.")
         }
         if result.reachedLimit {
             warn("Gesamtscan konnte nicht abgeschlossen werden", detail: "Der Scan wurde vorzeitig begrenzt. Starte die Analyse erneut.")

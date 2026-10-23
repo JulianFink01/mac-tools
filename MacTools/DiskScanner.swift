@@ -10,6 +10,11 @@ struct DiskFile: Identifiable, Codable, Sendable {
     let allocatedBytes: Int64
     let modified: Date?
     let identity: String
+    var isManagedVirtualDisk: Bool {
+        let lower = path.lowercased()
+        return lower.hasSuffix("/docker.raw") || lower.contains(".sparsebundle/") || [".qcow", ".qcow2", ".vdi", ".vmdk", ".vhd", ".vhdx", ".sparseimage"].contains(where: lower.hasSuffix)
+    }
+    var displayedBytes: Int64 { isManagedVirtualDisk ? allocatedBytes : bytes }
     var url: URL { URL(fileURLWithPath: path, isDirectory: false) }
     static func snapshot(at url: URL) throws -> DiskFile {
         var info = stat()

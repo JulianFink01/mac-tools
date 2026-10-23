@@ -3,11 +3,24 @@ import SwiftUI
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
     case general = "Allgemein"
+    case quickPanel = "Schnellansicht"
+    case navigation = "Navigation"
     case monitoring = "Systemmonitor"
     case disk = "Disk & Sicherheit"
     case wallpaper = "Live-Hintergrund"
     case windows = "Fenster vorn halten"
     var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .quickPanel: return "rectangle.grid.1x2"
+        case .navigation: return "sidebar.left"
+        case .monitoring: return "waveform.path.ecg"
+        case .disk: return "internaldrive"
+        case .wallpaper: return "play.rectangle"
+        case .windows: return "pin"
+        }
+    }
 }
 
 struct SettingsView: View {
@@ -16,17 +29,18 @@ struct SettingsView: View {
     @ObservedObject private var disk = DiskScanStore.shared
     @ObservedObject private var security = SecurityScanStore.shared
     @ObservedObject private var automatic = AutomaticScans.shared
+    @ObservedObject private var popup = CodexPopupController.shared
     @ObservedObject private var pin = WindowPinController.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             ToolPageHeader(title: "Einstellungen", description: "Passe MacTools und jedes deiner Tools gezielt an.", icon: "gearshape")
-            Picker("Einstellungsbereich", selection: $selectedCategory) {
-                ForEach(SettingsCategory.allCases) { category in Text(category.rawValue).tag(category) }
-            }.pickerStyle(.segmented)
+            ToolTabBar(selection: $selectedCategory, options: SettingsCategory.allCases.map { ToolTab(value: $0, title: $0.rawValue, icon: $0.icon) }, accessibilityName: "Einstellungen")
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     switch selectedCategory {
+                    case .quickPanel: QuickPanelSettingsView()
+                    case .navigation: navigationSettings
                     case .general: generalSettings
                     case .monitoring: monitorSettings
                     case .disk: diskSettings
@@ -37,6 +51,24 @@ struct SettingsView: View {
             }
         }.padding(24).background(Color(nsColor: .windowBackgroundColor))
             .onAppear { settings.refreshStartAtLoginStatus(); pin.refreshAccessibilityPermission() }
+    }
+
+    private var navigationSettings: some View {
+        ToolSettingsCard(title: "Deine Favoriten", description: "Wähle unabhängig, welche Tools links in der App und oben in der macOS-Menüleiste erscheinen.") {
+            Toggle("MacTools-Hauptsymbol in der Menüleiste", isOn: $settings.showMainMenuIcon)
+            Text("Ziehe die Favoriten direkt in der Seitenleiste in deine Reihenfolge. Cmd-Ziehen aus der macOS-Menüleiste entfernt den jeweiligen Eintrag dauerhaft.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Divider()
+            HStack { Text("Werkzeug"); Spacer(); Text("Seitenleiste").frame(width: 100); Text("Menüleiste").frame(width: 100) }.font(.caption).foregroundStyle(.secondary)
+            ForEach(ToolNavigation.Section.pinnable) { tool in
+                HStack {
+                    Label(tool.rawValue, systemImage: tool.icon)
+                    Spacer()
+                    Toggle(tool.rawValue + " in Seitenleiste", isOn: Binding(get: { settings.sidebarTools.contains(tool) }, set: { settings.setSidebarFavorite(tool, enabled: $0) })).labelsHidden().toggleStyle(.switch).controlSize(.small).frame(width: 100)
+                    Toggle(tool.rawValue + " in Menüleiste", isOn: Binding(get: { settings.pinnedTools.contains(tool) }, set: { settings.setPinned(tool, enabled: $0) })).labelsHidden().toggleStyle(.switch).controlSize(.small).frame(width: 100)
+                }.padding(.vertical, 8)
+                if tool != ToolNavigation.Section.pinnable.last { Divider() }
+            }
+        }
     }
 
     private var generalSettings: some View {
@@ -51,6 +83,13 @@ struct SettingsView: View {
                 }
                 Text(settings.loginItemStatusText).font(.callout).foregroundStyle(.secondary)
                 if let error = settings.loginItemError { Text(error).foregroundStyle(.orange) }
+            }
+            ToolSettingsCard(title: "Codex-Chatfenster", description: "Öffne bestehende Chats aus der Schnellansicht in einem eigenen Fenster. Das globale Tastenkürzel öffnet einen neuen Chat-Entwurf.") {
+                HStack { Text("Neuer Chat per Tastenkürzel"); Spacer(); CodexPopupShortcutRecorder().frame(width: 280, height: 28) }
+                Toggle("Chatfenster standardmäßig im Vordergrund halten", isOn: $settings.chatPopupAlwaysOnTop)
+                Text("Native Fenster-Ebene · ohne Bildschirmaufnahme oder virtuellen Bildschirm").font(.caption).foregroundStyle(.secondary)
+                if let error = popup.shortcutError { Text(error).font(.caption).foregroundStyle(.orange) }
+                Button("Neues Chatfenster öffnen") { popup.show() }
             }
             ToolSettingsCard(title: "Über MacTools", description: "Speicher und Sicherheit stehen im Mittelpunkt. Weitere Werkzeuge erreichst du links unter „Tools“.") {
                 Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "–")")

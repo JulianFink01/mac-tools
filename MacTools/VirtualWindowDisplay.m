@@ -32,11 +32,14 @@ CGError MTSetCursorWarpSuppression(CFTimeInterval interval) {
 - (BOOL)applySettings:(CGVirtualDisplaySettings *)settings;
 @end
 void * MTCreateWindowDisplay(unsigned int width, unsigned int height) {
+    return MTCreateWindowDisplayWithScale(width, height, YES);
+}
+void * MTCreateWindowDisplayWithScale(unsigned int width, unsigned int height, BOOL retina) {
     if (!NSClassFromString(@"CGVirtualDisplay")) return NULL;
     CGVirtualDisplayDescriptor *descriptor = [CGVirtualDisplayDescriptor new];
     descriptor.queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
     descriptor.name = @"MacTools Fensterfläche";
-    descriptor.maxPixelsWide = width * 2; descriptor.maxPixelsHigh = height * 2;
+    descriptor.maxPixelsWide = width * (retina ? 2 : 1); descriptor.maxPixelsHigh = height * (retina ? 2 : 1);
     descriptor.sizeInMillimeters = CGSizeMake(530, 400);
     descriptor.whitePoint = CGPointMake(.3125,.3291);
     descriptor.bluePrimary = CGPointMake(.1494,.0557);
@@ -48,7 +51,7 @@ void * MTCreateWindowDisplay(unsigned int width, unsigned int height) {
     CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
     if (!display) return NULL;
     CGVirtualDisplaySettings *settings = [CGVirtualDisplaySettings new];
-    settings.hiDPI = 1; settings.rotation = 0;
+    settings.hiDPI = retina ? 1 : 0; settings.rotation = 0;
     settings.modes = @[[[CGVirtualDisplayMode alloc] initWithWidth:width height:height refreshRate:60]];
     if (![display applySettings:settings]) return NULL;
     return (void *)CFBridgingRetain(display);

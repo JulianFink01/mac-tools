@@ -1,0 +1,1 @@
+{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"mactools","version":"0.1.0","description":"Lokale MacTools-Steuerung, Systemwerte, Codex-Chats und Kontingente.","extensions":{"com.openai":{"interface":{"displayName":"MacTools","shortDescription":"MacTools lokal steuern","capabilities":[]}}}}

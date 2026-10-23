@@ -93,3 +93,5 @@ von [Chromium](https://chromium.googlesource.com/chromium/src/+/HEAD/ui/display/
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Mermaid 11.12.0 · MIT · https://github.com/mermaid-js/mermaid · license: Vendor/Mermaid/LICENSE

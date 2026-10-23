@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AppsView: View {
-    @StateObject private var store = AppManagerStore()
+    @ObservedObject private var store = AppManagerStore.shared
     @State private var query = ""
     @State private var confirm = false
     private var apps: [InstalledApp] { store.apps.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.identifier.localizedCaseInsensitiveContains(query) } }

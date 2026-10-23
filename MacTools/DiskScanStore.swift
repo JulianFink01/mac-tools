@@ -71,6 +71,7 @@ final class DiskScanStore: ObservableObject {
                   saved.root.resolvingSymlinksInPath() == root.resolvingSymlinksInPath() else { return }
             restoredResult = true
             result = saved
+            Task { await FileBrowserStore.shared.prime(saved) }
             status = "Gespeicherter Scan · " + saved.completedAt.formatted(date: .abbreviated, time: .shortened)
                 + (saved.reachedLimit || saved.skipped > 0 ? " · mit Einschränkungen" : "")
         }

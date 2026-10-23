@@ -12,6 +12,6 @@ if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   echo "Hinweis: Ad-hoc-Signierung. macOS-Freigaben können bei jedem Update erneut nötig sein." >&2
 fi
 codesign --force --sign "$SIGNING_IDENTITY" "$APP_PATH/Contents/PlugIns/MacToolsScreenSaver.saver"
-codesign --force --sign "$SIGNING_IDENTITY" "$APP_PATH"
+codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$PROJECT_ROOT/MacTools/MacTools.entitlements" "$APP_PATH"
 codesign --verify --deep --strict "$APP_PATH"
 codesign --display --requirements - "$APP_PATH" 2>&1

@@ -6,6 +6,7 @@ import ServiceManagement
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
+    @Published var codexLimitPlacement: String { didSet { defaults.set(codexLimitPlacement, forKey: "codexLimitPlacement") } }
     @Published var currentVideoID: UUID? {
         didSet {
             if let currentVideoID {
@@ -34,6 +35,71 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var quickPanelCompactVolume: Bool { didSet { defaults.set(quickPanelCompactVolume, forKey: "quickPanelCompactVolume") } }
+    @Published var quickPanelEventTabs: Bool { didSet { defaults.set(quickPanelEventTabs, forKey: "quickPanelEventTabs") } }
+    @Published var quickPanelWidgets: [QuickPanelWidget] {
+        didSet { defaults.set(quickPanelWidgets.map(\.rawValue), forKey: "quickPanelWidgets") }
+    }
+    func moveQuickWidget(_ widget: QuickPanelWidget, to index: Int) {
+        guard let old = quickPanelWidgets.firstIndex(of: widget) else { return }
+        var values = quickPanelWidgets; values.remove(at: old); values.insert(widget, at: max(0, min(index, values.count))); quickPanelWidgets = values
+    }
+
+    @Published var showMainMenuIcon: Bool { didSet { defaults.set(showMainMenuIcon, forKey: "showMainMenuIcon") } }
+    @Published var chatPopupAlwaysOnTop: Bool { didSet { defaults.set(chatPopupAlwaysOnTop, forKey: "chatPopupAlwaysOnTop") } }
+    @Published var sidebarCodexFolders: [String] { didSet { defaults.set(sidebarCodexFolders, forKey: "sidebarCodexFolders") } }
+    @Published var sidebarEntryOrder: [String] { didSet { defaults.set(sidebarEntryOrder, forKey: "sidebarEntryOrder") } }
+    var sidebarEntries: [SidebarEntry] {
+        let enabled = sidebarFavorites.map(SidebarEntry.tool) + sidebarCodexFolders.map(SidebarEntry.folder)
+        let byID = Dictionary(enabled.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var seen = Set<String>()
+        return (sidebarEntryOrder + enabled.map(\.id)).compactMap { id in guard seen.insert(id).inserted else { return nil }; return byID[id] }
+    }
+    func setSidebarFolder(_ path: String, enabled: Bool) {
+        if enabled { if !sidebarCodexFolders.contains(path) { sidebarCodexFolders.append(path) } }
+        else { sidebarCodexFolders.removeAll { $0 == path } }
+    }
+    func moveSidebarEntry(_ entry: SidebarEntry, before target: SidebarEntry? = nil) {
+        switch entry { case .tool(let tool): setSidebarFavorite(tool, enabled: true); case .folder(let path): setSidebarFolder(path, enabled: true) }
+        guard entry != target else { return }
+        var ids = sidebarEntries.map(\.id); ids.removeAll { $0 == entry.id }
+        ids.insert(entry.id, at: target.flatMap { ids.firstIndex(of: $0.id) } ?? ids.count)
+        sidebarEntryOrder = ids
+    }
+    @Published var sidebarOrder: [ToolNavigation.Section] { didSet { defaults.set(sidebarOrder.map(\.rawValue), forKey: "sidebarFavoriteOrder") } }
+    var sidebarFavorites: [ToolNavigation.Section] {
+        let ordered = sidebarOrder.filter { sidebarTools.contains($0) && ToolNavigation.Section.pinnable.contains($0) }
+        return ordered + ToolNavigation.Section.pinnable.filter { sidebarTools.contains($0) && !ordered.contains($0) }
+    }
+    func moveSidebar(_ tool: ToolNavigation.Section, before target: ToolNavigation.Section) {
+        guard tool != target else { return }
+        setSidebarFavorite(tool, enabled: true)
+        var ordered = sidebarFavorites; ordered.removeAll { $0 == tool }
+        ordered.insert(tool, at: ordered.firstIndex(of: target) ?? ordered.count); sidebarOrder = ordered
+    }
+    @Published var sidebarTools: Set<ToolNavigation.Section> {
+        didSet { defaults.set(sidebarTools.map(\.rawValue).sorted(), forKey: "sidebarFavoriteTools") }
+    }
+    func setSidebarFavorite(_ tool: ToolNavigation.Section, enabled: Bool) {
+        guard !enabled || ToolNavigation.Section.pinnable.contains(tool) else { return }
+        if enabled { if !sidebarOrder.contains(tool) { sidebarOrder.append(tool) }; sidebarTools.insert(tool) } else { sidebarTools.remove(tool) }
+    }
+
+    @Published var pinnedCodexChats: [String] { didSet { defaults.set(pinnedCodexChats, forKey: "pinnedCodexChats") } }
+    func setChatPinned(_ id: String, enabled: Bool) {
+        if enabled { if !pinnedCodexChats.contains(id) { pinnedCodexChats.append(id) } }
+        else { pinnedCodexChats.removeAll { $0 == id } }
+    }
+    @Published var pinnedCodexFolders: [String] { didSet { defaults.set(pinnedCodexFolders, forKey: "pinnedCodexFolders") } }
+    func pinCodexFolder(_ path: String) { if !pinnedCodexFolders.contains(path) { pinnedCodexFolders.append(path) } }
+    @Published var pinnedTools: Set<ToolNavigation.Section> {
+        didSet { defaults.set(pinnedTools.map(\.rawValue).sorted(), forKey: "pinnedMenuTools") }
+    }
+    func setPinned(_ tool: ToolNavigation.Section, enabled: Bool) {
+        guard !enabled || ToolNavigation.Section.pinnable.contains(tool) else { return }
+        if enabled { pinnedTools.insert(tool) } else { pinnedTools.remove(tool) }
+    }
+
     @Published var enabledMonitorWidgets: Set<MonitorMetric> {
         didSet { defaults.set(enabledMonitorWidgets.map(\.rawValue).sorted(), forKey: "monitorMenuWidgets") }
     }
@@ -57,6 +123,19 @@ final class SettingsStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.codexLimitPlacement = defaults.string(forKey: "codexLimitPlacement") ?? "chats"
+        quickPanelCompactVolume = defaults.bool(forKey: "quickPanelCompactVolume")
+        quickPanelEventTabs = defaults.bool(forKey: "quickPanelEventTabs")
+        quickPanelWidgets = defaults.stringArray(forKey: "quickPanelWidgets").map { { var seen = Set<QuickPanelWidget>(); return $0.compactMap(QuickPanelWidget.init(rawValue:)).filter { seen.insert($0).inserted } }($0) } ?? QuickPanelWidget.allCases
+        showMainMenuIcon = defaults.object(forKey: "showMainMenuIcon") as? Bool ?? true
+        chatPopupAlwaysOnTop = defaults.object(forKey: "chatPopupAlwaysOnTop") as? Bool ?? true
+        sidebarCodexFolders = defaults.stringArray(forKey: "sidebarCodexFolders") ?? []
+        sidebarEntryOrder = defaults.stringArray(forKey: "sidebarEntryOrder") ?? []
+        sidebarOrder = (defaults.stringArray(forKey: "sidebarFavoriteOrder") ?? []).compactMap(ToolNavigation.Section.init(rawValue:)).filter { ToolNavigation.Section.pinnable.contains($0) }
+        sidebarTools = defaults.stringArray(forKey: "sidebarFavoriteTools").map { Set($0.compactMap(ToolNavigation.Section.init(rawValue:)).filter { ToolNavigation.Section.pinnable.contains($0) }) } ?? [.monitoring, .disk, .codex]
+        pinnedCodexChats = defaults.stringArray(forKey: "pinnedCodexChats") ?? []
+        pinnedCodexFolders = defaults.stringArray(forKey: "pinnedCodexFolders") ?? []
+        pinnedTools = Set((defaults.stringArray(forKey: "pinnedMenuTools") ?? []).compactMap(ToolNavigation.Section.init(rawValue:)).filter { ToolNavigation.Section.pinnable.contains($0) })
         enabledMonitorWidgets = defaults.stringArray(forKey: "monitorMenuWidgets").map { Set($0.compactMap(MonitorMetric.init(rawValue:))) } ?? Set(MonitorMetric.allCases)
 
         if let idString = defaults.string(forKey: Keys.currentVideoID) {

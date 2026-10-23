@@ -37,6 +37,19 @@ struct FileBrowserIndex: Sendable {
 
 @MainActor
 final class FileBrowserStore: ObservableObject {
+    static let shared = FileBrowserStore()
+    private var cache: [FileBrowserRequest: FileBrowserIndex] = [:]
+    private var recentRequests: [FileBrowserRequest] = []
+    private func remember(_ value: FileBrowserIndex, for request: FileBrowserRequest) {
+        cache[request] = value; recentRequests.removeAll { $0 == request }; recentRequests.append(request)
+        while recentRequests.count > 4 { cache.removeValue(forKey: recentRequests.removeFirst()) }
+    }
+    func prime(_ result: DiskScanResult) async {
+        let request = FileBrowserRequest(date: result.completedAt, scope: result.root.path, query: "", fileCount: result.files.count)
+        guard cache[request] == nil else { return }
+        let value = await Task.detached(priority: .utility) { try? FileBrowserIndex.build(result, scope: result.root.path, query: "") }.value
+        if let value { remember(value, for: request) }
+    }
     @Published private(set) var index: FileBrowserIndex?
     @Published private(set) var loadedRequest: FileBrowserRequest?
     @Published private(set) var isLoading = false
@@ -45,7 +58,9 @@ final class FileBrowserStore: ObservableObject {
 
     /// SwiftUI cancels superseded requests; stale filters never replace newer results.
     func load(_ result: DiskScanResult, request: FileBrowserRequest) async {
+        if loadedRequest == request, index != nil { return }
         let token = UUID(); generation = token
+        if let cached = cache[request] { loadedRequest = request; index = cached; isLoading = false; error = ""; return }
         isLoading = true; error = ""; index = nil; loadedRequest = nil
         defer { if generation == token { isLoading = false } }
         do {
@@ -57,6 +72,7 @@ final class FileBrowserStore: ObservableObject {
             let value = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
             try Task.checkCancellation()
             guard generation == token else { return }
+            remember(value, for: request)
             loadedRequest = request; index = value
         } catch is CancellationError { /* The next scope/search owns the visible result. */ }
         catch { if generation == token { self.error = error.localizedDescription } }

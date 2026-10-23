@@ -91,7 +91,10 @@ final class WallpaperController {
     }
 
     private func rebuildWindowsIfNeeded() {
-        let screens = NSScreen.screens
+        let screens = NSScreen.screens.filter { screen in
+            let id = screenID(for: screen)
+            return !(CGDisplayVendorNumber(id) == 0x4D54 && CGDisplayModelNumber(id) == 1)
+        }
         let currentScreenIDs = Set(screens.map(screenID(for:)))
 
         for (id, entry) in entries where !currentScreenIDs.contains(id) {

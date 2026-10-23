@@ -81,7 +81,17 @@ struct MonitorMetricCard: View {
 struct MonitorVolumeCard: View {
     let volume: MonitorVolume
     var compact = false
+    var inline = false
     var body: some View {
+        if inline {
+            HStack(spacing: 10) {
+                Image(systemName: "internaldrive").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack { Text(volume.name).font(.system(size: 11, weight: .medium)); Spacer(); Text(diskBytes(volume.free) + " frei").font(.system(size: 11)).foregroundStyle(.secondary); Text(String(format: "%.0f %%", volume.usedFraction * 100)).font(.system(size: 11, weight: .semibold)).monospacedDigit() }
+                    ProgressView(value: volume.usedFraction).tint(volume.usedFraction > 0.9 ? .orange : .cyan)
+                }
+            }.padding(.horizontal, 12).padding(.vertical, 9).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 10))
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(volume.name, systemImage: "internaldrive").font(.headline)
@@ -97,6 +107,7 @@ struct MonitorVolumeCard: View {
             if !compact { Text(volume.path).font(.caption2).foregroundStyle(.secondary) }
         }.padding(compact ? 12 : 18).background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
     }
 }
 
