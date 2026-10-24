@@ -686,8 +686,8 @@ struct CodexComposer: NSViewRepresentable {
         }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
-            NSApp.activate(ignoringOtherApps:true)
             window?.makeKeyAndOrderFront(nil)
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps:true) }
             window?.makeFirstResponder(self)
             super.mouseDown(with:event)
             // Accessory-app activation completes after the original mouse event.

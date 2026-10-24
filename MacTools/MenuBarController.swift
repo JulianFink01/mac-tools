@@ -4,10 +4,8 @@ import Combine
 
 
 @MainActor extension NSPopover {
-    /// Status-item clicks do not activate an accessory app automatically.
-    /// Focus once on opening so typing and native outside-click dismissal work.
+    /// Focus the popup itself; activating the entire app also raises its main window.
     func showFocused(relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge) {
-        NSApp.activate(ignoringOtherApps: true)
         show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
         focusContent()
         DispatchQueue.main.async { [weak self] in self?.focusContent() }
