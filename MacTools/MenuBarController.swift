@@ -217,8 +217,10 @@ final class MenuBarController: NSObject {
     }
     private func updateCombinedCodexLabel() {
         guard let label = codexLabel else { return }
+        label.titleText = label.waiting > 0 ? "CODEX · !\(label.waiting)" : "CODEX"
         label.valueText = remainingLabel + " – " + String(label.running)
-        let width = ceil((label.valueText! as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)]).width) + 8 + (label.waiting > 0 ? 8 : 0)
+        let titleWidth = (label.titleText as NSString).size(withAttributes: [.font:NSFont.systemFont(ofSize:8,weight:.medium)]).width
+        let width = ceil(max(titleWidth,(label.valueText! as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)]).width)) + 8 + (label.waiting > 0 ? 8 : 0)
         toolItems[.codex]?.length = max(44, width)
         toolItems[.codex]?.button?.setAccessibilityLabel("Codex: noch " + remainingLabel + ", \(label.running) laufende Chats, \(label.waiting) warten auf dich")
         toolItems[.codex]?.button?.toolTip = "Codex · noch " + remainingLabel + " · \(label.running) laufende Chats · \(label.waiting) warten auf dich"
@@ -303,7 +305,7 @@ final class CodexStatusLabel: NSView {
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
-        let title = NSAttributedString(string: titleText, attributes: [.font: NSFont.systemFont(ofSize: 8, weight: .medium), .foregroundColor: NSColor.labelColor])
+        let title = NSAttributedString(string: titleText, attributes: [.font: NSFont.systemFont(ofSize: 8, weight: .medium), .foregroundColor: waiting > 0 ? NSColor.systemOrange : NSColor.labelColor])
         let value = NSAttributedString(string: valueText ?? String(running), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor])
         let top = (bounds.height - title.size().height - value.size().height + 1) / 2
         title.draw(at: NSPoint(x: (bounds.width - title.size().width) / 2, y: top))

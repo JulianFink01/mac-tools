@@ -683,7 +683,12 @@ private struct CodexPromptView: View {
                 if let context = prompt.params["networkApprovalContext"] as? [String: Any], let host = context["host"] as? String { Text("Netzwerkzugriff: " + host).font(.caption).textSelection(.enabled) }
                 if prompt.method == "mcpServer/elicitation/request" {
                     Text(prompt.params["message"] as? String ?? "Eingabe wird benötigt").font(.caption)
-                    Button("Ablehnen") { store.answer(prompt, result: ["action": "decline", "content": NSNull()]) }
+                    HStack {
+                        Button("Ablehnen") { store.answer(prompt, result: ["action": "decline", "content": NSNull()]) }.disabled(!store.canAnswer(prompt))
+                        if let acceptance = prompt.elicitationAcceptance {
+                            Button("Annehmen") { store.answer(prompt,result:acceptance) }.buttonStyle(.borderedProminent).tint(.mint).disabled(!store.canAnswer(prompt))
+                        }
+                    }
                 } else if prompt.method == "item/permissions/requestApproval" {
                     HStack {
                         Button("Nicht erlauben") { store.answer(prompt, result: ["permissions": [:], "scope": "turn"]) }

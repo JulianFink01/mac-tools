@@ -24,6 +24,15 @@ struct CodexChecks {
         precondition(!disclosure.detail(thread:"one",id:"c",running:true))
         precondition(!disclosure.detail(thread:"two",id:"b",running:false))
         print("PASS: activities and commands default closed even while running; opened and closed command choices survive streaming, completion and moving history groups; isolated per chat")
+        func elicitation(_ params:[String:Any]) -> CodexPrompt { CodexPrompt(id:UUID(),requestID:959,method:"mcpServer/elicitation/request",threadID:"test-old",params:params) }
+        let emptyForm: [String:Any] = ["mode":"form","requestedSchema":["type":"object","properties":[:]]]
+        precondition(elicitation(emptyForm).elicitationAcceptance?["action"] as? String == "accept")
+        precondition((elicitation(emptyForm).elicitationAcceptance?["content"] as? [String:Any])?.isEmpty == true)
+        precondition(elicitation(["mode":"form","requestedSchema":["type":"object","properties":["approved":["type":"boolean"]],"required":["approved"]]]).elicitationAcceptance?["content"] as? [String:Bool] == ["approved":true])
+        precondition(elicitation(["mode":"url"]).elicitationAcceptance == nil)
+        precondition(elicitation(["mode":"openai/userVerification"]).elicitationAcceptance == nil)
+        precondition(elicitation(["mode":"form","requestedSchema":["type":"object","properties":["password":["type":"string"]]]]).elicitationAcceptance == nil)
+        print("PASS: unambiguous MCP approval forms accept the exact schema; verification, URL and unsupported input remain native")
         let longState: [String:Any] = ["turns":[["id":"history-window", "items":(0..<2000).map { ["id":"window-\($0)","type":"agentMessage","text":"Message \($0)"] }]]]
         let tail = CodexTranscript.window(longState,limit:80)
         precondition(tail.messages.count == 80 && tail.hasMore && tail.messages.first?.id == "window-1920" && tail.messages.last?.id == "window-1999")
@@ -241,6 +250,10 @@ struct CodexChecks {
         precondition(nativePrompt.desktop && nativePrompt.params["command"] as? String == "echo native-fixture")
         store.desktop.onState?("test-old", ["requests":[nativeRequest]])
         precondition(store.prompts.first?.id == nativePrompt.id, "Stream updates must preserve prompt identity and typed answers")
+        precondition(store.waitingCount == 1)
+        var completedRequest = nativeRequest;completedRequest["completed"] = true
+        store.desktop.onState?("test-old",["requests":[completedRequest]])
+        precondition(store.prompts.isEmpty && store.waitingCount == 0,"Completed requests retained in native history are not pending input")
         store.desktop.onState?("test-old", ["requests":[]])
         precondition(store.prompts.isEmpty, "Native completion/removal must clear the live request")
         print("PASS: native request snapshot streams into chat; stable identity across patches; resolved state clears request")
@@ -342,12 +355,22 @@ struct CodexChecks {
         await questionStore.connect()
         _ = try await questionConnection.request("test/async-question")
         await questionStore.select("test-old")
-        precondition(questionStore.asyncQuestions.count == 1)
+        precondition(questionStore.asyncQuestions.count == 1 && questionStore.waitingCount == 1 && questionStore.activityHistory.last?.waiting == 1)
         questionStore.drafts["test-old"]="Unveränderter Entwurf"
         let sentQuestion = await questionStore.answerAsync(questionStore.asyncQuestions[0],answer:"Details")
         precondition(sentQuestion && questionStore.asyncQuestions.isEmpty && questionStore.drafts["test-old"] == "Unveränderter Entwurf")
         let answerState = try await questionConnection.request("test/async-answer-state")
         precondition(answerState["answered"] as? Bool == true)
+        precondition(questionStore.waitingCount == 0)
+        _ = try await questionConnection.request("test/elicitation")
+        for _ in 0..<100 where questionStore.prompts.isEmpty { try await Task.sleep(nanoseconds:10_000_000) }
+        precondition(questionStore.prompts.count == 1 && questionStore.waitingCount == 1 && questionStore.activityHistory.last?.waiting == 1)
+        let consent = questionStore.prompts[0]
+        questionStore.answer(consent,result:consent.elicitationAcceptance!)
+        for _ in 0..<100 where !questionStore.prompts.isEmpty { try await Task.sleep(nanoseconds:10_000_000) }
+        let consentState = try await questionConnection.request("test/elicitation-state")
+        precondition(consentState["accepted"] as? Bool == true && questionStore.waitingCount == 0 && questionStore.activityHistory.last?.waiting == 0)
+        print("PASS: MCP consent explicitly accepted; pending inputs appear once in menu counts and clear after response")
         questionStore.stop()
         print("PASS: async question answered via immediate steering while running, exact reply identity, acknowledged removal and unchanged composer draft")
         do { _ = try await connection.request("test/exit"); fatalError("Lost connection ignored") }

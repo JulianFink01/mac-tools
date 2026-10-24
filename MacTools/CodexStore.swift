@@ -227,6 +227,24 @@ struct CodexPrompt: Identifiable {
     let params: [String: Any]
     var desktop = false
     var supported: Bool { ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput", "item/permissions/requestApproval", "mcpServer/elicitation/request"].contains(method) }
+    /// Only approval forms whose affirmative response is unambiguous. Browser
+    /// auth and verification have their own native flows and remain there.
+    var elicitationAcceptance: [String:Any]? {
+        guard method == "mcpServer/elicitation/request",params["mode"] as? String == "form",
+              let schema = params["requestedSchema"] as? [String:Any],schema["type"] as? String == "object",
+              let properties = schema["properties"] as? [String:[String:Any]] else { return nil }
+        let kind = (params["_meta"] as? [String:Any])?["codex_approval_kind"] as? String
+        guard kind != "browser_auth",kind != "browser_email_otp" else { return nil }
+        var content: [String:Any] = [:]
+        for (key,field) in properties {
+            guard ["approved","confirmed","accepted","allow"].contains(key),field["type"] as? String == "boolean",
+                  field["const"] == nil || field["const"] as? Bool == true else { return nil }
+            if let choices = field["enum"] as? [Bool],!choices.contains(true) { return nil }
+            content[key] = true
+        }
+        guard Set(schema["required"] as? [String] ?? []).isSubset(of:Set(properties.keys)) else { return nil }
+        return ["action":"accept","content":content]
+    }
 }
 
 @MainActor
@@ -253,11 +271,16 @@ final class CodexStore: ObservableObject {
     }
     var liveChats: [CodexChat] { showingArchived ? nonArchivedChats : chats }
     @Published private(set) var activityHistory: [CodexActivityPoint] = []
-    var waitingCount: Int { liveChats.filter { $0.flags.contains("waitingOnApproval") || $0.flags.contains("waitingOnUserInput") }.count }
+    var waitingChatIDs: Set<String> {
+        var ids = Set(liveChats.filter { $0.flags.contains(where: { ["waitingOnApproval","waitingOnUserInput","waitingOnElicitation"].contains($0) }) }.map(\.id))
+        ids.formUnion(prompts.map(\.threadID))
+        if !asyncQuestions.isEmpty,let selectedID { ids.insert(selectedID) }
+        return ids
+    }
+    var waitingCount: Int { waitingChatIDs.count }
     private func recordActivity() {
-        guard !showingArchived else { return }
-        let now = Date(), running = chats.filter { $0.status == "active" }.count
-        let waiting = chats.filter { $0.flags.contains("waitingOnApproval") || $0.flags.contains("waitingOnUserInput") }.count
+        let now = Date(), running = runningCount
+        let waiting = waitingCount
         if let last = activityHistory.last, now.timeIntervalSince(last.date) < 10, last.running == running, last.waiting == waiting { return }
         activityHistory.removeAll { now.timeIntervalSince($0.date) > 3600 }
         activityHistory.append(CodexActivityPoint(date: now, running: running, waiting: waiting))
@@ -271,7 +294,7 @@ final class CodexStore: ObservableObject {
     @Published var selectedID: String? { didSet { if oldValue != selectedID { selectedGoal = nil } } }
     @Published private(set) var selectedGoal: CodexGoal?
     @Published private(set) var messages: [CodexMessage] = []
-    @Published private(set) var asyncQuestions: [CodexAsyncQuestion] = []
+    @Published private(set) var asyncQuestions: [CodexAsyncQuestion] = [] { didSet { recordActivity() } }
     @Published private(set) var answeringAsyncQuestions = Set<String>()
     private var confirmedAsyncAnswers = Set<String>()
     func answerAsync(_ question:CodexAsyncQuestion, answer:String) async -> Bool {
@@ -294,7 +317,7 @@ final class CodexStore: ObservableObject {
     @Published private(set) var sending = false
     @Published var error: String?
     @Published private(set) var activity = ""
-    @Published private(set) var prompts: [CodexPrompt] = []
+    @Published private(set) var prompts: [CodexPrompt] = [] { didSet { recordActivity() } }
     @Published private(set) var answeringPrompts = Set<UUID>()
     private var nativePromptPayloads: [String: Data] = [:]
     @Published private(set) var olderCursor: String?
@@ -926,7 +949,7 @@ final class CodexStore: ObservableObject {
         }
         let items = CodexTranscript.turns(state).flatMap { $0["items"] as? [[String: Any]] ?? [] }
         let enriched = requests.compactMap { request -> [String: Any]? in
-            guard let requestID = request["id"], let method = request["method"] as? String else { return nil }
+            guard request["completed"] as? Bool != true, let requestID = request["id"], let method = request["method"] as? String else { return nil }
             var params = request["params"] as? [String: Any] ?? [:]
             if let itemID = params["itemId"] as? String, let item = items.first(where: { $0["id"] as? String == itemID }) { for (key,value) in item where params[key] == nil { params[key] = value } }
             return ["id":requestID, "method":method, "params":params]

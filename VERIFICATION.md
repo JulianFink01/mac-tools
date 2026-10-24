@@ -184,3 +184,17 @@ Abschließende Regressionen mit Source 55 bestanden: `build/codex-55.log`, `buil
 
 Nachprüfung Build 58: Das retained Hauptfenster entfernte beim Schließen seine Tool-Seite bisher nicht; dadurch wurde deren `onDisappear` nicht aufgerufen. Ein auf dieses Fenster begrenzter `NSWindowDelegate` wechselt beim Schließen zur Werkzeugübersicht. CUA-Prüfung mit echtem Bestand, Schließen während der Wiederherstellung: anschließend `inventoryLoaded:false`; Footprint-Momentaufnahme 679 MB, Peak 2,3 GB (`build/memory-after58-closed-vmmap.log`). Damit ist die Bestandsfreigabe auch für diesen Lebenszyklus bestätigt; sofortige vollständige Rückgabe aller Allocator-/UI-Seiten an macOS wird nicht zugesichert. Finaler IPC-Regressionslauf mit Source 58 bestanden (`build/desktop-58.log`).
 Der Heap nach dem Fensterschließen enthält nur noch 6.204 Swift-String-Objekte mit ca. 1,34 MB statt zuvor 5,72 Millionen mit ca. 793 MB; die großen DiskFile-Arraybestände sind freigegeben (`build/memory-after58-closed-heap.log`).
+
+## MCP-Annehmen und sichtbare Eingabeanzeige, Build 59
+
+- Eindeutige MCP-Formularbestätigungen (`mode:form`, leeres Objektschema oder unterstützte explizite Zustimmungsfelder) bieten „Annehmen“ neben „Ablehnen“. Eine Annahme wird ausschließlich nach Benutzerklick gesendet. URL-Anmeldung, Browser-Authentifizierung, Benutzerverifikation und unbekannte Eingabeformulare bleiben im nativen Originalablauf.
+- Offene Requests und asynchrone Fragen des ausgewählten Chats ergänzen die Runtime-Warteflags; IDs werden dedupliziert. `completed:true`-Requests bleiben nicht als offen sichtbar. Die orange Menüüberschrift `CODEX · !N` macht den bisherigen kleinen Punkt zusätzlich durch einen Zähler erkennbar. Statistik-Liste und Wartezähler verwenden denselben Eingabezustand.
+- Vertragstests prüfen exakte MCP-Antwort `action:accept, content:{}` über JSONL und die vorhandene native Follower-Schnittstelle; außerdem Eingabezähler 0→1→0, asynchrone Frage und abgeschlossene native Requests (`build/codex-59-final.log`, `build/desktop-59.log`).
+- Native CUA-Prüfung mit Produktions-Chat-View und Produktions-Menülabel in isolierter Fixture-App: „Annehmen“ sichtbar und angeklickt; Formular verschwindet, „Warten auf dich“ und Menülabel wechseln von 1 auf 0. Screenshots `build/approval-59-before.png`, `build/approval-59-after.png`. Keine reale Computer-Use-Berechtigung oder sonstige Freigabe erteilt.
+- Privater arm64-Build 59 installiert, unveränderte signierte App-Identität (`build/build-59.log`, `build/install-59.log`). Kein öffentlicher MacTools-Binary-Release.
+
+## Portfolio-Aktualisierung über InfraPilot
+
+- Website-Repository `julian-fink-homepage`, Commit `3c3afc2007e8ea6037d25a7e7809b1b15047c7b4`: zwei aktuelle öffentliche MacTools-Screenshots als WebP (zusammen ca. 148 KB), Duplikate mit Beispieldateien; Download-Link auf öffentliche Release-Seite geändert. Sie bietet derzeit v0.2.1. Private MCP-Ansichten und private Gesprächsinhalte werden nicht veröffentlicht.
+- Vorhandene sieben Portfolio-Tests, TypeScript und Gatsby-Produktionsbuild bestanden. Lokal und live per Browser bedient: gezielte Bildwahl, beide Bilder tatsächlich geladen, Vollbild öffnen/schließen, Release-Link gelesen.
+- InfraPilot-Build `build_297fff7c7eb84b79` erfolgreich, Deployment `deploy_6b07ba6230404194` verfügbar, Image-Digest `sha256:857460168608bfafcdffae85cd26bf4f5ac168d77a2ccdc6b029900a42496077`. Live-Nachweis `build/portfolio-live-mactools.png`. Der erste Aufruf mit verkürzter SHA wurde vor dem Build abgelehnt; mit voller SHA korrigiert.

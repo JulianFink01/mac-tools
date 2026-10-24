@@ -43,6 +43,7 @@ import Foundation
         try await desktop.loadCompleteHistory("test-thread")
         print("PASS: text and local image input, preserved reference elements, complete restore context and owner history request")
         try await desktop.answer("approval-fixture", method: "item/commandExecution/requestApproval", in: "test-thread", result: ["decision":"accept"])
+        try await desktop.answer("mcp-consent",method:"mcpServer/elicitation/request",in:"test-thread",result:["action":"accept","content":[:]])
         try await desktop.interrupt("test-thread", turnID: "turn-test")
         desktop.stop()
         let recoveryPath = path + "-recovery"

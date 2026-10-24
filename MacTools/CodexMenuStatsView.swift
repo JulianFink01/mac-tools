@@ -47,11 +47,11 @@ struct CodexMenuStatsView: View {
             if running.isEmpty { Text("Gerade laufen keine Chats.").foregroundStyle(.secondary) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(store.liveChats.filter { $0.status == "active" || $0.flags.contains("waitingOnApproval") || $0.flags.contains("waitingOnUserInput") }) { chat in
+                    ForEach(store.liveChats.filter { $0.status == "active" || store.waitingChatIDs.contains($0.id) }) { chat in
                         HStack {
                         Button { openChats(); Task { await store.select(chat.id) } } label: {
                             HStack(alignment: .top, spacing: 9) {
-                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(chat.flags.isEmpty ? Color.green : .orange).lineLimit(2); Text(store.folderName(store.folder(for: chat)) + " · " + chat.statusLabel).font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(store.waitingChatIDs.contains(chat.id) ? Color.orange : .green).lineLimit(2); Text(store.folderName(store.folder(for: chat)) + " · " + (store.waitingChatIDs.contains(chat.id) ? "Wartet auf deine Eingabe" : chat.statusLabel)).font(.caption).foregroundStyle(.secondary) }
                                 Spacer(minLength: 0)
                             }.padding(.vertical, 7).contentShape(Rectangle())
                         }.buttonStyle(.plain)
