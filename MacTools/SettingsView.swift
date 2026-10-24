@@ -150,14 +150,14 @@ struct SettingsView: View {
                 Text(automatic.status).font(.callout).foregroundStyle(.secondary)
                 Text("Scans laufen nur, wenn MacTools geöffnet und dein Mac wach ist.").font(.caption).foregroundStyle(.secondary)
             }
-            ToolSettingsCard(title: "Scanbereich & Duplikate", description: "Manuelle und automatische Scans verwenden den hier gewählten Ordner.") {
+            ToolSettingsCard(title: "Scanbereich auf diesem Mac", description: "Automatische Scans verwenden diesen Bereich. Externe Laufwerke behalten unter Disk & Sicherheit eigene Scanstände.") {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(disk.root.lastPathComponent).font(.headline)
                         Text(disk.root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     Spacer()
-                    Button("Ordner wählen …") { disk.chooseFolder() }
+                    Button("Ordner wählen …") { DiskVolumeStore.shared.chooseFolder(initialDirectory: disk.root) }
                         .disabled(disk.isScanning || security.isScanning || security.isUpdating)
                 }
                 Label("Inhaltsprüfung auf Duplikate ist Teil jedes Gesamtscans", systemImage: "checkmark.circle.fill")

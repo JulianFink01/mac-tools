@@ -365,13 +365,17 @@ final class SecurityScanStore: ObservableObject {
 
     private struct SavedScan: Codable { let report: SecurityReport; let root: URL; let date: Date }
     private var removalSubscription: AnyCancellable?
+    var acceptsFileChanges = true
     private let reportURL: URL
     @Published private(set) var completedAt: Date?
     @Published private(set) var restoredReport = false
 
     init(directory: URL = VideoLibraryStore.appSupportDirectory) {
         reportURL = directory.appendingPathComponent("last-virus-scan.plist")
-        removalSubscription = FileActions.shared.removals.sink { [weak self] change in self?.applyRemoved(paths: change.paths) }
+        removalSubscription = FileActions.shared.removals.sink { [weak self] change in
+            guard let self, self.acceptsFileChanges else { return }
+            self.applyRemoved(paths: change.paths)
+        }
         refresh()
         if let data = try? Data(contentsOf: reportURL), let saved = try? PropertyListDecoder().decode(SavedScan.self, from: data) {
             report = saved.report; scannedRoot = saved.root; completedAt = saved.date

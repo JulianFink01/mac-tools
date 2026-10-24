@@ -9,7 +9,7 @@ struct DiskDashboardView: View {
     @ObservedObject private var automatic = AutomaticScans.shared
     @ObservedObject private var fileBrowser = FileBrowserStore.shared
     @State private var inventoryConsumer = UUID()
-    private var needsInventory: Bool { ["Dateien & Ordner","Duplikate"].contains(tab) }
+    private var needsInventory: Bool { volumeMounted && ["Dateien & Ordner","Duplikate"].contains(tab) }
     @State private var filePage = 0
     @State private var folderPage = 0
     @State private var largestPage = 0
@@ -24,6 +24,11 @@ struct DiskDashboardView: View {
     @State private var pendingTrash: [DiskFile] = []
     @State private var confirmTrash = false
     @ObservedObject var navigation: ToolNavigation
+    var volumeStore: DiskVolumeStore? = nil
+    var volume: DiskScanVolume? = nil
+    private var volumeMounted: Bool { volume?.isMounted ?? true }
+    private var usesAutomaticPipeline: Bool { volume?.isPrimary != false }
+    private var volumePathMatches: Bool { volume.map { $0.isPrimary || DiskVolumeStore.contains(store.root, in: $0.root) } ?? true }
     private var tab: String { navigation.diskTab }
     @State private var query = ""
     @State private var folder: String?
@@ -45,13 +50,24 @@ struct DiskDashboardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+            if let volumeStore { DiskVolumeSelector(store: volumeStore) }
+            if !volumeMounted {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label("Laufwerk nicht verbunden", systemImage: "externaldrive.badge.xmark").font(.title2.bold())
+                    Text("Der letzte Scanstand bleibt gespeichert. Verbinde dieses Laufwerk, um es erneut zu prüfen oder seine Dateien zu öffnen.").foregroundStyle(.secondary)
+                    if let summary = store.summary {
+                        Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.bytes)) · " + summary.completedAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    Spacer()
+                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.top, 20)
+            } else {
             ToolTabBar(selection: $navigation.diskTab, options: tabs.map { ToolTab(value: $0, title: $0, icon: tabIcon($0)) }, accessibilityName: "Disk & Sicherheit")
             if tab == "Übersicht" {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label(automatic.enabled ? "Automatische Scans aktiv" : "Automatische Scans aus", systemImage: "clock.arrow.circlepath")
+                    Label(usesAutomaticPipeline ? (automatic.enabled ? "Automatische Scans aktiv" : "Automatische Scans aus") : "Separater Laufwerks-Scan", systemImage: "clock.arrow.circlepath")
                         .font(.callout.weight(.medium))
-                    Text(automatic.status).font(.caption).foregroundStyle(.secondary)
+                    Text(usesAutomaticPipeline ? automatic.status : "Dieser Scan verändert weder den Scanstand noch den Zeitplan deines Macs.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Scan-Einstellungen") { navigation.openSettings(.disk) }
@@ -78,12 +94,18 @@ struct DiskDashboardView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if tab == "Virenscan" { securityPanel }
                     else if tab == "Warnungen" {
+                        if !usesAutomaticPipeline {
+                            let warnings = (store.result?.warningSamples ?? []) + (security.issue.map { [$0] } ?? [])
+                            if warnings.isEmpty { Text("Keine gespeicherten Warnungen für dieses Laufwerk.") }
+                            ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in Text(warning).font(.callout).textSelection(.enabled) }
+                        } else {
                         if automatic.warnings.isEmpty { Text("Keine gespeicherten Warnungen.") }
                         ForEach(automatic.warnings) { warning in
                             panel(warning.title) {
                                 Text(warning.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                                 Text(warning.detail).font(.callout).textSelection(.enabled)
                             }
+                        }
                         }
                     }
                     else if let result = store.result {
@@ -112,6 +134,7 @@ struct DiskDashboardView: View {
                         }.frame(maxWidth: .infinity).padding(.vertical, 90)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
+            }.disabled(!volumePathMatches)
             }
         }.padding(22)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -150,16 +173,23 @@ struct DiskDashboardView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 8) {
                 HStack {
-                    Button("Ordner wählen …") { store.chooseFolder() }
-                        .disabled(store.isScanning || security.isScanning || security.isUpdating)
+                    Button("Ordner wählen …") { if let volumeStore { volumeStore.chooseFolder() } else { store.chooseFolder() } }
+                        .disabled(!volumeMounted || store.isScanning || security.isScanning || security.isUpdating)
                     if store.isScanning || security.isScanning || security.isUpdating {
-                        Button(store.isSaving ? "Speichert …" : "Abbrechen", role: .cancel) { automatic.cancelCombined() }.disabled(store.isSaving)
+                        Button(store.isSaving ? "Speichert …" : "Abbrechen", role: .cancel) {
+                            if let volumeStore { volumeStore.cancelSelected() }
+                            else if usesAutomaticPipeline { automatic.cancelCombined() }
+                            else { store.cancel(); security.cancel() }
+                        }.disabled(store.isSaving)
                     } else {
-                        Button("Gesamtscan starten") { automatic.runNow() }
-                            .buttonStyle(.borderedProminent).disabled(store.isRestoring || store.isSaving || security.isScanning || security.isUpdating)
+                        Button(usesAutomaticPipeline ? "Gesamtscan starten" : "Laufwerk scannen") {
+                            if let volumeStore { volumeStore.startSelectedDiskScan() }
+                            else if usesAutomaticPipeline { automatic.runNow() }
+                            else { store.start() }
+                        }.buttonStyle(.borderedProminent).disabled(!volumeMounted || store.isRestoring || store.isSaving || security.isScanning || security.isUpdating)
                     }
                 }
-                Text(store.findDuplicates ? "Speicher · Duplikate · Virenschutz" : "Speicher · Virenschutz")
+                Text(usesAutomaticPipeline ? (store.findDuplicates ? "Speicher · Duplikate · Virenschutz" : "Speicher · Virenschutz") : "Speicher · Duplikate · Virenprüfung separat")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

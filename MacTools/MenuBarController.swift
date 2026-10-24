@@ -586,7 +586,7 @@ struct QuickPanelView: View {
     private var availableHeight: CGFloat { min(900, max(520, (NSScreen.main?.visibleFrame.height ?? 680) - 40)) }
     private var panelHeight: CGFloat { startsEditing ? 620 : min(availableHeight, max(340, contentHeight + 94)) }
     private var visibleWidgets: [QuickPanelWidget] { settings.quickPanelWidgets.filter { editingWidgets || ($0 != .codex || !menuChats.isEmpty) && ($0 != .liveFeed || !events.isEmpty) } }
-    private var cardCounts: (codex: Int, events: Int) { editingWidgets ? (1, 1) : QuickPanelCardLayout.counts(widgets: visibleWidgets, height: availableHeight - 94, multipleRunningChats: multipleRunningChats, eventCount: events.count, compactVolume: settings.quickPanelCompactVolume, eventTabs: settings.quickPanelEventTabs, usagePlacement: effectiveLimitPlacement) }
+    private var cardCounts: (codex: Int, events: Int) { editingWidgets ? (1, 1) : QuickPanelCardLayout.counts(widgets: visibleWidgets, height: availableHeight - 94, multipleRunningChats: multipleRunningChats, eventCount: events.count, compactVolume: settings.quickPanelCompactVolume, eventTabs: settings.quickPanelEventTabs, usagePlacement: effectiveLimitPlacement, volumeCount: monitor.reading?.volumes.count ?? 1) }
     @ViewBuilder private func editableWidget(_ widget: QuickPanelWidget) -> some View {
         if editingWidgets {
             VStack(spacing: 5) {
@@ -613,12 +613,13 @@ struct QuickPanelView: View {
         case .ram: metricButton(.ram, title: "RAM", value: monitorPercent(monitor.reading?.point.memory), color: .purple, key: \.memory, detail: "Arbeitsspeicher")
         case .gpu: metricButton(.gpu, title: "GPU", value: monitorPercent(monitor.reading?.point.gpu), color: .mint, key: \.gpu, detail: monitor.reading?.gpuName ?? "GPU-Auslastung")
         case .disk: metricButton(.disk, title: "Disk", value: monitorRate(monitor.reading?.point.diskRead), color: .orange, key: \.diskRead, detail: "Schreiben " + monitorRate(monitor.reading?.point.diskWrite), percent: false)
-        case .volume: if let volume = monitor.reading?.volumes.first {
-            MonitorVolumeCard(volume: volume, compact: true, inline: settings.quickPanelCompactVolume).contextMenu {
+        case .volume:
+            MonitorVolumesWidget(volumes: monitor.reading?.volumes ?? [], inline: settings.quickPanelCompactVolume) { volume in
+                DiskVolumeStore.shared.selectVolume(path: volume.path); closePanel?(); openSection(.disk)
+            }.contextMenu {
                 Button("Standarddarstellung") { settings.quickPanelCompactVolume = false }
                 Button("Kompakte Darstellung") { settings.quickPanelCompactVolume = true }
             }
-        }
         case .pin: quickButton("Fenster anheften / lösen", icon: window.isPinned ? "pin.slash" : "pin.fill", color: .blue, action: pin)
         case .scan: quickButton(disk.isScanning ? "Scan öffnen" : "Speicher scannen", icon: "magnifyingglass", color: .cyan) {
             if !disk.isScanning && !security.isScanning && !security.isUpdating { warnings.runNow() }; openSection(.disk)

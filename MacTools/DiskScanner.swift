@@ -81,6 +81,11 @@ enum DiskScanner {
     static func isTrashPath(_ path: String) -> Bool {
         path.contains("/.Trash/") || path.contains("/.Trashes/") || path.hasSuffix("/.Trash") || path.hasSuffix("/.Trashes")
     }
+    static func isPathInScanScope(_ path: String, root: String) -> Bool {
+        let path = canonicalPath(path), root = canonicalPath(root)
+        if root == "/", path.hasPrefix("/Volumes/") { return false }
+        return path == root || path.hasPrefix(root == "/" ? "/" : root + "/") || root.hasPrefix(path + "/")
+    }
 
     static func scan(root: URL, findDuplicates: Bool, cacheURL: URL? = nil,
                      inventory: @Sendable (DiskScanResult) -> Void = { _ in },
@@ -94,6 +99,14 @@ enum DiskScanner {
         guard let resolved = realpath(selectedRoot.path, nil) else { throw ScanError.invalidRoot }
         let root = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
         free(resolved)
+        var rootInfo = stat()
+        guard lstat(root.path, &rootInfo) == 0 else { throw ScanError.invalidRoot }
+        var devices: Set<dev_t> = [rootInfo.st_dev]
+        // macOS's system and Data volume together form the visible internal disk.
+        if root.path == "/" {
+            var dataInfo = stat()
+            if lstat("/System/Volumes/Data", &dataInfo) == 0 { devices.insert(dataInfo.st_dev) }
+        }
         var files: [DiskFile] = []
         var identities = Set<String>()
         var folders: [String: DiskBucket] = [:]
@@ -126,6 +139,10 @@ enum DiskScanner {
                 try autoreleasepool {
                     var info = stat()
                     guard lstat(url.path, &info) == 0 else { throw ScanError.unreadable(url.path) }
+                    guard devices.contains(info.st_dev) else {
+                        if (info.st_mode & S_IFMT) == S_IFDIR { enumerator.skipDescendants() }
+                        return
+                    }
                     if (info.st_mode & S_IFMT) == S_IFLNK { return }
                     if (info.st_mode & S_IFMT) == S_IFDIR {
                         folders[url.path] = DiskBucket(name: url.path, bytes: 0, count: 0)

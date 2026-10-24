@@ -202,6 +202,7 @@ final class SystemSampler {
         let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeIsLocalKey, .volumeIsBrowsableKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: Array(keys), options: [.skipHiddenVolumes]) ?? []
         return urls.compactMap { url in
+            guard url.path == "/" || url.path.hasPrefix("/Volumes/") else { return nil }
             guard let info = try? url.resourceValues(forKeys: keys), info.volumeIsLocal == true,
                   let total = info.volumeTotalCapacity, total > 0, let free = info.volumeAvailableCapacity else { return nil }
             return MonitorVolume(name: info.volumeName ?? url.lastPathComponent, path: url.path, total: Int64(total), free: Int64(free))

@@ -112,6 +112,10 @@ struct MonitoringPersistenceChecks {
         precondition(tight.codex == 2 && tight.events == 1, "Codex receives the only spare row")
         let oneRunning = QuickPanelCardLayout.counts(widgets: [.codex, .liveFeed], height: 240, multipleRunningChats: false, eventCount: 3, compactVolume: false, eventTabs: false)
         precondition(oneRunning.codex == 1 && oneRunning.events == 2)
+        let oneDrive = QuickPanelCardLayout.counts(widgets: [.volume, .codex, .liveFeed], height: 430, multipleRunningChats: true, eventCount: 4, compactVolume: true, eventTabs: false, volumeCount: 1)
+        let threeDrives = QuickPanelCardLayout.counts(widgets: [.volume, .codex, .liveFeed], height: 430, multipleRunningChats: true, eventCount: 4, compactVolume: true, eventTabs: false, volumeCount: 3)
+        precondition(threeDrives.codex + threeDrives.events < oneDrive.codex + oneDrive.events, "Additional volumes must reserve space before expanding flexible chat and event rows")
+        print("PASS: multi-volume storage widget reserves extra height without crowding chat and event cards")
         let goal = CodexGoal(["objective": "Testziel", "status": "usageLimited", "tokensUsed": 200, "timeUsedSeconds": 335657])!
         precondition(goal.label == "Zielnutzung begrenzt" && goal.tokens == 200 && goal.budget == nil && !goal.isRunning && goal.durationLabel == "93 Std. 14 Min.")
         print("PASS: native status-item visibility removal persists; sidebar order survives recreation; visible goal status data")

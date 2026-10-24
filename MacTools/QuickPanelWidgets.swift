@@ -139,11 +139,14 @@ enum QuickPanelCardLayout {
         return min(max(0, fallback), max(0, (ids.count - 1) / rows))
     }
 
-    static func counts(widgets: [QuickPanelWidget], height: CGFloat, multipleRunningChats: Bool, eventCount: Int, compactVolume: Bool, eventTabs: Bool, usagePlacement: String = "separate") -> (codex: Int, events: Int) {
+    static func volumeHeight(count: Int, compact: Bool) -> CGFloat {
+        CGFloat(max(0, count)) * (compact ? 58 : 120) + CGFloat(max(0, count - 1)) * 8
+    }
+    static func counts(widgets: [QuickPanelWidget], height: CGFloat, multipleRunningChats: Bool, eventCount: Int, compactVolume: Bool, eventTabs: Bool, usagePlacement: String = "separate", volumeCount: Int = 1) -> (codex: Int, events: Int) {
         let rows = QuickPanelWidget.rows(widgets, usagePlacement: usagePlacement)
         let base = rows.reduce(CGFloat(0)) { total, row in
             let widget = row[0]
-            let size: CGFloat = row.contains(.codexLimit) && row.contains(.codex) && usagePlacement == "chats" ? 144 : widget.group == 1 ? 82 : widget.group == 2 ? 42 : widget == .codexLimit ? (usagePlacement == "separate" ? 64 : usagePlacement == "metrics" ? 86 : 64) : widget == .volume ? (compactVolume ? 58 : 120) : widget == .liveFeed ? (eventTabs ? 118 : 88) : 64
+            let size: CGFloat = row.contains(.codexLimit) && row.contains(.codex) && usagePlacement == "chats" ? 144 : widget.group == 1 ? 82 : widget.group == 2 ? 42 : widget == .codexLimit ? (usagePlacement == "separate" ? 64 : usagePlacement == "metrics" ? 86 : 64) : widget == .volume ? volumeHeight(count: volumeCount, compact: compactVolume) : widget == .liveFeed ? (eventTabs ? 118 : 88) : 64
             return total + size
         } + CGFloat(max(0, rows.count - 1)) * 10
         var spare = height - base

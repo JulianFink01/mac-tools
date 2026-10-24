@@ -49,7 +49,7 @@ final class DiskScanStore: ObservableObject {
         guard !eagerRestore,inventoryConsumers.isEmpty,!isScanning,!isSaving,!isApplyingRemovals,!isRestoring,
               let result,restorableDate == result.completedAt else { return }
         duplicateIndexTask?.cancel(); duplicateIndexTask = nil
-        self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache()
+        self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache(root: result.root, date: result.completedAt)
     }
     @Published private(set) var duplicateIndex: DuplicateViewIndex?
     private var duplicateIndexTask: Task<Void, Never>?
@@ -61,6 +61,7 @@ final class DiskScanStore: ObservableObject {
     private var pendingRemovals: Set<String> = []
     private var pendingDirectories: Set<String> = []
     private var removalSubscription: AnyCancellable?
+    var acceptsFileChanges = true
     private var suppressDuplicateRebuild = false
     @Published private(set) var isRestoring = false
     @Published private(set) var progress = DiskScanProgress(files: 0, bytes: 0, phase: "Bereit")
@@ -76,24 +77,32 @@ final class DiskScanStore: ObservableObject {
     private let resultURL: URL
     private let historyURL: URL
 
-    init(defaults: UserDefaults = .standard, directory: URL = VideoLibraryStore.appSupportDirectory, eagerRestore:Bool = true) {
+    init(defaults: UserDefaults = .standard, directory: URL = VideoLibraryStore.appSupportDirectory, eagerRestore:Bool = true,
+         defaultRoot: URL? = nil, retainUnavailableRoot: Bool = false) {
         self.eagerRestore = eagerRestore; self.defaults = defaults
         resultURL = directory.appendingPathComponent("last-disk-scan.plist")
         historyURL = directory.appendingPathComponent("disk-history.json")
         findDuplicates = defaults.object(forKey: "scanFindDuplicates") as? Bool ?? true
         if let savedRoot = defaults.string(forKey: "diskScanRoot"),
-           FileManager.default.fileExists(atPath: savedRoot) {
+           retainUnavailableRoot || FileManager.default.fileExists(atPath: savedRoot) {
             root = URL(fileURLWithPath: savedRoot, isDirectory: true)
-        }
+        } else if let defaultRoot { root = defaultRoot }
         if let data = try? Data(contentsOf: historyURL), let saved = try? JSONDecoder().decode([ScanSnapshot].self, from: data) {
             history = saved
         }
         cachedResultAvailable = FileManager.default.fileExists(atPath:resultURL.path)
-        removalSubscription = FileActions.shared.removals.sink { [weak self] change in self?.applyRemoved(paths:change.paths,directories:change.directories) }
+        removalSubscription = FileActions.shared.removals.sink { [weak self] change in
+            guard let self, self.acceptsFileChanges else { return }
+            self.applyRemoved(paths:change.paths,directories:change.directories)
+        }
         if eagerRestore { restoreCachedResult() }
         else if cachedResultAvailable {
             status = "Gespeicherter Scan verfügbar · Dateiliste wird bei Bedarf geladen."
             summary = try? DiskScanCache.summary(from:resultURL)
+            if let saved = summary, DiskScanner.canonicalPath(saved.root.path) != DiskScanner.canonicalPath(root.path) {
+                summary = nil; cachedResultAvailable = false
+                status = "Bereit für die Analyse."
+            }
         }
     }
     private func restoreCachedResult() {
@@ -136,11 +145,18 @@ final class DiskScanStore: ObservableObject {
         panel.canChooseDirectories = true
         panel.directoryURL = root
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        selectRoot(url)
+    }
+
+    func selectRoot(_ url: URL) {
+        guard !isScanning, !isSaving, !isApplyingRemovals, root != url else { return }
+        let oldRoot = root
+        let oldDate = result?.completedAt ?? summary?.completedAt
         selectionGeneration = UUID()
         isRestoring = false
         root = url
         result = nil;summary = nil;cachedResultAvailable = false;restorableDate = nil
-        FileBrowserStore.shared.releaseCache()
+        if let oldDate { FileBrowserStore.shared.releaseCache(root: oldRoot, date: oldDate) }
         status = "Bereit für die Analyse."
     }
 
@@ -232,8 +248,11 @@ final class DiskScanStore: ObservableObject {
     func applyRemoved(paths: [String], directories: Set<String> = []) {
         guard let previous = result else {
             guard cachedResultAvailable,let summary else { return }
-            pendingRemovals.formUnion(paths.map(DiskScanner.canonicalPath)); pendingDirectories.formUnion(directories.map(DiskScanner.canonicalPath))
-            removedPaths.formUnion(paths.map(DiskScanner.canonicalPath))
+            let base = DiskScanner.canonicalPath(summary.root.path)
+            let scoped = Set(paths.map(DiskScanner.canonicalPath).filter { DiskScanner.isPathInScanScope($0, root: base) })
+            guard !scoped.isEmpty else { return }
+            pendingRemovals.formUnion(scoped); pendingDirectories.formUnion(directories.map(DiskScanner.canonicalPath).filter { DiskScanner.isPathInScanScope($0, root: base) })
+            removedPaths.formUnion(scoped)
             guard !isApplyingRemovals else { return }; isApplyingRemovals = true
             let destination = resultURL,date = summary.completedAt
             unloadedRemovalTask = Task {
@@ -250,8 +269,7 @@ final class DiskScanStore: ObservableObject {
             return
         }
         let rootPath = DiskScanner.canonicalPath(previous.root.path)
-        let prefix = rootPath == "/" ? "/" : rootPath + "/"
-        let fresh = Set(paths.map(DiskScanner.canonicalPath).filter { ($0.hasPrefix(prefix) || rootPath.hasPrefix($0 + "/")) && !removedPaths.contains($0) })
+        let fresh = Set(paths.map(DiskScanner.canonicalPath).filter { DiskScanner.isPathInScanScope($0, root: rootPath) && !removedPaths.contains($0) })
         guard !fresh.isEmpty else { return }
         removedPaths.formUnion(fresh)
         duplicateIndex = duplicateIndex?.removing(paths: fresh)

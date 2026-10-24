@@ -67,6 +67,8 @@
         0A0001380000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000380000000000000001; };
         0A0001390000000000000001 = {isa = PBXBuildFile; fileRef = 0A0000390000000000000001; };
         0A00013A0000000000000001 = {isa = PBXBuildFile; fileRef = 0A00003A0000000000000001; };
+		F06600000000000000000003 /* DiskVolumeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06600000000000000000001 /* DiskVolumeStore.swift */; };
+		F06600000000000000000004 /* DiskVolumeSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06600000000000000000002 /* DiskVolumeSelector.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -133,6 +135,8 @@
         0A0000380000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexMenuStatsView.swift; sourceTree = "<group>"; };
         0A0000390000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexActivityView.swift; sourceTree = "<group>"; };
         0A00003A0000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMCPClient.swift; sourceTree = "<group>"; };
+		F06600000000000000000001 /* DiskVolumeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskVolumeStore.swift; sourceTree = "<group>"; };
+		F06600000000000000000002 /* DiskVolumeSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskVolumeSelector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -204,6 +208,8 @@
 				0A0000140000000000000001 /* SecurityScanner.swift */,
 				0A0000130000000000000001 /* DiskDashboardView.swift */,
 				0A0000120000000000000001 /* DiskScanStore.swift */,
+				F06600000000000000000002 /* DiskVolumeSelector.swift */,
+				F06600000000000000000001 /* DiskVolumeStore.swift */,
 				0A0000110000000000000001 /* DiskScanner.swift */,
 				0A00000B0000000000000001 /* AppDelegate.swift */,
 				0A0000070000000000000001 /* WallpaperController.swift */,
@@ -359,6 +365,8 @@
 				0A0001140000000000000001 /* SecurityScanner.swift in Sources */,
 				0A0001130000000000000001 /* DiskDashboardView.swift in Sources */,
 				0A0001120000000000000001 /* DiskScanStore.swift in Sources */,
+				F06600000000000000000004 /* DiskVolumeSelector.swift in Sources */,
+				F06600000000000000000003 /* DiskVolumeStore.swift in Sources */,
 				0A0001110000000000000001 /* DiskScanner.swift in Sources */,
 				0A00010E0000000000000001 /* LaunchAgentLoginItem.swift in Sources */,
 

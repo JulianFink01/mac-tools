@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         CodexStore.shared.stop()
         SystemMonitor.shared.stop()
         DiskScanStore.shared.cancel()
+        DiskVolumeStore.shared.stop()
         SecurityScanStore.shared.cancel()
         WindowPinController.shared.stop()
         wallpaperController.closeAllWindows()

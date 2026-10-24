@@ -154,7 +154,7 @@ struct MacToolsView: View {
                 case .infrapilot: PrivateMCPPage(kind: .infrapilot)
                 case .alphaTrader: PrivateMCPPage(kind: .alphatrader)
                 case .codexLimit: CodexUsageView()
-                case .disk: DiskDashboardView(store: disk, security: security, navigation: navigation)
+                case .disk: DiskVolumesView(navigation: navigation)
                 case .codex: CodexChatsView()
                 case .apps: AppsView()
                 case .monitoring: SystemMonitorView()

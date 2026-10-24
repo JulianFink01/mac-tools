@@ -85,7 +85,7 @@ struct MonitorVolumeCard: View {
     var body: some View {
         if inline {
             HStack(spacing: 10) {
-                Image(systemName: "internaldrive").foregroundStyle(.secondary)
+                Image(systemName: volume.path == "/" ? "internaldrive" : "externaldrive").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack { Text(volume.name).font(.system(size: 11, weight: .medium)); Spacer(); Text(diskBytes(volume.free) + " frei").font(.system(size: 11)).foregroundStyle(.secondary); Text(String(format: "%.0f %%", volume.usedFraction * 100)).font(.system(size: 11, weight: .semibold)).monospacedDigit() }
                     ProgressView(value: volume.usedFraction).tint(volume.usedFraction > 0.9 ? .orange : .cyan)
@@ -94,7 +94,7 @@ struct MonitorVolumeCard: View {
         } else {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(volume.name, systemImage: "internaldrive").font(.headline)
+                Label(volume.name, systemImage: volume.path == "/" ? "internaldrive" : "externaldrive").font(.headline)
                 Spacer()
                 Text(String(format: "%.0f %%", volume.usedFraction * 100)).monospacedDigit()
             }
@@ -107,6 +107,20 @@ struct MonitorVolumeCard: View {
             if !compact { Text(volume.path).font(.caption2).foregroundStyle(.secondary) }
         }.padding(compact ? 12 : 18).background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
+struct MonitorVolumesWidget: View {
+    let volumes: [MonitorVolume]
+    var inline = false
+    var open: (MonitorVolume) -> Void = { _ in }
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(volumes) { volume in
+                Button { open(volume) } label: { MonitorVolumeCard(volume: volume, compact: true, inline: inline) }
+                    .buttonStyle(.plain).accessibilityLabel("Laufwerk " + volume.name + " öffnen")
+            }
         }
     }
 }

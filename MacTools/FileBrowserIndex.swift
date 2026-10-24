@@ -55,17 +55,29 @@ final class FileBrowserStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error = ""
     private var generation = UUID()
-    func releaseCache() {
-        generation = UUID(); cache.removeAll(); recentRequests.removeAll(); index = nil; loadedRequest = nil; isLoading = false
+    private var loadingRequest: FileBrowserRequest?
+    func releaseCache(root: URL? = nil, date: Date? = nil) {
+        if let root {
+            let base = DiskScanner.canonicalPath(root.path)
+            func matches(_ request: FileBrowserRequest) -> Bool {
+                if let date, request.date != date { return false }
+                let scope = DiskScanner.canonicalPath(request.scope)
+                return base == "/" || scope == base || scope.hasPrefix(base + "/")
+            }
+            cache = cache.filter { !matches($0.key) }; recentRequests.removeAll(where: matches)
+            guard (loadedRequest ?? loadingRequest).map(matches) == true else { return }
+        } else { cache.removeAll(); recentRequests.removeAll() }
+        generation = UUID(); index = nil; loadedRequest = nil; isLoading = false
+        loadingRequest = nil
     }
 
     /// SwiftUI cancels superseded requests; stale filters never replace newer results.
     func load(_ result: DiskScanResult, request: FileBrowserRequest) async {
         if loadedRequest == request, index != nil { return }
         let token = UUID(); generation = token
-        if let cached = cache[request] { loadedRequest = request; index = cached; isLoading = false; error = ""; return }
-        isLoading = true; error = ""; index = nil; loadedRequest = nil
-        defer { if generation == token { isLoading = false } }
+        if let cached = cache[request] { loadedRequest = request; index = cached; isLoading = false; loadingRequest = nil; error = ""; return }
+        isLoading = true; error = ""; index = nil; loadedRequest = nil; loadingRequest = request
+        defer { if generation == token { isLoading = false; loadingRequest = nil } }
         do {
             if !request.query.isEmpty { try await Task.sleep(nanoseconds: 180_000_000) }
             try Task.checkCancellation()
