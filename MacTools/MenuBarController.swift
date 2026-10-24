@@ -440,19 +440,21 @@ final class MonitorMenuWidgets: NSObject {
     private let openMonitor: () -> Void
     private let openSettings: () -> Void
     private let popover = NSPopover()
+    private var detailController: NSHostingController<MonitorDetailView>?
     private var selected: MonitorMetric?
     func revealEnabledItems() { for item in items.values { item.isVisible = true } }
 
     var diagnostics: [[String: Any]] { items.map { MenuBarController.describe($0.value, name: "metric:" + $0.key.rawValue) } }
     func shutdown() {
         visibility.values.forEach { $0.invalidate() }; visibility.removeAll()
-        subscriptions.removeAll(); popover.close()
+        subscriptions.removeAll(); popover.close(); detailController = nil
         items.values.forEach { NSStatusBar.system.removeStatusItem($0) }; items.removeAll(); labels.removeAll()
     }
     init(settings: SettingsStore, openMonitor: @escaping () -> Void, openSettings: @escaping () -> Void) {
         self.settings = settings; self.openMonitor = openMonitor; self.openSettings = openSettings
         super.init()
         popover.behavior = .transient
+        popover.animates = false
         settings.$enabledMonitorWidgets.sink { [weak self] metrics in self?.synchronize(metrics) }.store(in: &subscriptions)
         SystemMonitor.shared.$reading.sink { [weak self] reading in self?.update(reading) }.store(in: &subscriptions)
     }
@@ -494,12 +496,25 @@ final class MonitorMenuWidgets: NSObject {
     }
     @objc private func widgetClicked(_ sender: NSStatusBarButton) {
         guard let metric = items.first(where: { $0.value.button === sender })?.key else { return }
+        show(metric, from: sender)
+    }
+    func show(_ metric: MonitorMetric, from sender: NSStatusBarButton) {
         if popover.isShown && selected == metric { popover.close(); selected = nil; return }
         popover.close(); selected = metric
-        popover.contentViewController = NSHostingController(rootView: MonitorDetailView(metric: metric,
+        let detail = MonitorDetailView(metric: metric,
             openMonitor: { [weak self] in self?.popover.close(); self?.openMonitor() },
-            openSettings: { [weak self] in self?.popover.close(); self?.openSettings() }))
+            openSettings: { [weak self] in self?.popover.close(); self?.openSettings() })
         popover.contentSize = NSSize(width: 360, height: metric == .ram || metric == .cpu ? 700 : 580)
+        if let controller = detailController {
+            controller.rootView = detail
+        } else {
+            let controller = NSHostingController(rootView: detail)
+            controller.sizingOptions = []
+            detailController = controller
+            popover.contentViewController = controller
+        }
+        detailController?.preferredContentSize = popover.contentSize
+        detailController?.view.setFrameSize(popover.contentSize)
         popover.showFocused(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 }

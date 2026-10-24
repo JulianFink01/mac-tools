@@ -22,7 +22,46 @@ struct MonitorTrend: View {
             return (point, segment)
         }
     }
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if compact {
+            compactTrend
+        } else {
+            chart
+        }
+    }
+    // A compact plot needs two paths, not hundreds of individual chart marks.
+    // Keep every measurement and split paths across missing samples/time gaps.
+    private var compactTrend: some View {
+        let samples = values
+        let maximum = percent ? 100 : max(1, samples.compactMap { $0.0[keyPath: key] }.max() ?? 1)
+        return Canvas { context, size in
+            guard let first = points.first?.date, let last = points.last?.date else { return }
+            let duration = max(1, last.timeIntervalSince(first))
+            var line = Path(), area = Path(), start: CGPoint?, end: CGPoint?, currentSegment: Int?
+            func drawSegment() {
+                guard let start, let end else { return }
+                area.addLine(to: CGPoint(x: end.x, y: size.height))
+                area.addLine(to: CGPoint(x: start.x, y: size.height)); area.closeSubpath()
+                context.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.3), color.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+                context.stroke(line, with: .color(color), lineWidth: 1.8)
+            }
+            for (sample, segment) in samples {
+                guard let value = sample[keyPath: key] else { continue }
+                let point = CGPoint(x: sample.date.timeIntervalSince(first) / duration * size.width,
+                                    y: (1 - min(1, max(0, value / maximum))) * size.height)
+                if currentSegment != segment {
+                    drawSegment(); line = Path(); area = Path(); start = point
+                    line.move(to: point); area.move(to: point); currentSegment = segment
+                } else {
+                    line.addLine(to: point); area.addLine(to: point)
+                }
+                end = point
+            }
+            drawSegment()
+        }.accessibilityLabel("Messverlauf")
+            .accessibilityValue(samples.last.flatMap { $0.0[keyPath: key] }.map { percent ? monitorPercent($0) : monitorRate($0) } ?? "Keine Messung")
+    }
+    private var chart: some View {
         Chart {
             ForEach(values, id: \.0.id) { point, segment in
                 if let value = point[keyPath: key] {
