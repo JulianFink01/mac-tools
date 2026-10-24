@@ -21,6 +21,11 @@ struct DiskDashboardView: View {
     private var duplicateIndex: DuplicateViewIndex? { store.duplicateIndex }
     @State private var expandedDuplicateID: String?
     @State private var duplicateFilePage = 0
+    @State private var showDuplicateFolders = false
+    @State private var duplicateFolder: String?
+    @State private var duplicateFolders: [DuplicateFolderSummary] = []
+    @State private var duplicateFoldersLoading = false
+    @State private var duplicateFolderPage = 0
     @State private var pendingTrash: [DiskFile] = []
     @State private var confirmTrash = false
     @ObservedObject var navigation: ToolNavigation
@@ -144,7 +149,7 @@ struct DiskDashboardView: View {
             }
             .onDisappear { selectedCopies = [:]; pendingTrash = []; store.endInventoryAccess(inventoryConsumer) }
             .onReceive(actions.removals) { _ in selectedCopies = selectedCopies.filter { !store.isRemoved($0.key) } }
-            .onChange(of: store.result?.root) { _ in folder = nil; query = ""; backFolders = []; forwardFolders = [] }
+            .onChange(of: store.result?.root) { _ in folder = nil; duplicateFolder = nil; query = ""; backFolders = []; forwardFolders = [] }
             .onChange(of: store.result?.completedAt) { _ in selectedCopies = [:]; duplicatePage = 0; expandedDuplicateID = nil; duplicateFilePage = 0 }
             .sheet(item: $preview) { selection in FileComparisonView(files: selection.files) }
             .alert("Dateien in den Papierkorb verschieben?", isPresented: $confirmTrash) {
@@ -432,6 +437,10 @@ struct DiskDashboardView: View {
                     Text("SHA-256 geprüft · Keine automatische Löschung").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Alle Duplikate auswählen") {
+                    selectedCopies = duplicateIndex?.copiesForRemoval(mediaOnly: mediaOnly) ?? [:]
+                }.disabled(visible.isEmpty || store.isScanning || store.isApplyingRemovals)
+                    .help("Alle Seiten des aktuellen Filters auswählen; je Gruppe bleibt eine Kopie erhalten")
                 if !selectedCopies.isEmpty {
                     Button("Auswahl leeren") { selectedCopies = [:] }
                 }
@@ -441,12 +450,13 @@ struct DiskDashboardView: View {
                 }.disabled(selectedCopies.isEmpty || store.isScanning)
             }
             HStack {
-                Text("Kopien manuell auswählen. Orange markiert App-, Library- und Projektdateien; auch diese sind löschbar.").font(.caption).foregroundStyle(.secondary)
+                Text("Auswahl gilt für dieses Laufwerk und den aktuellen Filter, über alle Seiten. Je Gruppe bleibt eine Kopie erhalten.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Zurück") { duplicatePage = max(0, currentPage - 1); expandedDuplicateID = nil; duplicateFilePage = 0 }.disabled(currentPage == 0)
                 Text("Seite \(currentPage + 1) / \(pageCount)").font(.caption).monospacedDigit()
                 Button("Weiter") { duplicatePage = min(pageCount - 1, currentPage + 1); expandedDuplicateID = nil; duplicateFilePage = 0 }.disabled(currentPage + 1 >= pageCount)
             }
+            if searchEnabled, duplicateIndex != nil { duplicateFolderPicker }
             if !searchEnabled { Text("Duplikatprüfung einschalten und erneut scannen.") }
             else if duplicateIndex == nil { ProgressView("Duplikatübersicht wird vorbereitet …") }
             else if visible.isEmpty { Text(store.isScanning ? "Die Dateiliste ist bereit. Die Inhaltsprüfung läuft im Hintergrund." : "Keine Duplikate gefunden.").font(.title3) }
@@ -473,8 +483,56 @@ struct DiskDashboardView: View {
                     .background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 12))
             }
             Text("Mindestens eine Kopie bleibt erhalten. Beim Entfernen wird nur die Dateimetadaten-Prüfung verwendet, kein neuer Scan.").font(.caption).foregroundStyle(.secondary)
-        }.onChange(of: mediaOnly) { _ in duplicatePage = 0; expandedDuplicateID = nil; selectedCopies = [:] }
+        }.onChange(of: mediaOnly) { _ in duplicatePage = 0; duplicateFolderPage = 0; expandedDuplicateID = nil; selectedCopies = [:] }
 
+    }
+
+    private var duplicateFolderPicker: some View {
+        let directory = duplicateFolder ?? store.root.path
+        let request = "\(showDuplicateFolders)-\(mediaOnly)-\(directory)-\(duplicateIndex.map { String(describing: ObjectIdentifier($0)) } ?? "none")"
+        return DisclosureGroup("Duplikate nach Ordner auswählen", isExpanded: $showDuplicateFolders) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Wähle z. B. Unsorted gesammelt aus. Nur doppelte Dateien werden ausgewählt; eine Kopie bleibt erhalten, bevorzugt außerhalb des Ordners.").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Alle Ordner") { duplicateFolder = nil; duplicateFolderPage = 0 }.disabled(duplicateFolder == nil)
+                    Button { duplicateFolder = (directory as NSString).deletingLastPathComponent; duplicateFolderPage = 0 } label: { Image(systemName: "arrow.up") }
+                        .disabled(duplicateFolder == nil || DiskScanner.canonicalPath(directory) == DiskScanner.canonicalPath(store.root.path)).help("Übergeordneten Ordner anzeigen")
+                    Text(directory).font(.caption).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    Spacer()
+                    Button("Diesen Ordner auswählen") { selectedCopies = duplicateIndex?.copiesForRemoval(mediaOnly: mediaOnly, inFolder: directory) ?? [:] }
+                        .disabled(store.isScanning || store.isApplyingRemovals)
+                }
+                if duplicateFoldersLoading { ProgressView("Ordner werden gebündelt …") }
+                else if duplicateFolders.isEmpty { Text("Keine weiteren Unterordner mit Duplikaten.").font(.caption).foregroundStyle(.secondary) }
+                else {
+                    let page = min(duplicateFolderPage, max(0, (duplicateFolders.count - 1) / 50))
+                    ForEach(Array(duplicateFolders.dropFirst(page * 50).prefix(50))) { item in
+                        HStack(spacing: 12) {
+                            Button { duplicateFolder = item.path; duplicateFolderPage = 0 } label: {
+                                Label((item.path as NSString).lastPathComponent, systemImage: "folder").font(.callout.weight(.semibold))
+                            }.buttonStyle(.plain).help("Unterordner von " + item.path + " anzeigen")
+                            Text("\(item.copies.formatted()) Kopien · \(diskBytes(item.bytes))").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Kopien auswählen") { selectedCopies = duplicateIndex?.copiesForRemoval(mediaOnly: mediaOnly, inFolder: item.path) ?? [:] }
+                                .disabled(store.isScanning || store.isApplyingRemovals).accessibilityLabel("Duplikate in " + item.path + " auswählen")
+                        }.padding(10).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    if duplicateFolders.count > 50 { browserPager(page: $duplicateFolderPage, count: duplicateFolders.count, size: 50) }
+                }
+            }.padding(.top, 10)
+        }.padding(14).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
+            .task(id: request) {
+                duplicateFolders = []
+                guard showDuplicateFolders, let index = duplicateIndex else { duplicateFoldersLoading = false; return }
+                duplicateFoldersLoading = true
+                let filter = mediaOnly
+                let worker = Task.detached(priority: .userInitiated) { try index.folders(mediaOnly: filter, directory: directory) }
+                do {
+                    let values = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+                    guard !Task.isCancelled else { return }
+                    duplicateFolders = values; duplicateFoldersLoading = false
+                } catch { if !Task.isCancelled { duplicateFoldersLoading = false } }
+            }
     }
 
     private func duplicateFiles(_ group: DuplicateGroup, total: Int64) -> some View {

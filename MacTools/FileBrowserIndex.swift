@@ -94,6 +94,13 @@ final class FileBrowserStore: ObservableObject {
     }
 }
 
+struct DuplicateFolderSummary: Identifiable, Sendable {
+    var id: String { path }
+    let path: String
+    let copies: Int
+    let bytes: Int64
+}
+
 final class DuplicateViewIndex: Sendable {
     let all: [DuplicateGroup]
     let allBytes: Int64
@@ -116,6 +123,43 @@ final class DuplicateViewIndex: Sendable {
         let name = file.path[start...]
         guard let dot = name.lastIndex(of: ".") else { return false }
         return extensions.contains(name[name.index(after: dot)...].lowercased())
+    }
+    func copiesForRemoval(mediaOnly: Bool, inFolder folder: String? = nil) -> [String: DiskFile] {
+        var selected: [String: DiskFile] = [:]
+        let base = folder.map(DiskScanner.canonicalPath)
+        for group in mediaOnly ? media : all {
+            let candidates = group.files.filter { file in
+                guard !file.isManagedVirtualDisk else { return false }
+                guard let base else { return true }
+                return DiskScanner.canonicalPath(file.path).hasPrefix(base == "/" ? "/" : base + "/")
+            }
+            // Prefer retaining a copy outside the chosen folder. If every copy
+            // belongs to it, keep the first one inside instead.
+            let copies = candidates.count == group.files.count ? candidates.dropFirst() : candidates[...]
+            for file in copies { selected[file.path] = file }
+        }
+        return selected
+    }
+    func folders(mediaOnly: Bool, directory: String) throws -> [DuplicateFolderSummary] {
+        let base = DiskScanner.canonicalPath(directory), prefix = base == "/" ? "/" : base + "/"
+        var totals: [String: (Int, Int64)] = [:]
+        for (offset, group) in (mediaOnly ? media : all).enumerated() {
+            if offset % 256 == 0 { try Task.checkCancellation() }
+            var children: [String: (Int, Int64)] = [:]
+            for file in group.files where !file.isManagedVirtualDisk {
+                let path = DiskScanner.canonicalPath(file.path)
+                guard path.hasPrefix(prefix), let slash = path.dropFirst(prefix.count).firstIndex(of: "/") else { continue }
+                let child = String(path[..<slash]), previous = children[child] ?? (0, 0)
+                children[child] = (previous.0 + 1, previous.1 + file.bytes)
+            }
+            for (path, value) in children {
+                let keep = value.0 == group.files.count
+                let previous = totals[path] ?? (0, 0)
+                totals[path] = (previous.0 + value.0 - (keep ? 1 : 0), previous.1 + value.1 - (keep ? group.files.first?.bytes ?? 0 : 0))
+            }
+        }
+        return totals.map { DuplicateFolderSummary(path: $0.key, copies: $0.value.0, bytes: $0.value.1) }
+            .filter { $0.copies > 0 }.sorted { $0.bytes == $1.bytes ? $0.path < $1.path : $0.bytes > $1.bytes }
     }
     /// Only affected groups touch their file arrays. Rendering and tab changes
     /// retain this immutable reference instead of comparing the full scan.
