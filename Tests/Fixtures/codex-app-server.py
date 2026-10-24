@@ -41,6 +41,8 @@ initialized = False
 usage_failure = None
 usage_refreshes = 0
 async_question=False
+async_question_status="inProgress"
+async_answer_method=None
 async_answered=False
 async_reply=None
 elicitation_accepted=False
@@ -79,11 +81,12 @@ for line in sys.stdin:
     elif method == 'test/elicitation-state':
         reply(m,{'accepted':elicitation_accepted})
     elif method == 'test/async-question':
-        async_question=True
-        event('turn/started',{'threadId':'test-old','turn':{'id':'async-turn','status':'inProgress'}})
+        async_question=True; async_reply=None; async_answered=False
+        async_question_status='completed' if p.get('idle') else 'inProgress'
+        event('turn/completed' if p.get('idle') else 'turn/started',{'threadId':'test-old','turn':{'id':'async-turn','status':async_question_status}})
         reply(m,{})
     elif method == 'test/async-answer-state':
-        reply(m,{'answered':async_answered,'reply':async_reply})
+        reply(m,{'answered':async_answered,'reply':async_reply,'method':async_answer_method})
     elif method == 'test/usage-failure':
         usage_failure=p.get('mode');reply(m,{})
     elif method == 'test/usage-refresh-stats':
@@ -191,7 +194,7 @@ for line in sys.stdin:
             recent['commandExecutionStartedAtMsById']={'qa-running-command':int((NOW-87)*1000)}
         if os.environ.get('MACTOOLS_QA_IMAGE_PATH'):recent['items'].insert(0,image_item)
         if async_question:
-            recent['status']='inProgress'
+            recent['status']=async_question_status
             recent['items'].append({'id':'async-item','type':'agentMessage','text':'Bitte wähle eine Option.','questions':[{'title':'Welche Ansicht soll geöffnet werden?','options':['Übersicht','Details']}]})
             if async_reply:recent['items'].append({'id':'async-answer','type':'userMessage','content':[{'type':'text','text':async_reply}]})
         reply(m, {'data': [turn('old', 'Ältere Antwort')] if p.get('cursor') else [recent],
@@ -203,6 +206,14 @@ for line in sys.stdin:
         value = chat('test-new'); value['projectId'] = assigned_projects.get('test-new')
         reply(m, {'thread': value})
         event('thread/started', {'thread': value})
+    elif method in ['turn/steer','turn/start'] and p['input'][0]['text'].startswith('<send_user_message_question_reply>'):
+        async_reply=p['input'][0]['text']
+        answers=json.loads(async_reply[len('<send_user_message_question_reply>'):-len('</send_user_message_question_reply>')])
+        assert p['threadId']=='test-old' and json.loads(answers[0]['questionItemId'])==['request_user_input_async','async-item',0]
+        assert answers[0]['answer']=='Details'
+        async_answered=True; async_answer_method=method
+        reply(m,{'turnId':p.get('expectedTurnId')} if method=='turn/steer' else {'turn':{'id':'answer-turn','status':'completed'}})
+        event('item/completed',{'threadId':'test-old','item':{'id':'async-answer','type':'userMessage','content':p['input']}})
     elif method == 'turn/start':
         turn_counter += 1
         tid = 'turn-test-' + str(turn_counter)
@@ -226,14 +237,6 @@ for line in sys.stdin:
             'type': 'agentMessage', 'id': 'reply-test', 'text': 'Hallo äöü!'}})
         emit({'id': 900, 'method': 'item/commandExecution/requestApproval',
               'params': {'threadId': 'test-new', 'turnId': tid, 'command': 'fixture-only'}})
-    elif method == 'turn/steer' and p['input'][0]['text'].startswith('<send_user_message_question_reply>'):
-        async_reply=p['input'][0]['text']
-        answers=json.loads(async_reply[len('<send_user_message_question_reply>'):-len('</send_user_message_question_reply>')])
-        assert p['threadId']=='test-old' and json.loads(answers[0]['questionItemId'])==['request_user_input_async','async-item',0]
-        assert answers[0]['answer']=='Details'
-        async_answered=True
-        reply(m,{'turnId':p['expectedTurnId']})
-        event('item/completed',{'threadId':'test-old','item':{'id':'async-answer','type':'userMessage','content':p['input']}})
     elif method == 'turn/steer':
         assert p['threadId'] == 'test-new' and p['input'][0]['text'] == 'Steuerung'
         reply(m, {'turnId': p['expectedTurnId']})

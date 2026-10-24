@@ -55,6 +55,12 @@ struct CodexChecks {
         var answeredTurns=questionTurns;var questionItems=answeredTurns[0]["items"] as! [[String:Any]]
         questionItems.append(["id":"answer","type":"userMessage","content":[["type":"text","text":reply]]]);answeredTurns[0]["items"]=questionItems
         precondition(CodexAsyncQuestion.pending(in:answeredTurns).isEmpty)
+        var idleQuestionTurns = questionTurns; idleQuestionTurns[0]["status"] = "completed"
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns) == [pendingQuestion])
+        let laterAnswer: [String:Any] = ["id":"later-turn","status":"completed","items":[["id":"later-answer","type":"userMessage","content":[["type":"text","text":"Zusätzlicher Kontext"],["type":"text","text":reply]]]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [laterAnswer]).isEmpty)
+        let rejectedAnswer: [String:Any] = ["id":"rejected-turn","status":"completed","items":[["id":"rejected-answer","type":"steeringUserMessage","status":"rejected","input":[["type":"text","text":reply]]]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [rejectedAnswer]) == [pendingQuestion])
         precondition(CodexQuestionReply.parse("<send_user_message_question_reply>invalid</send_user_message_question_reply>") == nil)
         print("PASS: async question identity matches native JSON contract; structured reply rendered and accepted answers resolve questions")
         let skillLabel = CodexReference(name: "data-analytics:product-business-analysis", path: "/tmp/SKILL.md", kind: "skill")
@@ -404,6 +410,14 @@ struct CodexChecks {
         let answerState = try await questionConnection.request("test/async-answer-state")
         precondition(answerState["answered"] as? Bool == true)
         precondition(questionStore.waitingCount == 0)
+        _ = try await questionConnection.request("test/async-question", ["idle": true])
+        await questionStore.select("test-old")
+        precondition(questionStore.currentTurn == nil && questionStore.asyncQuestions.count == 1 && questionStore.waitingCount == 1)
+        let idleSent = await questionStore.answerAsync(questionStore.asyncQuestions[0], answer: "Details")
+        let idleState = try await questionConnection.request("test/async-answer-state")
+        precondition(idleSent && idleState["method"] as? String == "turn/start" && questionStore.asyncQuestions.isEmpty && questionStore.waitingCount == 0)
+        precondition(questionStore.drafts["test-old"] == "Unveränderter Entwurf")
+        print("PASS: completed-turn question remains answerable while idle, starts a new turn, preserves draft, resolves across later turns and clears waiting status")
         _ = try await questionConnection.request("test/elicitation")
         for _ in 0..<100 where questionStore.prompts.isEmpty { try await Task.sleep(nanoseconds:10_000_000) }
         precondition(questionStore.prompts.count == 1 && questionStore.waitingCount == 1 && questionStore.activityHistory.last?.waiting == 1)

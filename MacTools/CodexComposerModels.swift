@@ -288,15 +288,19 @@ struct CodexAsyncQuestion: Identifiable, Equatable {
     let title: String
     let options: [String]
     static func pending(in turns:[[String:Any]]) -> [Self] {
-        guard let turn = turns.last(where: { $0["status"] as? String == "inProgress" }),let items = turn["items"] as? [[String:Any]] else { return [] }
+        // Async questions outlive the turn that asked them. Codex can finish
+        // that turn while waiting, and the answer then arrives in a new turn.
+        let items = turns.flatMap { $0["items"] as? [[String:Any]] ?? [] }
         var answered = Set<String>()
         for item in items {
             let type = item["type"] as? String
             guard type == "userMessage" || type == "steeringUserMessage" else { continue }
             if type == "steeringUserMessage",let status = item["status"] as? String,status != "accepted" { continue }
             let input = item["content"] as? [[String:Any]] ?? item["input"] as? [[String:Any]] ?? []
-            guard input.count == 1,let text = input.first?["text"] as? String,let replies = CodexQuestionReply.parse(text) else { continue }
-            answered.formUnion(replies.map(\.questionItemId))
+            for content in input {
+                guard let text = content["text"] as? String, let replies = CodexQuestionReply.parse(text) else { continue }
+                answered.formUnion(replies.map(\.questionItemId))
+            }
         }
         return items.flatMap { item -> [Self] in
             guard item["type"] as? String == "agentMessage",let sourceID = item["id"] as? String else { return [] }
