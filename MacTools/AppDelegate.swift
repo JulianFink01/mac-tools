@@ -103,7 +103,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard CodexQueueRepository.shared.hasLocalWork else { return .terminateNow }
+        if !CodexQueueRepository.shared.hasLocalWork {
+            guard InfraTerminalStore.shared.sessions.contains(where: { $0.running }) else { return .terminateNow }
+            let alert = NSAlert(); alert.messageText = "SSH-Sitzungen sind noch geöffnet"
+            alert.informativeText = "Beim Beenden werden die Terminal-Verbindungen und ihre laufenden Programme geschlossen."
+            alert.addButton(withTitle: "Weiterlaufen lassen"); alert.addButton(withTitle: "Sitzungen schließen und beenden")
+            return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
+        }
         let alert = NSAlert()
         alert.messageText = "MacTools führt noch Codex-Chats aus"
         alert.informativeText = "Ein Beenden würde diese Arbeit unterbrechen. Lass MacTools bis zum Abschluss geöffnet oder beende den betroffenen Chat gezielt. Chats, die im Original-Codex laufen, sind davon nicht betroffen."
@@ -115,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         PrivateMCPStore.shared.stop()
+        InfraTerminalStore.shared.stop()
         menuBarController?.shutdown(); monitorWidgets?.shutdown()
         NowPlayingStore.shared.stop()
         ContainerStore.shared.stop()

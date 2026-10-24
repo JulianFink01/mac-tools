@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+F06900000000000000000003 = {isa = PBXBuildFile; fileRef = F06900000000000000000001; };
+F06900000000000000000004 = {isa = PBXBuildFile; fileRef = F06900000000000000000002; };
+F06900000000000000000006 = {isa = PBXBuildFile; fileRef = F06900000000000000000005; };
 		B12345000000000000000201 /* MacToolsMCP.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12345000000000000000101 /* MacToolsMCP.swift */; };
 		B12345000000000000000200 /* LocalToolBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12345000000000000000100 /* LocalToolBridge.swift */; };
         AC0000030000000000000001 = {isa = PBXBuildFile; fileRef = AC0000040000000000000001; };
@@ -72,6 +75,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+F06900000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalProcess.swift; sourceTree = "<group>"; };
+F06900000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfraTerminalView.swift; sourceTree = "<group>"; };
+F06900000000000000000005 = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/Terminal; sourceTree = SOURCE_ROOT; };
 		B12345000000000000000101 /* MacToolsMCP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacToolsMCP.swift; sourceTree = "<group>"; };
 		B12345000000000000000100 /* LocalToolBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalToolBridge.swift; sourceTree = "<group>"; };
         AC0000040000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexFeaturesView.swift; sourceTree = "<group>"; };
@@ -185,6 +191,9 @@
                 0A0000380000000000000001,
                 0A0000370000000000000001,
                 0A0000360000000000000001,
+F06900000000000000000001,
+F06900000000000000000002,
+F06900000000000000000005,
                 0A0000350000000000000001,
                 0A0000310000000000000001,
                 0A00002D0000000000000001,
@@ -308,6 +317,7 @@
 				0A00010D0000000000000001 /* Assets.xcassets in Resources */,
                 AC0000010000000000000001,
                 0A0001190000000000000001,
+F06900000000000000000006,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -331,6 +341,8 @@
                 0A0001380000000000000001,
                 0A0001370000000000000001,
                 0A0001360000000000000001,
+F06900000000000000000003,
+F06900000000000000000004,
                 0A0001350000000000000001,
                 0A0001310000000000000001,
                 0A00012D0000000000000001,

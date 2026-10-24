@@ -43,6 +43,7 @@ else
   lipo -create "${SAVER_BINARIES[@]}" -output "$SAVER_PATH/Contents/MacOS/MacToolsScreenSaver"
 fi
 ditto Vendor/Mermaid "$APP_PATH/Contents/Resources/Mermaid"
+ditto Vendor/Terminal "$APP_PATH/Contents/Resources/Terminal"
 ditto Vendor/ClamAV "$APP_PATH/Contents/Resources/ClamAV"
 cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/THIRD_PARTY_NOTICES.md"
 python3 - "$APP_PATH" "$SAVER_PATH" <<'PY'

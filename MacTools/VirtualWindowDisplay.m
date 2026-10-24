@@ -1,6 +1,19 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import "MacToolsNative.h"
+#include <util.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+int MTStartTerminal(int *master, const char *executable, char *const argv[], char *const envp[], unsigned short columns, unsigned short rows) {
+    struct winsize size = { .ws_row = rows, .ws_col = columns };
+    pid_t pid = forkpty(master, NULL, NULL, &size);
+    if (pid == 0) { execve(executable, argv, envp); _exit(127); }
+    return pid;
+}
+void MTResizeTerminal(int master, unsigned short columns, unsigned short rows) {
+    struct winsize size = { .ws_row = rows, .ws_col = columns };
+    ioctl(master, TIOCSWINSZ, &size);
+}
 CGError MTSetCursorWarpSuppression(CFTimeInterval interval) {
     // CGEventSource's replacement only configures posted events. CGWarp has
     // no source; Wine uses this scoped compatibility call for that case.

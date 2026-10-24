@@ -292,23 +292,33 @@ struct CodexAsyncQuestion: Identifiable, Equatable {
         // that turn while waiting, and the answer then arrives in a new turn.
         let items = turns.flatMap { $0["items"] as? [[String:Any]] ?? [] }
         var answered = Set<String>()
+        var pending: [Self] = []
         for item in items {
             let type = item["type"] as? String
-            guard type == "userMessage" || type == "steeringUserMessage" else { continue }
-            if type == "steeringUserMessage",let status = item["status"] as? String,status != "accepted" { continue }
-            let input = item["content"] as? [[String:Any]] ?? item["input"] as? [[String:Any]] ?? []
-            for content in input {
-                guard let text = content["text"] as? String, let replies = CodexQuestionReply.parse(text) else { continue }
-                answered.formUnion(replies.map(\.questionItemId))
+            if type == "userMessage" || type == "steeringUserMessage" {
+                if type == "steeringUserMessage",let status = item["status"] as? String,status != "accepted" { continue }
+                var input = item["content"] as? [[String:Any]] ?? item["input"] as? [[String:Any]] ?? []
+                if input.isEmpty {
+                    let text = (item["restoreMessage"] as? [String:Any])?["text"] as? String ?? item["text"] as? String ?? ""
+                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { input = [["type":"text","text":text]] }
+                }
+                var structured = false
+                for content in input {
+                    guard let text = content["text"] as? String, let replies = CodexQuestionReply.parse(text) else { continue }
+                    answered.formUnion(replies.map(\.questionItemId)); structured = true
+                }
+                // A normal human reply also continues a conversation after a
+                // question (e.g. "the volume is connected"). Never resurrect it.
+                if !structured, !input.isEmpty { answered.formUnion(pending.map(\.id)) }
+                continue
             }
-        }
-        return items.flatMap { item -> [Self] in
-            guard item["type"] as? String == "agentMessage",let sourceID = item["id"] as? String else { return [] }
-            return (item["questions"] as? [[String:Any]] ?? []).enumerated().compactMap { index,question in
+            guard type == "agentMessage",let sourceID = item["id"] as? String else { continue }
+            pending += (item["questions"] as? [[String:Any]] ?? []).enumerated().compactMap { index,question in
                 guard let title = question["title"] as? String,!title.isEmpty,
                       let data = try? JSONSerialization.data(withJSONObject:["request_user_input_async",sourceID,index],options:[.fragmentsAllowed,.withoutEscapingSlashes]),let id = String(data:data,encoding:.utf8),!answered.contains(id) else { return nil }
                 return Self(id:id,title:title,options:question["options"] as? [String] ?? [])
             }
         }
+        return pending.filter { !answered.contains($0.id) }
     }
 }

@@ -4,20 +4,42 @@ import Charts
 struct PrivateMCPPage: View {
     let kind: PrivateMCPKind
     var body: some View {
-        if let service = PrivateMCPStore.shared.service(kind) { PrivateMCPConfigurationView(service: service) }
+        if let service = PrivateMCPStore.shared.service(kind) {
+            if kind == .infrapilot { InfraPilotPage(service: service) }
+            else { PrivateMCPConfigurationView(service: service) }
+        }
         else { Text("Diese Integration ist auf diesem Mac nicht freigeschaltet.").foregroundStyle(.secondary) }
+    }
+}
+struct InfraPilotPage: View {
+    @ObservedObject var service: PrivateMCPService
+    var terminalStore: InfraTerminalStore = .shared
+    @State private var tab = "Übersicht"
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                ToolPageHeader(title: "InfraPilot", description: "Cluster-Health und direkte SSH-Verbindung", icon: service.kind.icon)
+                Label("Privater Build · nur auf diesem Mac freigeschaltet", systemImage: "lock.shield").font(.callout).foregroundStyle(.mint)
+                ToolTabBar(selection: $tab, options: [ToolTab(value: "Übersicht", title: "Übersicht", icon: "chart.bar.xaxis"), ToolTab(value: "Terminal", title: "Terminal", icon: "terminal")], accessibilityName: "InfraPilot")
+            }.padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 10)
+            if tab == "Übersicht" { PrivateMCPConfigurationView(service: service, showsHeader: false) }
+            else { InfraTerminalView(store: terminalStore) }
+        }
     }
 }
 struct PrivateMCPConfigurationView: View {
     @ObservedObject var service: PrivateMCPService
+    var showsHeader = true
     @State private var endpoint = ""
     @State private var configurationError: String?
     @State private var detailConsumer = UUID()
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ToolPageHeader(title: service.kind.title, description: "Health und Status live über MCP", icon: service.kind.icon)
-                Label("Privater Build · nur auf diesem Mac freigeschaltet", systemImage: "lock.shield").font(.callout).foregroundStyle(.mint)
+                if showsHeader {
+                    ToolPageHeader(title: service.kind.title, description: "Health und Status live über MCP", icon: service.kind.icon)
+                    Label("Privater Build · nur auf diesem Mac freigeschaltet", systemImage: "lock.shield").font(.callout).foregroundStyle(.mint)
+                }
                 VStack(alignment: .leading, spacing: 16) {
                     HStack { Label(service.stateLabel, systemImage: service.critical ? "exclamationmark.triangle.fill" : "checkmark.circle").font(.title2.weight(.semibold)).foregroundStyle(service.critical ? Color.red : .primary); Spacer(); if service.busy { ProgressView().controlSize(.small) } }
                     if let health = service.health {

@@ -61,6 +61,14 @@ struct CodexChecks {
         precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [laterAnswer]).isEmpty)
         let rejectedAnswer: [String:Any] = ["id":"rejected-turn","status":"completed","items":[["id":"rejected-answer","type":"steeringUserMessage","status":"rejected","input":[["type":"text","text":reply]]]]]
         precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [rejectedAnswer]) == [pendingQuestion])
+        let ordinaryReply: [String:Any] = ["id":"normal-reply","status":"completed","items":[["id":"user-normal","type":"userMessage","content":[["type":"text","text":"volume ist da jetzt"]]]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [ordinaryReply]).isEmpty)
+        let restoredReply: [String:Any] = ["status":"completed","items":[["id":"restored-user","type":"steeringUserMessage","status":"accepted","restoreMessage":["text":"volume ist da jetzt"]]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [restoredReply]).isEmpty)
+        let plainReply: [String:Any] = ["status":"completed","items":[["id":"plain-user","type":"userMessage","text":"volume ist da jetzt"]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [plainReply]).isEmpty)
+        let followupQuestion: [String:Any] = ["id":"next-question","status":"completed","items":[["id":"call-2","type":"agentMessage","questions":[["title":"Neue Frage?"]]]]]
+        precondition(CodexAsyncQuestion.pending(in:idleQuestionTurns + [ordinaryReply, followupQuestion]).count == 1)
         precondition(CodexQuestionReply.parse("<send_user_message_question_reply>invalid</send_user_message_question_reply>") == nil)
         print("PASS: async question identity matches native JSON contract; structured reply rendered and accepted answers resolve questions")
         let skillLabel = CodexReference(name: "data-analytics:product-business-analysis", path: "/tmp/SKILL.md", kind: "skill")

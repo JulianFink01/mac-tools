@@ -95,3 +95,5 @@ von [Chromium](https://chromium.googlesource.com/chromium/src/+/HEAD/ui/display/
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Mermaid 11.12.0 · MIT · https://github.com/mermaid-js/mermaid · license: Vendor/Mermaid/LICENSE
+
+xterm.js 6.0.0 and addon-fit 0.11.0 · MIT · https://github.com/xtermjs/xterm.js · licenses: Vendor/Terminal/LICENSE-xterm, Vendor/Terminal/LICENSE-addon-fit
