@@ -224,13 +224,19 @@ struct CodexActivityDetails: Equatable {
 struct CodexActivityExpansionState: Equatable {
     private var groups: [String:Bool] = [:]
     private var details: [String:Bool] = [:]
+    private var groupAnchors: [String:String] = [:]
     private func key(_ thread: String, _ item: String) -> String { thread + ":" + item }
+    func groupAnchor(thread: String, ids: [String]) -> String {
+        ids.compactMap { groupAnchors[key(thread,$0)] }.first ?? ids.first ?? "empty"
+    }
     func group(thread: String, ids: [String], running: Bool) -> Bool {
         ids.compactMap { groups[key(thread,$0)] }.first ?? false
     }
     mutating func rememberGroup(thread: String, ids: [String], running: Bool) {
         let value = group(thread:thread,ids:ids,running:running)
+        let anchor = groupAnchor(thread:thread,ids:ids)
         for id in ids where groups[key(thread,id)] == nil { groups[key(thread,id)] = value }
+        for id in ids where groupAnchors[key(thread,id)] == nil { groupAnchors[key(thread,id)] = anchor }
     }
     mutating func setGroup(_ value: Bool, thread: String, ids: [String]) {
         for id in ids { groups[key(thread,id)] = value }

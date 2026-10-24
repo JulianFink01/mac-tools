@@ -23,6 +23,10 @@ struct CodexChecks {
         disclosure.rememberDetail(thread:"one",id:"c",running:true)
         precondition(!disclosure.detail(thread:"one",id:"c",running:true))
         precondition(!disclosure.detail(thread:"two",id:"b",running:false))
+        precondition(disclosure.groupAnchor(thread:"one",ids:["prefix","a","b","c"]) == "a")
+        disclosure.rememberGroup(thread:"one",ids:["prefix","a","b","c","tail"],running:true)
+        precondition(disclosure.groupAnchor(thread:"one",ids:["b","c","tail"]) == "a", "Prepending, streaming and trimming history must preserve the visible activity group's anchor")
+        precondition(disclosure.groupAnchor(thread:"two",ids:["prefix","b"]) == "prefix")
         print("PASS: activities and commands default closed even while running; opened and closed command choices survive streaming, completion and moving history groups; isolated per chat")
         func elicitation(_ params:[String:Any]) -> CodexPrompt { CodexPrompt(id:UUID(),requestID:959,method:"mcpServer/elicitation/request",threadID:"test-old",params:params) }
         let emptyForm: [String:Any] = ["mode":"form","requestedSchema":["type":"object","properties":[:]]]
@@ -321,6 +325,7 @@ struct CodexChecks {
         precondition(store.messages.map(\.text) == ["Ältere Antwort", "Neuere Antwort"])
         await store.loadHistory()
         precondition(store.messages.map(\.text) == ["Ältere Antwort", "Neuere Antwort"], "Refreshing must preserve chronological order")
+        precondition(store.olderCursor == nil, "Refreshing the recent tail must not reopen completed pagination")
         print("PASS: handshake, Unicode, real pagination, chronological history and external-chat protection")
         async let first = connection.request("test/first")
         async let second = connection.request("test/second")

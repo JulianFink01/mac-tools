@@ -49,7 +49,7 @@ turn_counter = 0
 last_started_cwd = None
 native_queue = [{'id':'server-queue-1','clientUserMessageId':'client-1','input':[{'type':'text','text':'Native wartende Nachricht'},{'type':'localImage','path':'/tmp/native-context.png'}]}, {'id':'server-queue-2','input':[{'type':'text','text':'Zweite native Nachricht'}]}]
 if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):
-    path=os.environ['MACTOOLS_QA_IMAGE_PATH']
+    path=os.environ.get('MACTOOLS_QA_IMAGE_PATH', '')
     native_queue[0]['input']=[{'type':'text','text':'# Files mentioned by the user:\n\n## screenshot.png: '+path+'\n\n## My request:\nBitte dieses Bild prüfen\n<image name="Bild" path="'+path+'"></image>'},{'type':'localImage','path':path}]
 catalog_calls = {}
 ui_command_updates = 0
@@ -171,10 +171,19 @@ for line in sys.stdin:
     elif method == 'test/queue-empty':
         native_queue=[];reply(m,{})
     elif method == 'thread/turns/list':
+        if os.environ.get('MACTOOLS_QA_MULTI_HISTORY') and p.get('cursor'):
+            time.sleep(0.6)
+            if p['cursor'] == 'next-turns':
+                reply(m, {'data':[{'id':'older-collapsed','items':[{'id':'older-command-'+str(i),'type':'commandExecution','command':'echo fixture','status':'completed','exitCode':0} for i in range(80)]}], 'nextCursor':'older-second'})
+            else:
+                reply(m, {'data':[turn('oldest-marker','VERLAUF_SEITE_2 – automatisch nachgeladen')], 'nextCursor':None})
+            continue
         image_item={'id':'image-message','type':'userMessage','content':[{'type':'localImage','path':os.environ.get('MACTOOLS_QA_IMAGE_PATH','')}] }
         recent=turn('recent','Neuere Antwort')
         if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):
             recent['items']=[{'id':'long-'+str(i),'type':'agentMessage','text':'Historie Nachricht '+str(i)+' – alter Verlauf. '*8} for i in range(180)]+[{'id':'final-qa','type':'agentMessage','text':'ENDE DES PRUEFCHATS – neueste Nachricht'}]
+        if os.environ.get('MACTOOLS_QA_MULTI_HISTORY'):
+            recent['items'][:0]=[{'id':'initial-command-'+str(i),'type':'commandExecution','command':'echo fixture','status':'completed','exitCode':0} for i in range(8)]
         if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):
             recent['items'][-1:-1]=[
                 {'id':'qa-finished-command','type':'commandExecution','command':'printf "Fertiger Testbefehl\\n"','cwd':'/tmp','status':'completed','durationMs':1500,'exitCode':0,'aggregatedOutput':'Fertiger Testbefehl\n'},

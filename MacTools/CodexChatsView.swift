@@ -315,6 +315,7 @@ struct CodexChatsView: View {
                         }.padding(.top, 90).padding(.bottom, 50)
                     }
                     ForEach(blocks) { block in
+                        Group {
                         if block.activity {
                             CodexActivityGroup(messages: block.messages, threadID: store.selectedID ?? "new", expansion: $activityExpansion)
                         } else if let message = block.messages.first {
@@ -330,11 +331,15 @@ struct CodexChatsView: View {
                                 if message.role != "Du" { Spacer(minLength: 0) }
                             }
                         }
+                        }.id(block.id)
                     }
                     ForEach(store.prompts.filter { $0.threadID == store.selectedID }) { prompt in CodexPromptView(prompt: prompt, store: store) }
                     Color.clear.frame(height: 1).id("end")
                 }.modifier(CodexTranscriptTargets()).frame(maxWidth: 760, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity)
-                    .background(CodexTranscriptScrollObserver(state:transcriptScroll,scrolled:{ atBottom in followLive = atBottom },reachedTop:{ loadOlderHistory(proxy) }))
+                    .background(CodexTranscriptScrollObserver(state:transcriptScroll,
+                        canLoadOlder: !loadingOlder && !store.loadingHistory && (store.hasOlderNativeHistory || store.olderCursor != nil),
+                        historyRevision: "\(store.selectedID ?? "new"):\(store.messages.first?.id ?? "empty"):\(store.olderCursor ?? "")",
+                        scrolled:{ atBottom in followLive = atBottom },reachedTop:{ loadOlderHistory(proxy) }))
                     .background(GeometryReader { geometry in Color.clear.onChange(of: geometry.size.height) { _ in scrollToLatest(proxy) } })
             }.modifier(CodexInitialScrollAnchor()).modifier(CodexTranscriptPosition(id: $visibleMessageID))
                 .background(GeometryReader { geometry in
@@ -360,8 +365,8 @@ struct CodexChatsView: View {
                 .onChange(of: followLive) { value in if value { transcriptScroll.userPaused = false; scrollToLatest(proxy) } }
         }
     }
-    private func loadOlderHistory(_ proxy: ScrollViewProxy) {
-        guard !loadingOlder, !store.loadingHistory, store.hasOlderNativeHistory || store.olderCursor != nil else { return }
+    @discardableResult private func loadOlderHistory(_ proxy: ScrollViewProxy) -> Bool {
+        guard !loadingOlder, !store.loadingHistory, store.hasOlderNativeHistory || store.olderCursor != nil else { return false }
         let id = store.selectedID, anchor = blocks.first(where: { !$0.activity })?.id ?? blocks.first?.id
         loadingOlder = true; transcriptScroll.userPaused = true; followLive = false
         Task {
@@ -373,6 +378,7 @@ struct CodexChatsView: View {
             }
             loadingOlder = false
         }
+        return true
     }
     private func beginTranscript(_ proxy: ScrollViewProxy) {
         transcriptScroll.userPaused = false; transcriptScroll.automaticUntil = Date().addingTimeInterval(2); followLive = true; scrollToLatest(proxy)
@@ -390,7 +396,13 @@ struct CodexChatsView: View {
             if isActivity, result.last?.activity == true { result[result.count - 1].messages.append(message) }
             else { result.append(Block(id: message.id, activity: isActivity, messages: [message])) }
         }
-        return result
+        var used = Set<String>()
+        return result.map { block in
+            guard block.activity else { return block }
+            let anchor = activityExpansion.groupAnchor(thread:store.selectedID ?? "new",ids:block.messages.map(\.id))
+            let id = "activities:" + (used.insert(anchor).inserted ? anchor : block.id)
+            return Block(id:id,activity:true,messages:block.messages)
+        }
     }
 }
 
@@ -409,7 +421,7 @@ private struct CodexTranscriptTargets: ViewModifier {
 private struct CodexTranscriptPosition: ViewModifier {
     @Binding var id: String?
     func body(content: Content) -> some View {
-        if #available(macOS 14, *) { content.scrollPosition(id: $id, anchor: .top) } else { content }
+        if #available(macOS 14, *) { content.scrollPosition(id: $id) } else { content }
     }
 }
 
@@ -419,14 +431,29 @@ private final class CodexTranscriptScrollState: ObservableObject {
 }
 private struct CodexTranscriptScrollObserver: NSViewRepresentable {
     let state: CodexTranscriptScrollState
+    var canLoadOlder = false
+    var historyRevision = ""
     let scrolled: (Bool) -> Void
-    var reachedTop: () -> Void = {}
-    func makeNSView(context: Context) -> Observer { let view = Observer(); view.state = state; view.scrolled = scrolled; view.reachedTop = reachedTop; return view }
-    func updateNSView(_ view: Observer, context: Context) { view.state = state; view.scrolled = scrolled; view.reachedTop = reachedTop; view.scheduleAttachment() }
+    var reachedTop: () -> Bool = { false }
+    func makeNSView(context: Context) -> Observer { Observer() }
+    func updateNSView(_ view: Observer, context: Context) {
+        view.state = state; view.scrolled = scrolled; view.reachedTop = reachedTop
+        view.configurePaging(available: canLoadOlder, revision: historyRevision)
+        view.scheduleAttachment()
+    }
     final class Observer: NSView {
         var scrolled: ((Bool) -> Void)?
-        var reachedTop: (() -> Void)?
+        var reachedTop: (() -> Bool)?
         private var topTriggered = false
+        private var canLoadOlder = false
+        private var historyRevision = ""
+        func configurePaging(available: Bool, revision: String) {
+            let becameAvailable = available && !canLoadOlder
+            let revisionChanged = historyRevision != revision
+            if revisionChanged { historyRevision = revision; topTriggered = false }
+            canLoadOlder = available
+            if available && (becameAvailable || revisionChanged) { schedulePositionRead() }
+        }
         var state: CodexTranscriptScrollState?
         private var monitor: Any?
         private var boundsObserver: NSObjectProtocol?
@@ -491,22 +518,36 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             let changedGeometry = abs(document.bounds.height - lastDocumentHeight) > 1 || abs(visible.height - lastViewportHeight) > 1
             let moved = abs(visible.minY - lastOrigin) > 1
             let progress = scroll.verticalScroller?.doubleValue
+            let movedUp = !changedGeometry && moved && (progress.map { $0 < lastProgress - 0.0001 } ?? (document.isFlipped ? visible.minY < lastOrigin : visible.minY > lastOrigin))
             lastDocumentHeight = document.bounds.height; lastViewportHeight = visible.height; lastOrigin = visible.minY; if let progress { lastProgress = progress }
+            // Trackpad/scrollbar accessibility events need not carry this NSWindow.
+            // A real upward viewport movement must still leave live-follow mode.
+            if movedUp, let state, Date() > state.automaticUntil {
+                scrollingUp = true
+                state.userPaused = true
+                DispatchQueue.main.async { [weak self] in self?.scrolled?(false) }
+            }
+            if !changedGeometry, moved, !movedUp, let state, Date() > state.automaticUntil { scrollingUp = false }
             let distance = progress.map { CGFloat(1 - $0) * max(0, document.bounds.height - visible.height) } ?? (document.isFlipped ? document.bounds.maxY - visible.maxY : visible.minY - document.bounds.minY)
             let atBottom = distance <= 32 && !scrollingUp
             // Lazy rows can finish measuring during a user's return to the bottom.
-            let returnedToBottom = moved && atBottom && state?.userPaused == true
             let topDistance = progress.map { CGFloat($0) * max(0,document.bounds.height-visible.height) } ?? visible.minY
             // Start before the reader hits the edge, while there is still a
             // viewport of content available to cover the request/layout latency.
             let preloadDistance: CGFloat
             if #available(macOS 14, *) { preloadDistance = max(600, visible.height * 1.5) } else { preloadDistance = 45 }
             if topDistance > preloadDistance * 1.5 { topTriggered = false }
-            guard userInitiated || draggingScrollbar || (state?.userPaused == true && (returnedToBottom || (!changedGeometry && moved))) else { return }
-            if topDistance <= preloadDistance, state?.userPaused == true, !topTriggered {
+            if userInitiated, canLoadOlder { topTriggered = false }
+            if topDistance <= preloadDistance, state?.userPaused == true, canLoadOlder, !topTriggered {
                 topTriggered = true
-                DispatchQueue.main.async { [weak self] in self?.reachedTop?() }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    guard self.canLoadOlder, self.state?.userPaused == true, self.reachedTop?() == true else { self.topTriggered = false; return }
+                }
             }
+            // Geometry changes from prepending, expanding a command or loading
+            // an image are not a user returning to the live end of the chat.
+            guard userInitiated || draggingScrollbar || (state?.userPaused == true && !changedGeometry && moved) else { return }
             state?.userPaused = !atBottom
             DispatchQueue.main.async { [weak self] in self?.scrolled?(atBottom) }
         }

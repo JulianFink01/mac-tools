@@ -369,6 +369,7 @@ final class CodexStore: ObservableObject {
     @Published private(set) var answeringPrompts = Set<UUID>()
     private var nativePromptPayloads: [String: Data] = [:]
     @Published private(set) var olderCursor: String?
+    private var historyPagingInitialized = false
     @Published private(set) var listCursor: String?
     var drafts: [String: String] = [:] { didSet { defaults.set(drafts, forKey: "codexChatDrafts") } }
     @Published private(set) var usageBuckets: [CodexUsageBucket] = []
@@ -690,7 +691,7 @@ final class CodexStore: ObservableObject {
         guard !sending else { return false }
         historyToken = UUID(); selectedID = id; currentModel = nil; currentEffort = nil; desktop.selectedID = id
         nativeProjectionEpoch = UUID(); nativeHistoryLimit = 80; latestNativeTranscript = nil; hasOlderNativeHistory = false;asyncQuestions = [];confirmedAsyncAnswers = []
-        messages = []; olderCursor = nil; activity = ""; error = nil; loadingHistory = true
+        messages = []; olderCursor = nil; historyPagingInitialized = false; activity = ""; error = nil; loadingHistory = true
         return true
     }
     func finishSelection(_ id: String) async {
@@ -711,7 +712,7 @@ final class CodexStore: ObservableObject {
         let target = project ?? selected.flatMap { self.project(for: $0) } ?? newChatProject
         workingDirectory = target?.paths.first ?? selected?.cwd ?? workingDirectory
         newChatProjectID = target?.id
-        historyToken = UUID(); selectedID = nil; desktop.selectedID = nil; messages = [];asyncQuestions = [];confirmedAsyncAnswers = []; olderCursor = nil; loadingHistory = false; activity = ""; error = nil
+        historyToken = UUID(); selectedID = nil; desktop.selectedID = nil; messages = [];asyncQuestions = [];confirmedAsyncAnswers = []; olderCursor = nil; historyPagingInitialized = false; loadingHistory = false; activity = ""; error = nil
     }
     func newChat(inFolder folder: String) {
         newChat(in: projects.first { $0.paths.contains(folder) })
@@ -747,7 +748,7 @@ final class CodexStore: ObservableObject {
             if enableDesktop, !desktop.hasOwner(id), let path = selected?.rolloutPath {
                 let stored = await CodexTranscript.storedMessages(path: path)
                 guard selectedID == id, historyToken == token else { return }
-                messages = stored; olderCursor = nil; return
+                messages = stored; olderCursor = nil; historyPagingInitialized = true; return
             }
             var params: [String: Any] = ["threadId": id, "limit": 12, "itemsView": "full", "sortDirection": "desc"]
             if older, let olderCursor { params["cursor"] = olderCursor }
@@ -762,7 +763,10 @@ final class CodexStore: ObservableObject {
                 let known = Set(messages.map(\.id))
                 messages = messages.map { incoming[$0.id] ?? $0 } + items.filter { !known.contains($0.id) }
             }
-            olderCursor = response["nextCursor"] as? String
+            // Refreshing the recent tail must not rewind pagination already
+            // advanced by the reader (including a confirmed end of history).
+            if older || !historyPagingInitialized { olderCursor = response["nextCursor"] as? String }
+            historyPagingInitialized = true
             if !older { asyncQuestions = CodexAsyncQuestion.pending(in:Array(turns.reversed())).filter { !confirmedAsyncAnswers.contains($0.id) } }
             if connection.sharedServer, let turn = turns.first, turn["status"] as? String == "inProgress", let turnID = turn["id"] as? String { activeTurns[id] = turnID }
         } catch { if selectedID == id && historyToken == token { self.error = error.localizedDescription } }
