@@ -2,6 +2,27 @@ import AppKit
 import SwiftUI
 import Combine
 
+
+@MainActor extension NSPopover {
+    /// Status-item clicks do not activate an accessory app automatically.
+    /// Focus once on opening so typing and native outside-click dismissal work.
+    func showFocused(relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge) {
+        NSApp.activate(ignoringOtherApps: true)
+        show(relativeTo: rect, of: view, preferredEdge: preferredEdge)
+        focusContent()
+        DispatchQueue.main.async { [weak self] in self?.focusContent() }
+    }
+    private func focusContent() {
+        guard isShown, let view = contentViewController?.view, let window = view.window else { return }
+        window.makeKeyAndOrderFront(nil)
+        func composer(in view: NSView) -> CodexComposer.Editor? {
+            if let editor = view as? CodexComposer.Editor { return editor }
+            return view.subviews.lazy.compactMap { composer(in: $0) }.first
+        }
+        if let editor = composer(in: view) { window.makeFirstResponder(editor) }
+    }
+}
+
 extension Notification.Name { static let showMacToolsQuickPanel = Notification.Name("showMacToolsQuickPanel") }
 extension Notification.Name { static let showPinnedCodexChat = Notification.Name("showPinnedCodexChat") }
 extension Notification.Name { static let showCodexMenuStats = Notification.Name("showCodexMenuStats") }
@@ -112,7 +133,7 @@ final class MenuBarController: NSObject {
                     let item = NSStatusBar.system.statusItem(withLength: tool == .codex ? 52 : tool == .codexLimit ? 46 : NSStatusItem.squareLength)
                     let action = PinnedToolAction { [weak self] in
                         if tool == .codex { self?.toggleCodexStats() } else if tool == .codexLimit, let button = self?.toolItems[tool]?.button {
-                            if self?.usagePopover.isShown == true { self?.usagePopover.close() } else { self?.usagePopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }; CodexStore.shared.start()
+                            if self?.usagePopover.isShown == true { self?.usagePopover.close() } else { self?.usagePopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }; CodexStore.shared.start()
                         } else { openSection(tool) }
                     }
                     self.toolItems[tool] = item; self.toolActions[tool] = action
@@ -201,7 +222,7 @@ final class MenuBarController: NSObject {
     private func toggleCodexStats() {
         guard let button = toolItems[.codex]?.button else { return }
         if codexPopover.isShown { codexPopover.close() }
-        else { CodexStore.shared.start(); codexPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        else { CodexStore.shared.start(); codexPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
     }
     private func updateHealthIndicator() {
         let critical = PrivateMCPStore.shared.criticalServices
@@ -235,7 +256,7 @@ final class MenuBarController: NSObject {
         if popover.isShown { popover.close(); return }
         guard let button = statusItem.button else { return }
         WindowPinController.shared.prepareMenuSelection()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 }
 
@@ -255,7 +276,7 @@ final class MenuBarController: NSObject {
     func show(from button:NSStatusBarButton, at point:NSPoint) {
         Self.active?.close()
         targetScreen = NSScreen.screens.first { $0.frame.contains(point) } ?? button.window?.screen ?? NSScreen.main
-        guard let screen = targetScreen else { popover.show(relativeTo:button.bounds,of:button,preferredEdge:.minY);return }
+        guard let screen = targetScreen else { popover.showFocused(relativeTo:button.bounds,of:button,preferredEdge:.minY);return }
         if anchor == nil {
             let panel = NSPanel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
             panel.isReleasedWhenClosed=false;panel.isOpaque=false;panel.backgroundColor = .clear
@@ -266,12 +287,12 @@ final class MenuBarController: NSObject {
         guard let anchor,let view=anchor.contentView else { return }
         anchor.setFrame(Self.frame(at:point,screen:screen.frame,visible:screen.visibleFrame,menuHeight:NSStatusBar.system.thickness),display:false)
         anchor.orderFrontRegardless();Self.active=self
-        popover.show(relativeTo:view.bounds,of:view,preferredEdge:.minY)
+        popover.showFocused(relativeTo:view.bounds,of:view,preferredEdge:.minY)
         if !popover.isShown { close() }
     }
     func close() { popover.close();anchor?.orderOut(nil);if Self.active === self { Self.active=nil } }
     func popoverDidClose(_ notification:Notification) { guard !popover.isShown else { return };anchor?.orderOut(nil);if Self.active === self { Self.active=nil } }
-    var diagnostics:[String:Any] { ["targetScreen":targetScreen?.localizedName ?? "", "anchorFrame":anchor.map {NSStringFromRect($0.frame)} ?? "", "popoverFrame":popover.contentViewController?.view.window.map {NSStringFromRect($0.frame)} ?? "", "popoverScreen":popover.contentViewController?.view.window?.screen?.localizedName ?? ""] }
+    var diagnostics:[String:Any] { ["targetScreen":targetScreen?.localizedName ?? "", "anchorFrame":anchor.map {NSStringFromRect($0.frame)} ?? "", "popoverFrame":popover.contentViewController?.view.window.map {NSStringFromRect($0.frame)} ?? "", "popoverScreen":popover.contentViewController?.view.window?.screen?.localizedName ?? "", "popoverKey":popover.contentViewController?.view.window?.isKeyWindow ?? false] }
 }
 
 enum CodexChatMenuAppearance {
@@ -304,9 +325,18 @@ enum CodexChatMenuAppearance {
         popover.behavior = .transient
         let height = min(680, max(400, (NSScreen.main?.visibleFrame.height ?? 760) - 70))
         popover.contentSize = NSSize(width: 560, height: height)
-        popover.contentViewController = NSHostingController(rootView: CodexChatsView(store: store, menuMode: true).frame(width: 560, height: height))
+        popover.contentViewController = Self.contentController(store: store, size: popover.contentSize)
         CodexStore.shared.objectWillChange.merge(with: store.objectWillChange).receive(on: RunLoop.main).sink { [weak self] _ in self?.updateLabel() }.store(in: &subscriptions)
         updateLabel(); warm()
+    }
+    static func contentController(store: CodexStore, size: NSSize) -> NSViewController {
+        let controller = NSHostingController(rootView: CodexChatsView(store: store, menuMode: true).frame(width: size.width, height: size.height))
+        // NSPopover owns this fixed frame. Deriving min/ideal/max constraints
+        // from its changing ScrollViews creates a sizing feedback loop on macOS.
+        controller.sizingOptions = []
+        controller.preferredContentSize = size
+        controller.view.setFrameSize(size)
+        return controller
     }
     private func updateLabel() {
         let chat = store.selected ?? CodexStore.shared.liveChats.first { $0.id == id }
@@ -470,7 +500,7 @@ final class MonitorMenuWidgets: NSObject {
             openMonitor: { [weak self] in self?.popover.close(); self?.openMonitor() },
             openSettings: { [weak self] in self?.popover.close(); self?.openSettings() }))
         popover.contentSize = NSSize(width: 360, height: metric == .ram || metric == .cpu ? 700 : 580)
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+        popover.showFocused(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 }
 

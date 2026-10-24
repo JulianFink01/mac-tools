@@ -102,9 +102,18 @@ struct CodexChatsView: View {
     private var folders: [String] { store.orderedFolders(roots) }
     private var sidebarVisible: Bool { menuMode ? false : popupMode ? popupSidebarVisible : chatSidebarVisible }
     var body: some View {
-        NativeSidebarSplit(width: popupMode ? $popupSidebarWidth : $chatSidebarWidth, expanded: sidebarVisible) {
-            sidebar
-        } detail: {
+        Group {
+            if menuMode {
+                conversation
+            } else {
+                NativeSidebarSplit(width: popupMode ? $popupSidebarWidth : $chatSidebarWidth, expanded: sidebarVisible) {
+                    sidebar
+                } detail: { conversation }
+            }
+        }.background(Color(nsColor: .windowBackgroundColor)).onAppear { store.start() }.task(id: store.selectedID) { await store.loadGoal() }.sheet(isPresented: $showGoal) { CodexGoalEditor(store: store) }
+    }
+    private var conversation: some View {
+        Group {
             if showScheduled {
                 CodexScheduledChatsView(openChat: { id in showScheduled = false; Task { await store.select(id) } }, close: { showScheduled = false })
             } else {
@@ -148,8 +157,9 @@ struct CodexChatsView: View {
                 }
                 .overlay { if droppingFiles { RoundedRectangle(cornerRadius: 16).stroke(Color.mint, style: StrokeStyle(lineWidth: 2, dash: [8])).padding(10).allowsHitTesting(false) } }
             }
-        }.background(Color(nsColor: .windowBackgroundColor)).onAppear { store.start() }.task(id: store.selectedID) { await store.loadGoal() }.sheet(isPresented: $showGoal) { CodexGoalEditor(store: store) }
+        }
     }
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
