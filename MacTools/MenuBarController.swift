@@ -274,6 +274,17 @@ final class MenuBarController: NSObject {
     var diagnostics:[String:Any] { ["targetScreen":targetScreen?.localizedName ?? "", "anchorFrame":anchor.map {NSStringFromRect($0.frame)} ?? "", "popoverFrame":popover.contentViewController?.view.window.map {NSStringFromRect($0.frame)} ?? "", "popoverScreen":popover.contentViewController?.view.window?.screen?.localizedName ?? ""] }
 }
 
+enum CodexChatMenuAppearance {
+    static func apply(to button: NSStatusBarButton, active: Bool, waiting: Bool) {
+        // Tinting the entire status button can leave native menu-bar text black.
+        // Keep text/highlighting under AppKit's control, including template contrast.
+        button.contentTintColor = nil
+        let symbol = waiting ? "exclamationmark.bubble.fill" : active ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right"
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Angehefteter Codex-Chat")
+        button.image?.isTemplate = true
+    }
+}
+
 @MainActor final class CodexPinnedChatMenu: NSObject {
     private let id: String
     private weak var item: NSStatusItem?
@@ -302,7 +313,7 @@ final class MenuBarController: NSObject {
         let waiting = store.waitingChatIDs.contains(id) || CodexStore.shared.waitingChatIDs.contains(id)
         let status = waiting ? "Wartet auf deine Eingabe" : chat?.statusLabel ?? "Live-Chat öffnen"
         item?.button?.title = " " + String((chat?.title ?? "Codex-Chat").prefix(18))
-        item?.button?.contentTintColor = waiting ? .systemOrange : chat?.status == "active" ? .systemGreen : nil
+        if let button = item?.button { CodexChatMenuAppearance.apply(to: button, active: chat?.status == "active", waiting: waiting) }
         item?.button?.toolTip = (chat?.title ?? "Codex-Chat") + " · " + status
         item?.button?.setAccessibilityLabel("Live-Chat " + (chat?.title ?? id) + " · " + status)
     }
