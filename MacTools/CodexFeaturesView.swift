@@ -309,7 +309,7 @@ struct CodexUsageWidget: View {
     var featured = false
     var height: CGFloat = 64
     let open: () -> Void
-    private var windows: [CodexUsageWindow] { (store.usageBuckets.first(where: { $0.id == "codex" }) ?? store.usageBuckets.first)?.windows ?? [] }
+    private var windows: [CodexUsageWindow] { if store.usageError != nil { return [] }; return (store.usageBuckets.first(where: { $0.id == "codex" }) ?? store.usageBuckets.first)?.windows ?? [] }
     var body: some View {
         Button(action: open) {
             VStack(alignment: .leading, spacing: 4) {
@@ -361,7 +361,7 @@ struct CodexUsageView: View {
                         Text(bucket.title == "codex" ? "Codex" : bucket.title).font(.headline)
                         ForEach(bucket.windows) { window in
                             VStack(alignment: .leading, spacing: 8) {
-                                HStack { Text(window.label); Spacer(); Text("Noch \(Int(window.remaining.rounded())) %").fontWeight(.semibold).monospacedDigit() }
+                                HStack { Text(window.label); Spacer(); Text((store.usageError == nil ? "Noch " : "Letzter Stand: ") + "\(Int(window.remaining.rounded())) %").fontWeight(.semibold).monospacedDigit().foregroundStyle(store.usageError == nil ? Color.primary : .secondary) }
                                 ProgressView(value: window.remaining, total: 100).tint(window.remaining <= 10 ? .orange : .mint)
                                 if let reset = window.resetsAt { Text("Zurückgesetzt am " + reset.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
                             }

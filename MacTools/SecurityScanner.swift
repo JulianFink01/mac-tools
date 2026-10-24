@@ -20,30 +20,43 @@ struct SecurityReport: Codable, Sendable {
     var limitedFiles: Int? = nil
     var emptyFiles: Int? = nil
     var removedPaths: [String]? = nil
-    var findings: [String] { output.components(separatedBy: .newlines).filter { $0.hasSuffix(" FOUND") } }
+    private struct Parsed: Sendable {
+        var findings: [String] = []
+        var items: [SecurityFinding] = []
+        var scannedFiles = 0
+        var warnings = false
+        init(_ output:String) {
+            var found: [String] = [],entries: [SecurityFinding] = [],scanned = 0,warned = false,readCount = false
+            output.enumerateLines { line,_ in
+                if line.hasSuffix(" FOUND") {
+                    found.append(line)
+                    let body = line.dropLast(" FOUND".count)
+                    if let separator = body.range(of:": ",options:.backwards) { entries.append(SecurityFinding(path:String(body[..<separator.lowerBound]),signature:String(body[separator.upperBound...]))) }
+                }
+                if !readCount,line.hasPrefix("Scanned files:") { readCount = true; scanned = Int(line.dropFirst("Scanned files:".count).trimmingCharacters(in:.whitespaces)) ?? 0 }
+                let lower = line.trimmingCharacters(in:.whitespaces).lowercased()
+                if lower.hasPrefix("warning:") || lower.hasPrefix("error:") || lower.hasPrefix("libclamav warning:") || lower.hasPrefix("libclamav error:") || line.contains("Heuristics.Limits.Exceeded") { warned = true }
+            }
+            findings=found;items=entries;scannedFiles=scanned;warnings=warned
+        }
+    }
+    private let parsed: Parsed
+    private enum CodingKeys: String,CodingKey { case exitCode,output,cancelled,reusedFiles,excludedFiles,limitedFiles,emptyFiles,removedPaths }
+    init(exitCode:Int32,output:String,cancelled:Bool,reusedFiles:Int? = nil,excludedFiles:Int? = nil,limitedFiles:Int? = nil,emptyFiles:Int? = nil,removedPaths:[String]? = nil) {
+        self.exitCode=exitCode;self.output=output;self.cancelled=cancelled;self.reusedFiles=reusedFiles;self.excludedFiles=excludedFiles;self.limitedFiles=limitedFiles;self.emptyFiles=emptyFiles;self.removedPaths=removedPaths
+        parsed = Parsed(output)
+    }
+    init(from decoder:Decoder) throws {
+        let c = try decoder.container(keyedBy:CodingKeys.self)
+        self.init(exitCode:try c.decode(Int32.self,forKey:.exitCode),output:try c.decode(String.self,forKey:.output),cancelled:try c.decode(Bool.self,forKey:.cancelled),reusedFiles:try c.decodeIfPresent(Int.self,forKey:.reusedFiles),excludedFiles:try c.decodeIfPresent(Int.self,forKey:.excludedFiles),limitedFiles:try c.decodeIfPresent(Int.self,forKey:.limitedFiles),emptyFiles:try c.decodeIfPresent(Int.self,forKey:.emptyFiles),removedPaths:try c.decodeIfPresent([String].self,forKey:.removedPaths))
+    }
+    var findings: [String] { parsed.findings }
     var items: [SecurityFinding] {
-        let removed = Set(removedPaths ?? [])
-        return findings.compactMap { line in
-            let body = String(line.dropLast(" FOUND".count))
-            guard let separator = body.range(of: ": ", options: .backwards) else { return nil }
-            let path = String(body[..<separator.lowerBound])
-            guard !removed.contains(path) else { return nil }
-            return SecurityFinding(path: path, signature: String(body[separator.upperBound...]))
-        }
+        guard let removedPaths,!removedPaths.isEmpty else { return parsed.items }
+        let removed = Set(removedPaths); return parsed.items.filter { !removed.contains($0.path) }
     }
-    var scannedFiles: Int {
-        let line = output.components(separatedBy: .newlines).first { $0.hasPrefix("Scanned files:") }
-        return Int(line?.dropFirst("Scanned files:".count).trimmingCharacters(in: .whitespaces) ?? "") ?? 0
-    }
-    var hasWarnings: Bool {
-        if (excludedFiles ?? 0) > 0 || (limitedFiles ?? 0) > 0 { return true }
-        return output.components(separatedBy: .newlines).contains {
-            let line = $0.trimmingCharacters(in: .whitespaces).lowercased()
-            return line.hasPrefix("warning:") || line.hasPrefix("error:")
-                || line.hasPrefix("libclamav warning:") || line.hasPrefix("libclamav error:")
-                || $0.contains("Heuristics.Limits.Exceeded")
-        }
-    }
+    var scannedFiles: Int { parsed.scannedFiles }
+    var hasWarnings: Bool { (excludedFiles ?? 0) > 0 || (limitedFiles ?? 0) > 0 || parsed.warnings }
     var threatCount: Int { items.filter { !$0.isTest && !$0.isLimit }.count }
     var title: String {
         if cancelled { return "Prüfung abgebrochen" }

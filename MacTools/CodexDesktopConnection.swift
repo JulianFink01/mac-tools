@@ -17,6 +17,8 @@ final class CodexDesktopConnection {
     private var snapshots: [String: [String: Any]] = [:]
     private var revisions: [String: Int] = [:]
     private var generation = UUID()
+    private var connectingTask: Task<Void,Error>?
+    private var connectingToken = UUID()
     private let socketPath: String?
     init(socketPath: String? = nil) { self.socketPath = socketPath }
     private var publishTask: Task<Void, Never>?
@@ -37,7 +39,15 @@ final class CodexDesktopConnection {
 
     func connect() async throws {
         if connected { return }
+        if let connectingTask { try await connectingTask.value; return }
         stop()
+        let token = UUID(); connectingToken = token
+        let task = Task { try await self.openConnection() }; connectingTask = task
+        defer { if connectingToken == token { connectingTask = nil } }
+        try await task.value
+    }
+    private func openConnection() async throws {
+        try Task.checkCancellation()
         let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"
         let path = socketPath ?? home + "/ipc/ipc.sock"
         var info = stat()
@@ -70,6 +80,15 @@ final class CodexDesktopConnection {
             guard let id = response["clientId"] as? String else { throw CodexFailure(message: "Unbekannte Codex-Desktop-Version.") }
             clientID = id
         } catch { stop(); throw error }
+    }
+    /// Recovery performs discovery only; it never retries a message or approval.
+    func recoverOwner(_ id:String) async -> Bool {
+        do { try await connect() } catch { return false }
+        owners.removeValue(forKey:id)
+        if await follow(id,resnapshot:true) { return true }
+        stop()
+        do { try await connect() } catch { return false }
+        return await follow(id,resnapshot:true)
     }
     func follow(_ id: String, resnapshot: Bool = false) async -> Bool {
         guard connected else { return false }
@@ -241,6 +260,7 @@ final class CodexDesktopConnection {
         return node
     }
     func stop() {
+        connectingTask?.cancel(); connectingTask = nil; connectingToken = UUID()
         publishTask?.cancel(); publishTask = nil; changedIDs.removeAll()
         generation = UUID(); handle?.readabilityHandler = nil; try? handle?.close(); handle = nil; clientID = ""
         timers.values.forEach { $0.cancel() }; timers.removeAll()

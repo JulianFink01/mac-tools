@@ -226,7 +226,7 @@ struct CodexActivityExpansionState: Equatable {
     private var details: [String:Bool] = [:]
     private func key(_ thread: String, _ item: String) -> String { thread + ":" + item }
     func group(thread: String, ids: [String], running: Bool) -> Bool {
-        ids.compactMap { groups[key(thread,$0)] }.first ?? running
+        ids.compactMap { groups[key(thread,$0)] }.first ?? false
     }
     mutating func rememberGroup(thread: String, ids: [String], running: Bool) {
         let value = group(thread:thread,ids:ids,running:running)
@@ -235,9 +235,9 @@ struct CodexActivityExpansionState: Equatable {
     mutating func setGroup(_ value: Bool, thread: String, ids: [String]) {
         for id in ids { groups[key(thread,id)] = value }
     }
-    func detail(thread: String, id: String, running: Bool) -> Bool { details[key(thread,id)] ?? running }
+    func detail(thread: String, id: String, running: Bool) -> Bool { details[key(thread,id)] ?? false }
     mutating func rememberDetail(thread: String, id: String, running: Bool) {
-        if details[key(thread,id)] == nil { details[key(thread,id)] = running }
+        if details[key(thread,id)] == nil { details[key(thread,id)] = false }
     }
     mutating func setDetail(_ value: Bool, thread: String, id: String) { details[key(thread,id)] = value }
 }
@@ -257,5 +257,48 @@ struct CodexActivityExpansionState: Equatable {
         entries[cwd] = Snapshot(references:refs,checkedAt:Date())
         if entries.count > 16 { for key in entries.sorted(by: { $0.value.checkedAt > $1.value.checkedAt }).dropFirst(16).map(\.key) { entries.removeValue(forKey:key) } }
         defaults.set(try? JSONEncoder().encode(entries),forKey:"codexComposerCatalogV1")
+    }
+}
+
+struct CodexQuestionReply: Codable, Equatable {
+    let questionItemId: String
+    let question: String
+    let answer: String
+    static func parse(_ text:String) -> [Self]? {
+        let value = text.trimmingCharacters(in:.whitespacesAndNewlines),start = "<send_user_message_question_reply>",end = "</send_user_message_question_reply>"
+        guard value.hasPrefix(start),value.hasSuffix(end) else { return nil }
+        let body = Data(value.dropFirst(start.count).dropLast(end.count).utf8)
+        let decoder = JSONDecoder()
+        if let replies = try? decoder.decode([Self].self,from:body),!replies.isEmpty { return replies }
+        return (try? decoder.decode(Self.self,from:body)).map { [$0] }
+    }
+    static func message(_ replies:[Self]) -> String? {
+        guard !replies.isEmpty,let data = try? JSONEncoder().encode(replies),let json = String(data:data,encoding:.utf8) else { return nil }
+        return "<send_user_message_question_reply>\n" + json + "\n</send_user_message_question_reply>"
+    }
+}
+struct CodexAsyncQuestion: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let options: [String]
+    static func pending(in turns:[[String:Any]]) -> [Self] {
+        guard let turn = turns.last(where: { $0["status"] as? String == "inProgress" }),let items = turn["items"] as? [[String:Any]] else { return [] }
+        var answered = Set<String>()
+        for item in items {
+            let type = item["type"] as? String
+            guard type == "userMessage" || type == "steeringUserMessage" else { continue }
+            if type == "steeringUserMessage",let status = item["status"] as? String,status != "accepted" { continue }
+            let input = item["content"] as? [[String:Any]] ?? item["input"] as? [[String:Any]] ?? []
+            guard input.count == 1,let text = input.first?["text"] as? String,let replies = CodexQuestionReply.parse(text) else { continue }
+            answered.formUnion(replies.map(\.questionItemId))
+        }
+        return items.flatMap { item -> [Self] in
+            guard item["type"] as? String == "agentMessage",let sourceID = item["id"] as? String else { return [] }
+            return (item["questions"] as? [[String:Any]] ?? []).enumerated().compactMap { index,question in
+                guard let title = question["title"] as? String,!title.isEmpty,
+                      let data = try? JSONSerialization.data(withJSONObject:["request_user_input_async",sourceID,index],options:[.fragmentsAllowed,.withoutEscapingSlashes]),let id = String(data:data,encoding:.utf8),!answered.contains(id) else { return nil }
+                return Self(id:id,title:title,options:question["options"] as? [String] ?? [])
+            }
+        }
     }
 }

@@ -187,7 +187,7 @@ enum CodexTranscript {
         }
     }
     /// Only format the requested tail; historical tool arguments/output can be very large.
-    static func window(_ state: [String: Any], limit: Int) -> (messages: [CodexMessage], hasMore: Bool) {
+    static func window(_ state: [String: Any], limit: Int) -> (messages: [CodexMessage], hasMore: Bool, questions:[CodexAsyncQuestion]) {
         let ordered = turns(state)
         let total = ordered.reduce(0) { $0 + ($1["items"] as? [[String: Any]] ?? []).count }
         var remaining = max(1, limit), selected: [[String: Any]] = []
@@ -196,7 +196,7 @@ enum CodexTranscript {
             var slice = turn; slice["items"] = raw
             selected.insert(contentsOf: items(slice), at: 0); remaining -= raw.count
         }
-        return (selected.compactMap(CodexMessage.from), total > limit || mayHaveOlder(state))
+        return (selected.compactMap(CodexMessage.from), total > limit || mayHaveOlder(state),CodexAsyncQuestion.pending(in:ordered))
     }
     static func mayHaveOlder(_ state: [String:Any]) -> Bool {
         if let history = (state["turnHistory"] as? [String:Any])?["history"] as? [String:Any], history["isComplete"] as? Bool == false || (history["islands"] as? [Any] ?? []).count > 1 { return true }
@@ -271,6 +271,17 @@ final class CodexStore: ObservableObject {
     @Published var selectedID: String? { didSet { if oldValue != selectedID { selectedGoal = nil } } }
     @Published private(set) var selectedGoal: CodexGoal?
     @Published private(set) var messages: [CodexMessage] = []
+    @Published private(set) var asyncQuestions: [CodexAsyncQuestion] = []
+    @Published private(set) var answeringAsyncQuestions = Set<String>()
+    private var confirmedAsyncAnswers = Set<String>()
+    func answerAsync(_ question:CodexAsyncQuestion, answer:String) async -> Bool {
+        let answer = answer.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !answer.isEmpty,!answeringAsyncQuestions.contains(question.id),asyncQuestions.contains(question),let threadID = selectedID,
+              let message = CodexQuestionReply.message([CodexQuestionReply(questionItemId:question.id,question:question.title,answer:answer)]) else { return false }
+        answeringAsyncQuestions.insert(question.id);defer { answeringAsyncQuestions.remove(question.id) }
+        guard await send(message),selectedID == threadID else { return false }
+        confirmedAsyncAnswers.insert(question.id);asyncQuestions.removeAll { $0.id == question.id };return true
+    }
     @Published private(set) var hasOlderNativeHistory = false
     private var nativeHistoryLimit = 80
     private var latestNativeTranscript: [String: Any]?
@@ -354,7 +365,7 @@ final class CodexStore: ObservableObject {
     var runningCount: Int { liveChats.filter { $0.status == "active" }.count }
     var externalChat: Bool { selectedID.map { !managedThreads.contains($0) } ?? false }
     var canSubmit: Bool { selectedID != nil || canSend }
-    var canSend: Bool { connected && !sending && (!externalChat || desktop.connected) }
+    var canSend: Bool { connected && !sending && (!externalChat || enableDesktop) }
     var sharedServer: Bool { connection.sharedServer }
     var currentTurn: String? { selectedID.flatMap { activeTurns[$0] } }
     var hasPendingWork: Bool { sending || !activeTurns.isEmpty || queuedMessages.values.contains { !$0.isEmpty } || chats.contains { managedThreads.contains($0.id) && $0.status == "active" } }
@@ -424,13 +435,29 @@ final class CodexStore: ObservableObject {
             await loadUsage()
         } catch { self.error = error.localizedDescription; connected = false }
     }
+    private var usageAttemptAt = Date.distantPast
+    static func isUsageAuthenticationError(_ error: Error) -> Bool {
+        let value = error.localizedDescription.lowercased()
+        return ["token_expired","401 unauthorized","authentication token is expired","unauthenticated"].contains(where:value.contains)
+    }
     func loadUsage(force: Bool = false) async {
-        guard connected, !readingUsage, force || Date().timeIntervalSince(usageUpdatedAt ?? .distantPast) >= 60 else { return }
-        readingUsage = true; defer { readingUsage = false }
+        guard connected, !readingUsage, force || Date().timeIntervalSince(usageAttemptAt) >= 60 else { return }
+        usageAttemptAt = Date(); readingUsage = true; defer { readingUsage = false }
         do {
-            let response = try await connection.request("account/rateLimits/read")
+            let response: [String:Any]
+            do { response = try await connection.request("account/rateLimits/read") }
+            catch {
+                guard Self.isUsageAuthenticationError(error) else { throw error }
+                // The app-server owns authentication and refreshes its own managed credential.
+                _ = try await connection.request("account/read",["refreshToken":true])
+                response = try await connection.request("account/rateLimits/read")
+            }
             usageBuckets = CodexUsageBucket.parse(response); usageUpdatedAt = Date(); usageError = nil
-        } catch { usageError = error.localizedDescription }
+        } catch {
+            usageError = Self.isUsageAuthenticationError(error)
+                ? "Die Codex-Anmeldung ist abgelaufen und konnte nicht automatisch erneuert werden. Bitte die Anmeldung im Codex-Desktop prüfen. Angezeigte frühere Werte sind nicht aktuell."
+                : "Codex-Limits konnten nicht aktualisiert werden. Bitte erneut versuchen. Frühere Werte sind nicht aktuell."
+        }
     }
     func reconnect() async {
         composerContextKey = ""; desktop.stop(); desktopConnected = false; connection.stop(); connected = false; resumedThreads.removeAll(); activeTurns.removeAll()
@@ -588,7 +615,7 @@ final class CodexStore: ObservableObject {
     @discardableResult func prepareSelection(_ id: String) -> Bool {
         guard !sending else { return false }
         historyToken = UUID(); selectedID = id; currentModel = nil; currentEffort = nil; desktop.selectedID = id
-        nativeProjectionEpoch = UUID(); nativeHistoryLimit = 80; latestNativeTranscript = nil; hasOlderNativeHistory = false
+        nativeProjectionEpoch = UUID(); nativeHistoryLimit = 80; latestNativeTranscript = nil; hasOlderNativeHistory = false;asyncQuestions = [];confirmedAsyncAnswers = []
         messages = []; olderCursor = nil; activity = ""; error = nil; loadingHistory = true
         return true
     }
@@ -610,7 +637,7 @@ final class CodexStore: ObservableObject {
         let target = project ?? selected.flatMap { self.project(for: $0) } ?? newChatProject
         workingDirectory = target?.paths.first ?? selected?.cwd ?? workingDirectory
         newChatProjectID = target?.id
-        historyToken = UUID(); selectedID = nil; desktop.selectedID = nil; messages = []; olderCursor = nil; loadingHistory = false; activity = ""; error = nil
+        historyToken = UUID(); selectedID = nil; desktop.selectedID = nil; messages = [];asyncQuestions = [];confirmedAsyncAnswers = []; olderCursor = nil; loadingHistory = false; activity = ""; error = nil
     }
     func newChat(inFolder folder: String) {
         newChat(in: projects.first { $0.paths.contains(folder) })
@@ -656,6 +683,7 @@ final class CodexStore: ObservableObject {
                 messages = messages.map { incoming[$0.id] ?? $0 } + items.filter { !known.contains($0.id) }
             }
             olderCursor = response["nextCursor"] as? String
+            if !older { asyncQuestions = CodexAsyncQuestion.pending(in:Array(turns.reversed())).filter { !confirmedAsyncAnswers.contains($0.id) } }
             if connection.sharedServer, let turn = turns.first, turn["status"] as? String == "inProgress", let turnID = turn["id"] as? String { activeTurns[id] = turnID }
         } catch { if selectedID == id && historyToken == token { self.error = error.localizedDescription } }
     }
@@ -774,7 +802,7 @@ final class CodexStore: ObservableObject {
         let input: [[String: Any]] = (item.text.isEmpty ? [] : [["type": "text", "text": item.text]]) + item.references.map(\.input)
         let params = item.options.parameters(cwd: item.cwd, fallbackModel: item.modelHint)
         do {
-            if enableDesktop, !desktop.hasOwner(id) { _ = await desktop.follow(id) }
+            if enableDesktop, !managedThreads.contains(id) { _ = await desktop.recoverOwner(id) }
             if desktop.hasOwner(id) {
                 try await desktop.send(item.text, to: id, active: steer, inputs: input, options: params)
             } else {
@@ -818,18 +846,20 @@ final class CodexStore: ObservableObject {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !references.isEmpty), canSend else { return false }
         sending = true; error = nil; defer { sending = false }
+        let sendingThreadID = selectedID
         let key = selectedID ?? "new"
         let option = options[key] ?? CodexTurnOptions()
         let turnParameters = option.parameters(cwd: selected?.cwd ?? workingDirectory, fallbackModel: currentModel ?? models.first?.id ?? "")
         let input: [[String: Any]] = (text.isEmpty ? [] : [["type": "text", "text": text]]) + references.map(\.input)
         do {
-            if let id = selectedID, externalChat, !desktop.hasOwner(id), desktop.connected {
-                if !(await desktop.follow(id)) {
+            if let id = selectedID, externalChat, enableDesktop {
+                if !(await desktop.recoverOwner(id)) {
                     openInCodex(id)
                     try await Task.sleep(nanoseconds: 500_000_000)
-                    _ = await desktop.follow(id)
+                    _ = await desktop.recoverOwner(id)
                 }
             }
+            guard selectedID == sendingThreadID else { throw CodexFailure(message:"Der Chat wurde während der Übergabe gewechselt. Der Entwurf bleibt erhalten.") }
             if let id = selectedID, desktop.hasOwner(id) {
                 try await desktop.send(text, to: id, active: currentTurn != nil || selected?.status == "active", inputs: input, options: turnParameters)
                 if options[id] == option { pendingOptionIDs.remove(id) }; activity = "An Codex übergeben"; return true
@@ -928,6 +958,7 @@ final class CodexStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
     private func applyDesktopState(_ id: String, _ state: [String: Any]) {
+        if id == selectedID, error?.hasPrefix("Der ursprüngliche Codex-Chat ist gerade nicht erreichbar.") == true { error = nil }
         syncNativePrompts(id, state: state)
         if let runtime = state["threadRuntimeStatus"] as? [String: Any], let status = runtime["type"] as? String, ["active", "idle"].contains(status) {
             queue.observe(id, active: status == "active"); if status == "idle" { scheduleQueue(id) }
@@ -986,6 +1017,8 @@ final class CodexStore: ObservableObject {
                 let old = Dictionary(self.messages.compactMap { message in message.activity.map { (message.id, $0) } }, uniquingKeysWith: { _, last in last })
                 let incoming = projected.messages.map { self.preservingActivity($0, old: old[$0.id]) }
                 if self.messages != incoming { self.messages = incoming }
+                let questions = projected.questions.filter { !self.confirmedAsyncAnswers.contains($0.id) }
+                if self.asyncQuestions != questions { self.asyncQuestions = questions }
                 if self.hasOlderNativeHistory != projected.hasMore { self.hasOlderNativeHistory = projected.hasMore }
                 if self.loadingHistory { self.loadingHistory = false }
             }

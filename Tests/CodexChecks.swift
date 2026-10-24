@@ -5,7 +5,14 @@ struct CodexChecks {
     @MainActor
     static func main() async throws {
         var disclosure = CodexActivityExpansionState()
+        precondition(!disclosure.group(thread:"one",ids:["a","b"],running:true))
+        precondition(!disclosure.detail(thread:"one",id:"a",running:true))
+        disclosure.rememberDetail(thread:"one",id:"a",running:true)
+        precondition(!disclosure.detail(thread:"one",id:"a",running:false))
         disclosure.rememberGroup(thread:"one",ids:["a","b"],running:true)
+        disclosure.setGroup(true,thread:"one",ids:["a","b"])
+        disclosure.rememberGroup(thread:"one",ids:["b","new"],running:false)
+        precondition(disclosure.group(thread:"one",ids:["b","new"],running:false))
         disclosure.setGroup(false,thread:"one",ids:["a","b"])
         disclosure.rememberGroup(thread:"one",ids:["b","c"],running:true)
         precondition(!disclosure.group(thread:"one",ids:["b","c"],running:true))
@@ -16,7 +23,7 @@ struct CodexChecks {
         disclosure.rememberDetail(thread:"one",id:"c",running:true)
         precondition(!disclosure.detail(thread:"one",id:"c",running:true))
         precondition(!disclosure.detail(thread:"two",id:"b",running:false))
-        print("PASS: opened and closed command choices survive streaming, completion and moving history groups; isolated per chat")
+        print("PASS: activities and commands default closed even while running; opened and closed command choices survive streaming, completion and moving history groups; isolated per chat")
         let longState: [String:Any] = ["turns":[["id":"history-window", "items":(0..<2000).map { ["id":"window-\($0)","type":"agentMessage","text":"Message \($0)"] }]]]
         let tail = CodexTranscript.window(longState,limit:80)
         precondition(tail.messages.count == 80 && tail.hasMore && tail.messages.first?.id == "window-1920" && tail.messages.last?.id == "window-1999")
@@ -27,6 +34,16 @@ struct CodexChecks {
         precondition(CodexTranscript.mayHaveOlder(["turns":[["itemsPagination":["hasLoadedOldest":false]]]]))
         precondition(!CodexTranscript.mayHaveOlder(["turns":[],"turnsPagination":["hasLoadedOldest":true]]))
         print("PASS: large native history defaults to an 80-item tail; loading older history preserves the exact recent messages")
+        let questionTurns: [[String:Any]] = [["id":"async-turn","status":"inProgress","items":[["id":"call/id","type":"agentMessage","text":"","questions":[["title":"Frage?","options":["A","B"]]]]]]]
+        let pendingQuestion = CodexAsyncQuestion.pending(in:questionTurns).first!
+        precondition(pendingQuestion.id == "[\"request_user_input_async\",\"call/id\",0]")
+        let reply = CodexQuestionReply.message([CodexQuestionReply(questionItemId:pendingQuestion.id,question:"Frage?",answer:"B")])!
+        precondition(CodexQuestionReply.parse(reply)?.first?.answer == "B")
+        var answeredTurns=questionTurns;var questionItems=answeredTurns[0]["items"] as! [[String:Any]]
+        questionItems.append(["id":"answer","type":"userMessage","content":[["type":"text","text":reply]]]);answeredTurns[0]["items"]=questionItems
+        precondition(CodexAsyncQuestion.pending(in:answeredTurns).isEmpty)
+        precondition(CodexQuestionReply.parse("<send_user_message_question_reply>invalid</send_user_message_question_reply>") == nil)
+        print("PASS: async question identity matches native JSON contract; structured reply rendered and accepted answers resolve questions")
         let skillLabel = CodexReference(name: "data-analytics:product-business-analysis", path: "/tmp/SKILL.md", kind: "skill")
         precondition(skillLabel.displayName == "Product Business Analysis" && skillLabel.providerLabel == "Data Analytics" && skillLabel.input["name"] as? String == skillLabel.name)
         let fileQueue = CodexNativeQueuedMessage(["id":"file-queue", "input":[["type":"text", "text":"# Files mentioned by the user:\n\n## screenshot.png: /tmp/image.png\n\n## My request:\nBitte Bild prüfen\n<image path=\"/tmp/image.png\"></image>"],["type":"localImage", "path":"/tmp/image.png"]]])!
@@ -180,6 +197,26 @@ struct CodexChecks {
         print("PASS: failed delivery remains visible and persisted with review flag; automatic resubmission suspended across store recreation")
         precondition(store.chats.first?.title == "Prüfchat äöü")
         precondition(!store.chats.contains { $0.statusLabel == "Läuft" })
+        _ = try await store.connection.request("test/usage-failure",["mode":"once"])
+        await store.loadUsage(force:true)
+        precondition(store.usageError == nil && store.usageBuckets.first?.windows.first?.remaining == 70)
+        let refreshStats = try await store.connection.request("test/usage-refresh-stats")
+        precondition(refreshStats["refreshes"] as? Int == 1)
+        _ = try await store.connection.request("test/usage-failure",["mode":"always"])
+        await store.loadUsage(force:true)
+        precondition(store.usageError?.contains("Anmeldung") == true && store.usageError?.contains("401") == false)
+        let afterAuthFailure = try await store.connection.request("test/usage-refresh-stats")
+        await store.loadUsage()
+        let afterThrottle = try await store.connection.request("test/usage-refresh-stats")
+        precondition(afterAuthFailure["refreshes"] as? Int == afterThrottle["refreshes"] as? Int)
+        _ = try await store.connection.request("test/usage-failure",["mode":"server"])
+        await store.loadUsage(force:true)
+        let afterServerFailure = try await store.connection.request("test/usage-refresh-stats")
+        precondition(afterServerFailure["refreshes"] as? Int == afterAuthFailure["refreshes"] as? Int)
+        _ = try await store.connection.request("test/usage-failure")
+        await store.loadUsage(force:true)
+        precondition(store.usageError == nil)
+        print("PASS: expired usage credential refreshed through account/read once; failed and generic requests throttled, stale values labelled, no reset/credits or credential extraction")
         await store.refresh(older: true)
         precondition(store.chats.map(\.id) == ["test-old", "test-older", "test-outdated"])
         precondition(store.chats.map(\.updatedAt) == store.chats.map(\.updatedAt).sorted(by: >))
@@ -297,6 +334,22 @@ struct CodexChecks {
         precondition(pending)
         for _ in 0..<100 where store.prompts.isEmpty { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(!store.prompts.isEmpty)
+        let questionDomain="MacTools.AsyncQuestionChecks." + UUID().uuidString, questionPrefs=UserDefaults(suiteName:questionDomain)!
+        defer { questionPrefs.removePersistentDomain(forName:questionDomain) }
+        questionPrefs.set(["test-old"],forKey:"macToolsCodexThreads")
+        let questionConnection=CodexConnection(executableURL:fixture)
+        let questionStore=CodexStore(connection:questionConnection,defaults:questionPrefs,followAllChats:false)
+        await questionStore.connect()
+        _ = try await questionConnection.request("test/async-question")
+        await questionStore.select("test-old")
+        precondition(questionStore.asyncQuestions.count == 1)
+        questionStore.drafts["test-old"]="Unveränderter Entwurf"
+        let sentQuestion = await questionStore.answerAsync(questionStore.asyncQuestions[0],answer:"Details")
+        precondition(sentQuestion && questionStore.asyncQuestions.isEmpty && questionStore.drafts["test-old"] == "Unveränderter Entwurf")
+        let answerState = try await questionConnection.request("test/async-answer-state")
+        precondition(answerState["answered"] as? Bool == true)
+        questionStore.stop()
+        print("PASS: async question answered via immediate steering while running, exact reply identity, acknowledged removal and unchanged composer draft")
         do { _ = try await connection.request("test/exit"); fatalError("Lost connection ignored") }
         catch { precondition(!store.connected && store.currentTurn == nil && store.prompts.isEmpty) }
         print("PASS: pending requests fail promptly when the subprocess exits")

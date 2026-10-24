@@ -1,6 +1,23 @@
 import Foundation
 import Darwin
 
+/// Lightweight menu/overview data; it never retains the file or duplicate tables.
+struct DiskScanSummary: Sendable {
+    let root: URL
+    let completedAt: Date
+    let fileCount: Int
+    let duplicateCount: Int
+    let bytes: Int64
+    let redundantBytes: Int64
+    init(_ result: DiskScanResult) {
+        root = result.root; completedAt = result.completedAt; fileCount = result.files.count
+        duplicateCount = result.duplicates.count; bytes = result.bytes; redundantBytes = result.redundantBytes
+    }
+    init(root:URL,completedAt:Date,fileCount:Int,duplicateCount:Int,bytes:Int64,redundantBytes:Int64) {
+        self.root=root;self.completedAt=completedAt;self.fileCount=fileCount;self.duplicateCount=duplicateCount;self.bytes=bytes;self.redundantBytes=redundantBytes
+    }
+}
+
 /// Chunked, atomic scan persistence avoids building one enormous property-list object graph.
 enum DiskScanCache {
     private static let magic = Data("MTSCAN01".utf8)
@@ -71,20 +88,33 @@ enum DiskScanCache {
         try? manager.removeItem(at: removalURL(url))
     }
 
-    private struct RemovedPaths: Codable { let scanDate: Date; let paths: Set<String> }
+    private struct RemovedPaths: Codable { let scanDate: Date; let paths: Set<String>; var directories: Set<String>? = nil }
+    static func summary(from url:URL) throws -> DiskScanSummary? {
+        let handle = try FileHandle(forReadingFrom:url); defer { try? handle.close() }
+        guard try handle.read(upToCount:8) == magic else { return nil }
+        guard let prefix = try handle.read(upToCount:4),prefix.count == 4 else { throw CacheError.corrupt }
+        let length = prefix.enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << UInt32($1.offset*8) }
+        guard length > 0,length <= 1_048_576,let data = try handle.read(upToCount:Int(length)),data.count == Int(length) else { throw CacheError.corrupt }
+        let header = try PropertyListDecoder().decode(Header.self,from:data)
+        return DiskScanSummary(root:header.root,completedAt:header.completedAt,fileCount:header.fileCount,duplicateCount:header.duplicateCount,bytes:header.bytes,redundantBytes:header.redundantBytes)
+    }
     private static func removalURL(_ url: URL) -> URL { url.appendingPathExtension("removed.json") }
     /// Persist small cleanup deltas instead of rewriting millions of scan records.
-    static func saveRemoved(paths: Set<String>, scanDate: Date, to url: URL) throws {
+    static func saveRemoved(paths: Set<String>, directories: Set<String> = [], scanDate: Date, to url: URL) throws {
         let deltaURL = removalURL(url)
         let old = (try? Data(contentsOf: deltaURL)).flatMap { try? JSONDecoder().decode(RemovedPaths.self, from: $0) }
         let combined = paths.union(old?.scanDate == scanDate ? old!.paths : [])
-        try JSONEncoder().encode(RemovedPaths(scanDate: scanDate, paths: combined)).write(to: deltaURL, options: .atomic)
+        let combinedDirectories = directories.union(old?.scanDate == scanDate ? old?.directories ?? [] : [])
+        try JSONEncoder().encode(RemovedPaths(scanDate: scanDate, paths: combined, directories:combinedDirectories)).write(to: deltaURL, options: .atomic)
     }
     static func load(from url: URL) throws -> DiskScanResult {
         let value = try loadRaw(from: url)
         guard let data = try? Data(contentsOf: removalURL(url)),
               let delta = try? JSONDecoder().decode(RemovedPaths.self, from: data), delta.scanDate == value.completedAt else { return value }
-        return value.removing(paths: delta.paths)
+        var removed = delta.paths
+        let prefixes = (delta.directories ?? []).map { DiskScanner.canonicalPath($0) + "/" }
+        if !prefixes.isEmpty { for file in value.files where prefixes.contains(where: { DiskScanner.canonicalPath(file.path).hasPrefix($0) }) { removed.insert(file.path) } }
+        return value.removing(paths: removed)
     }
     private static func loadRaw(from url: URL) throws -> DiskScanResult {
         let handle = try FileHandle(forReadingFrom: url)

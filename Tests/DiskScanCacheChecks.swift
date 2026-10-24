@@ -17,10 +17,16 @@ struct DiskScanCacheChecks {
             volumeTotal: 10000, volumeFree: 5000, bytes: 8192 * 128, allocatedBytes: 8192 * 512,
             redundantBytes: 5000 * 128)
         try DiskScanCache.save(value, to: path)
+        let summary = try DiskScanCache.summary(from:path)
+        precondition(summary?.fileCount == 8192 && summary?.duplicateCount == 2 && summary?.completedAt == value.completedAt)
         let restored = try DiskScanCache.load(from: path)
         precondition(restored.files.count == 8192 && restored.duplicates[0].files.count == 5000)
         precondition(restored.duplicates[1].files.map(\.path) == groups[1].files.map(\.path))
         precondition(restored.completedAt == value.completedAt && restored.skipped == 3 && restored.warningSamples == value.warningSamples)
+        try DiskScanCache.saveRemoved(paths:[files[0].path],directories:["/fixture"],scanDate:value.completedAt,to:path)
+        let journaled = try DiskScanCache.load(from:path)
+        precondition(journaled.files.isEmpty && journaled.duplicates.isEmpty)
+        try DiskScanCache.save(value,to:path)
         let previous = try Data(contentsOf: path)
         let cancelled = Task.detached {
             withUnsafeCurrentTask { $0?.cancel() }

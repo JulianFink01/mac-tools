@@ -44,8 +44,8 @@ final class MenuBarController: NSObject {
         super.init()
         usagePopover.behavior = .transient; usagePopover.contentSize = NSSize(width: 360, height: 430)
         usagePopover.contentViewController = NSHostingController(rootView: CodexUsageView(inPopover: true).frame(width: 360, height: 430))
-        usageSubscription = CodexStore.shared.$usageBuckets.sink { [weak self] buckets in
-            let remaining = (buckets.first(where: { $0.id == "codex" }) ?? buckets.first)?.windows.map(\.remaining).min()
+        usageSubscription = CodexStore.shared.$usageBuckets.combineLatest(CodexStore.shared.$usageError).sink { [weak self] buckets,error in
+            let remaining = error == nil ? (buckets.first(where: { $0.id == "codex" }) ?? buckets.first)?.windows.map(\.remaining).min() : nil
             let text = remaining.map { "\(Int($0.rounded()))%" } ?? "—"
             self?.usageLabel?.valueText = text
             self?.remainingLabel = text
@@ -131,6 +131,7 @@ final class MenuBarController: NSObject {
                     if tool == .codexLimit, let button = item.button {
                         button.image = nil; button.title = ""
                         let label = CodexStatusLabel(frame: button.bounds); label.titleText = "LIMIT"; label.valueText = (CodexStore.shared.usageBuckets.first?.windows.map(\.remaining).min()).map { "\(Int($0.rounded()))%" } ?? "—"
+                        if CodexStore.shared.usageError != nil { label.valueText = "—" }
                         self.usageLabel = label; button.addSubview(label); CodexStore.shared.start()
                     }
                     self.toolVisibility[tool] = StatusItemVisibility(item: item, name: "MacTools.Tool." + tool.rawValue) { [weak self] in
@@ -462,10 +463,10 @@ struct QuickPanelView: View {
                 Label("Live", systemImage: "circle.fill").font(.caption2).foregroundStyle(.green)
                 Button { openSection(.monitoring) } label: { Image(systemName: "arrow.up.right.square") }.buttonStyle(.plain).help("Systemmonitor öffnen")
             }
-            if let result = disk.result, result.completedAt.timeIntervalSince1970 > dismissedQuickScanAt, Date().timeIntervalSince(result.completedAt) < 900 {
+            if let result = disk.summary, result.completedAt.timeIntervalSince1970 > dismissedQuickScanAt, Date().timeIntervalSince(result.completedAt) < 900 {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle").foregroundStyle(.mint)
-                    Text("Scan abgeschlossen · \(result.files.count.formatted()) Dateien").font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Scan abgeschlossen · \(result.fileCount.formatted()) Dateien").font(.caption).frame(maxWidth: .infinity, alignment: .leading)
                     Button { dismissedQuickScanAt = result.completedAt.timeIntervalSince1970 } label: { Image(systemName: "xmark").font(.system(size: 10)).frame(width: 24, height: 24) }.buttonStyle(.plain).accessibilityLabel("Scan-Mitteilung schließen")
                 }.padding(.horizontal, 8).padding(.vertical, 3)
             }

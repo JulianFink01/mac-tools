@@ -4,7 +4,7 @@ import Combine
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let settings: SettingsStore
     private let library: VideoLibraryStore
     private lazy var wallpaperController = WallpaperController(settings: settings, library: library)
@@ -236,10 +236,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = hostingView
         window.contentMinSize = NSSize(width: 1240, height: 760)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         mainWindow = window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        // A retained NSWindow keeps its hosting view alive. Remove tool pages so
+        // their onDisappear handlers release inventories and detail subscriptions.
+        navigation.section = .tools
     }
 
     func presentSettings(_ category: SettingsCategory = .general) {
@@ -425,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func stop() { opening?.cancel(); stopped = true; store.stop() }
     var diagnostics: [String: Any] {
-        ["id": id.uuidString, "chatId": store.selectedID as Any? ?? NSNull(), "title": store.selected?.title ?? "Neuer Chat", "alwaysOnTop": alwaysOnTop, "nativeLevel": window?.level.rawValue ?? 0, "visible": window?.isVisible ?? false, "keyWindow":window?.isKeyWindow ?? false,"appActive":NSApp.isActive,"firstResponder":window?.firstResponder.map { String(describing:type(of:$0)) } ?? "none", "draftCharacters": store.drafts[store.selectedID ?? "new"]?.count ?? 0, "workingDirectory": store.workingDirectory]
+        ["id": id.uuidString, "chatId": store.selectedID as Any? ?? NSNull(), "title": store.selected?.title ?? "Neuer Chat", "alwaysOnTop": alwaysOnTop, "nativeLevel": window?.level.rawValue ?? 0, "visible": window?.isVisible ?? false, "desktopConnected":store.desktopConnected,"desktopOwner":store.selectedIsDesktopOwned,"keyWindow":window?.isKeyWindow ?? false,"appActive":NSApp.isActive,"firstResponder":window?.firstResponder.map { String(describing:type(of:$0)) } ?? "none", "draftCharacters": store.drafts[store.selectedID ?? "new"]?.count ?? 0, "workingDirectory": store.workingDirectory]
     }
 }
 private struct CodexChatWindowRoot: View {

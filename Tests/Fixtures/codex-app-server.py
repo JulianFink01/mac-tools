@@ -38,6 +38,11 @@ def turn(identifier, text):
 
 
 initialized = False
+usage_failure = None
+usage_refreshes = 0
+async_question=False
+async_answered=False
+async_reply=None
 held = None
 turn_counter = 0
 last_started_cwd = None
@@ -63,6 +68,23 @@ for line in sys.stdin:
         event('turn/completed', {'threadId': 'test-new', 'turn': {'id': tid, 'status': 'completed'}})
     elif not initialized:
         emit({'id': m['id'], 'error': {'code': -1, 'message': 'handshake missing'}})
+    elif method == 'test/async-question':
+        async_question=True
+        event('turn/started',{'threadId':'test-old','turn':{'id':'async-turn','status':'inProgress'}})
+        reply(m,{})
+    elif method == 'test/async-answer-state':
+        reply(m,{'answered':async_answered,'reply':async_reply})
+    elif method == 'test/usage-failure':
+        usage_failure=p.get('mode');reply(m,{})
+    elif method == 'test/usage-refresh-stats':
+        reply(m,{'refreshes':usage_refreshes})
+    elif method == 'account/read':
+        assert p['refreshToken'] is True
+        usage_refreshes+=1
+        if usage_failure=='once':usage_failure=None
+        reply(m,{'account':{'type':'chatgpt'},'requiresOpenaiAuth':True})
+    elif method == 'account/rateLimits/read' and usage_failure:
+        emit({'id':m['id'],'error':{'code':-1,'message':'401 Unauthorized token_expired' if usage_failure!='server' else '503 Service Unavailable'}})
     elif method == 'account/rateLimits/read':
         reply(m, {'rateLimits':{}, 'rateLimitsByLimitId':{'codex':{'primary':{'usedPercent':30,'windowDurationMins':300,'resetsAt':int(time.time())+3600},'secondary':{'usedPercent':45,'windowDurationMins':10080,'resetsAt':int(time.time())+86400}}}})
     elif method == 'test/catalog-stats':
@@ -83,6 +105,9 @@ for line in sys.stdin:
         reply(m, {'data':[{'id':'project-fixture','name':'Zielprojekt','roots':[{'path':'/tmp/destination'}]}], 'nextCursor':None})
     elif method == 'thread/metadata/update':
         assigned_projects[p['threadId']] = p['projectId']; reply(m, {})
+    elif method == 'thread/resume':
+        assert p['threadId']=='test-old'
+        reply(m,{'thread':chat('test-old')})
     elif method == 'thread/read':
         value = chat(p['threadId']); value['projectId'] = assigned_projects.get(p['threadId']); reply(m, {'thread':value})
     elif method in ('thread/archive', 'thread/unarchive'):
@@ -142,6 +167,10 @@ for line in sys.stdin:
                 {'id':'qa-running-command','type':'commandExecution','command':'sleep 120 # reine UI-Fixture, wird nicht ausgeführt','cwd':'/tmp','status':'inProgress','processId':'fixture-42','aggregatedOutput':'Fortschritt aus der Fixture …\n'}]
             recent['commandExecutionStartedAtMsById']={'qa-running-command':int((NOW-87)*1000)}
         if os.environ.get('MACTOOLS_QA_IMAGE_PATH'):recent['items'].insert(0,image_item)
+        if async_question:
+            recent['status']='inProgress'
+            recent['items'].append({'id':'async-item','type':'agentMessage','text':'Bitte wähle eine Option.','questions':[{'title':'Welche Ansicht soll geöffnet werden?','options':['Übersicht','Details']}]})
+            if async_reply:recent['items'].append({'id':'async-answer','type':'userMessage','content':[{'type':'text','text':async_reply}]})
         reply(m, {'data': [turn('old', 'Ältere Antwort')] if p.get('cursor') else [recent],
                   'nextCursor': None if p.get('cursor') else 'next-turns'})
     elif method == 'thread/start':
@@ -172,6 +201,14 @@ for line in sys.stdin:
             'type': 'agentMessage', 'id': 'reply-test', 'text': 'Hallo äöü!'}})
         emit({'id': 900, 'method': 'item/commandExecution/requestApproval',
               'params': {'threadId': 'test-new', 'turnId': tid, 'command': 'fixture-only'}})
+    elif method == 'turn/steer' and p['input'][0]['text'].startswith('<send_user_message_question_reply>'):
+        async_reply=p['input'][0]['text']
+        answers=json.loads(async_reply[len('<send_user_message_question_reply>'):-len('</send_user_message_question_reply>')])
+        assert p['threadId']=='test-old' and json.loads(answers[0]['questionItemId'])==['request_user_input_async','async-item',0]
+        assert answers[0]['answer']=='Details'
+        async_answered=True
+        reply(m,{'turnId':p['expectedTurnId']})
+        event('item/completed',{'threadId':'test-old','item':{'id':'async-answer','type':'userMessage','content':p['input']}})
     elif method == 'turn/steer':
         assert p['threadId'] == 'test-new' and p['input'][0]['text'] == 'Steuerung'
         reply(m, {'turnId': p['expectedTurnId']})

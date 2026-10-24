@@ -55,6 +55,9 @@ final class FileBrowserStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error = ""
     private var generation = UUID()
+    func releaseCache() {
+        generation = UUID(); cache.removeAll(); recentRequests.removeAll(); index = nil; loadedRequest = nil; isLoading = false
+    }
 
     /// SwiftUI cancels superseded requests; stale filters never replace newer results.
     func load(_ result: DiskScanResult, request: FileBrowserRequest) async {

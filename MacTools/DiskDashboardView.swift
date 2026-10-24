@@ -8,6 +8,8 @@ struct DiskDashboardView: View {
     @ObservedObject private var actions = FileActions.shared
     @ObservedObject private var automatic = AutomaticScans.shared
     @ObservedObject private var fileBrowser = FileBrowserStore.shared
+    @State private var inventoryConsumer = UUID()
+    private var needsInventory: Bool { ["Dateien & Ordner","Duplikate"].contains(tab) }
     @State private var filePage = 0
     @State private var folderPage = 0
     @State private var largestPage = 0
@@ -91,6 +93,16 @@ struct DiskDashboardView: View {
                         case "Duplikate": duplicateDetails(searchEnabled: result.duplicateSearch, totalBytes: result.bytes)
                         default: overview(result)
                         }
+                    } else if store.isRestoring {
+                        VStack(spacing:14) { ProgressView(); Text("Gespeicherte Dateiliste wird geladen …").foregroundStyle(.secondary) }.frame(maxWidth:.infinity).padding(.vertical,90)
+                    } else if let summary = store.summary {
+                        VStack(alignment:.leading,spacing:14) {
+                            Label("Gespeicherter Scan",systemImage:"internaldrive").font(.title2.bold())
+                            Text(summary.completedAt.formatted(date:.abbreviated,time:.shortened)).foregroundStyle(.secondary)
+                            Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.bytes)) · \(summary.duplicateCount.formatted()) Duplikatgruppen")
+                            Text("Die Dateiliste bleibt auf dem Datenträger und wird beim Öffnen der Dateien oder Duplikate geladen.").font(.callout).foregroundStyle(.secondary)
+                            Button("Dateien öffnen") { navigation.diskTab = "Dateien & Ordner" }
+                        }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,40)
                     } else {
                         VStack(spacing: 14) {
                             Image(systemName: "chart.bar.xaxis").font(.system(size: 52)).foregroundStyle(.cyan)
@@ -103,6 +115,11 @@ struct DiskDashboardView: View {
             }
         }.padding(22)
             .background(Color(nsColor: .windowBackgroundColor))
+            .task(id:needsInventory) {
+                if needsInventory { await store.beginInventoryAccess(inventoryConsumer) }
+                else { store.endInventoryAccess(inventoryConsumer) }
+            }
+            .onDisappear { selectedCopies = [:]; pendingTrash = []; store.endInventoryAccess(inventoryConsumer) }
             .onReceive(actions.removals) { _ in selectedCopies = selectedCopies.filter { !store.isRemoved($0.key) } }
             .onChange(of: store.result?.root) { _ in folder = nil; query = ""; backFolders = []; forwardFolders = [] }
             .onChange(of: store.result?.completedAt) { _ in selectedCopies = [:]; duplicatePage = 0; expandedDuplicateID = nil; duplicateFilePage = 0 }

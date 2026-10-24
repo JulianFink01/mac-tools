@@ -12,14 +12,45 @@ struct ScanSnapshot: Codable, Identifiable {
 
 @MainActor
 final class DiskScanStore: ObservableObject {
-    static let shared = DiskScanStore()
+    static let shared = DiskScanStore(eagerRestore:false)
     @Published var root = FileManager.default.homeDirectoryForCurrentUser {
         didSet { defaults.set(root.path, forKey: "diskScanRoot") }
     }
     @Published var findDuplicates = UserDefaults.standard.object(forKey: "scanFindDuplicates") as? Bool ?? true {
         didSet { defaults.set(findDuplicates, forKey: "scanFindDuplicates") }
     }
-    @Published private(set) var result: DiskScanResult? { didSet { prepareDuplicateIndex() } }
+    @Published private(set) var summary: DiskScanSummary?
+    @Published private(set) var cachedResultAvailable = false
+    @Published private(set) var result: DiskScanResult? { didSet { if let result { summary = DiskScanSummary(result) }; prepareDuplicateIndex() } }
+    private let eagerRestore: Bool
+    private var inventoryConsumers = Set<UUID>()
+    private var inventoryRelease: Task<Void,Never>?
+    private var restorableDate: Date?
+    private var restoreTask: Task<Void,Never>?
+    private var unloadedRemovalTask: Task<Void,Never>?
+    func beginInventoryAccess(_ consumer:UUID) async {
+        inventoryConsumers.insert(consumer); inventoryRelease?.cancel()
+        await unloadedRemovalTask?.value
+        if result == nil { restoreCachedResult() }
+        await restoreTask?.value
+    }
+    func endInventoryAccess(_ consumer:UUID) {
+        inventoryConsumers.remove(consumer); scheduleInventoryRelease()
+    }
+    private func scheduleInventoryRelease() {
+        guard !eagerRestore,inventoryConsumers.isEmpty else { return }
+        inventoryRelease?.cancel()
+        inventoryRelease = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds:10_000_000_000) } catch { return }
+            self?.releaseUnusedInventory()
+        }
+    }
+    func releaseUnusedInventory() {
+        guard !eagerRestore,inventoryConsumers.isEmpty,!isScanning,!isSaving,!isApplyingRemovals,!isRestoring,
+              let result,restorableDate == result.completedAt else { return }
+        duplicateIndexTask?.cancel(); duplicateIndexTask = nil
+        self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache()
+    }
     @Published private(set) var duplicateIndex: DuplicateViewIndex?
     private var duplicateIndexTask: Task<Void, Never>?
     private var duplicateIndexGeneration = UUID()
@@ -45,8 +76,8 @@ final class DiskScanStore: ObservableObject {
     private let resultURL: URL
     private let historyURL: URL
 
-    init(defaults: UserDefaults = .standard, directory: URL = VideoLibraryStore.appSupportDirectory) {
-        self.defaults = defaults
+    init(defaults: UserDefaults = .standard, directory: URL = VideoLibraryStore.appSupportDirectory, eagerRestore:Bool = true) {
+        self.eagerRestore = eagerRestore; self.defaults = defaults
         resultURL = directory.appendingPathComponent("last-disk-scan.plist")
         historyURL = directory.appendingPathComponent("disk-history.json")
         findDuplicates = defaults.object(forKey: "scanFindDuplicates") as? Bool ?? true
@@ -57,23 +88,26 @@ final class DiskScanStore: ObservableObject {
         if let data = try? Data(contentsOf: historyURL), let saved = try? JSONDecoder().decode([ScanSnapshot].self, from: data) {
             history = saved
         }
-        isRestoring = FileManager.default.fileExists(atPath: resultURL.path)
-        if isRestoring { status = "Gespeicherter Scan wird im Hintergrund geladen …" }
-        removalSubscription = FileActions.shared.removals.sink { [weak self] change in self?.applyRemoved(paths: change.paths, directories: change.directories) }
-        let url = resultURL
-        let generation = selectionGeneration
-        Task {
-            let saved = await Task.detached(priority: .utility) { () -> DiskScanResult? in
-                return try? DiskScanCache.load(from: url)
-            }.value
+        cachedResultAvailable = FileManager.default.fileExists(atPath:resultURL.path)
+        removalSubscription = FileActions.shared.removals.sink { [weak self] change in self?.applyRemoved(paths:change.paths,directories:change.directories) }
+        if eagerRestore { restoreCachedResult() }
+        else if cachedResultAvailable {
+            status = "Gespeicherter Scan verfügbar · Dateiliste wird bei Bedarf geladen."
+            summary = try? DiskScanCache.summary(from:resultURL)
+        }
+    }
+    private func restoreCachedResult() {
+        guard result == nil,!isRestoring,!isScanning,cachedResultAvailable else { return }
+        isRestoring = true; status = "Gespeicherte Dateiliste wird geladen …"
+        let url = resultURL,generation = selectionGeneration
+        restoreTask = Task {
+            let saved = await Task.detached(priority:.utility) { try? DiskScanCache.load(from:url) }.value
             if selectionGeneration == generation { isRestoring = false }
-            guard selectionGeneration == generation, !isScanning, result == nil, let saved,
+            guard selectionGeneration == generation,!isScanning,result == nil,let saved,
                   saved.root.resolvingSymlinksInPath() == root.resolvingSymlinksInPath() else { return }
-            restoredResult = true
-            result = saved
-            Task { await FileBrowserStore.shared.prime(saved) }
-            status = "Gespeicherter Scan · " + saved.completedAt.formatted(date: .abbreviated, time: .shortened)
-                + (saved.reachedLimit || saved.skipped > 0 ? " · mit Einschränkungen" : "")
+            restoredResult = true; restorableDate = saved.completedAt; result = saved
+            status = "Gespeicherter Scan · " + saved.completedAt.formatted(date:.abbreviated,time:.shortened) + (saved.reachedLimit || saved.skipped > 0 ? " · mit Einschränkungen" : "")
+            scheduleInventoryRelease()
         }
     }
 
@@ -105,7 +139,8 @@ final class DiskScanStore: ObservableObject {
         selectionGeneration = UUID()
         isRestoring = false
         root = url
-        result = nil
+        result = nil;summary = nil;cachedResultAvailable = false;restorableDate = nil
+        FileBrowserStore.shared.releaseCache()
         status = "Bereit für die Analyse."
     }
 
@@ -158,6 +193,7 @@ final class DiskScanStore: ObservableObject {
                 status = (value.omissions?.unavailable ?? value.skipped) > 0 ? "Gesamtscan beendet · \(value.files.count.formatted()) Dateien · \((value.omissions?.unavailable ?? value.skipped).formatted()) nicht lesbare Dateien."
                     : "Gesamtscan abgeschlossen · \(value.files.count.formatted()) Dateien · \(value.completedAt.formatted(date: .abbreviated, time: .shortened))"
                 if let saveError { status += " · Speichern fehlgeschlagen: " + saveError }
+                else { restorableDate = value.completedAt; cachedResultAvailable = true }
                 if !value.reachedLimit {
                     history.append(ScanSnapshot(root: value.root.path, date: value.completedAt, bytes: value.bytes, files: value.files.count, skipped: value.omissions?.unavailable ?? value.skipped))
                     history = Array(history.suffix(100))
@@ -176,7 +212,7 @@ final class DiskScanStore: ObservableObject {
             isSaving = false
             isScanning = false
             resultIsProvisional = false
-            task = nil
+            task = nil; scheduleInventoryRelease()
         }
     }
 
@@ -194,7 +230,25 @@ final class DiskScanStore: ObservableObject {
     /// Publish removal masks and duplicate counters immediately. Serialize the
     /// larger inventory update and journal writes; rapid removals are queued.
     func applyRemoved(paths: [String], directories: Set<String> = []) {
-        guard let previous = result else { return }
+        guard let previous = result else {
+            guard cachedResultAvailable,let summary else { return }
+            pendingRemovals.formUnion(paths.map(DiskScanner.canonicalPath)); pendingDirectories.formUnion(directories.map(DiskScanner.canonicalPath))
+            removedPaths.formUnion(paths.map(DiskScanner.canonicalPath))
+            guard !isApplyingRemovals else { return }; isApplyingRemovals = true
+            let destination = resultURL,date = summary.completedAt
+            unloadedRemovalTask = Task {
+                while !pendingRemovals.isEmpty {
+                    let batch = pendingRemovals,folders = pendingDirectories; pendingRemovals = [];pendingDirectories = []
+                    let failure = await Task.detached(priority:.utility) { () -> String? in
+                        do { try DiskScanCache.saveRemoved(paths:batch,directories:folders,scanDate:date,to:destination); return nil }
+                        catch { return error.localizedDescription }
+                    }.value
+                    if let failure { status = "Bereinigungsstand konnte nicht gespeichert werden: " + failure }
+                }
+                isApplyingRemovals = false; unloadedRemovalTask = nil
+            }
+            return
+        }
         let rootPath = DiskScanner.canonicalPath(previous.root.path)
         let prefix = rootPath == "/" ? "/" : rootPath + "/"
         let fresh = Set(paths.map(DiskScanner.canonicalPath).filter { ($0.hasPrefix(prefix) || rootPath.hasPrefix($0 + "/")) && !removedPaths.contains($0) })
@@ -231,7 +285,7 @@ final class DiskScanStore: ObservableObject {
                 suppressDuplicateRebuild = false
                 if let error = update.2 { status = "Bereinigt · Speichern fehlgeschlagen: " + error }
             }
-            isApplyingRemovals = false
+            isApplyingRemovals = false; scheduleInventoryRelease()
         }
     }
 

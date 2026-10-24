@@ -58,7 +58,7 @@ struct MCPToolsSettingsView: View {
                 await ContainerStore.shared.refresh(); guard let item = ContainerStore.shared.containers.first(where: { $0.id == params["id"] as? String }) else { throw LocalToolBridge.BridgeError(message: "Laufender Container nicht gefunden.") }; await ContainerStore.shared.stop(item); if let error = ContainerStore.shared.error { throw LocalToolBridge.BridgeError(message: error) }; return ["stopped": item.id]
             case "windows_list": return ["windows": WindowPinController.shared.pinnedWindows.map { ["id": $0.id.uuidString, "application": $0.application, "title": $0.title] }]
             case "window_unpin": guard let text = params["id"] as? String, let id = UUID(uuidString: text) else { throw LocalToolBridge.BridgeError(message: "Ungültige Fenster-ID.") }; WindowPinController.shared.unpin(id: id); return ["unpinned": text]
-            case "disk_status": return ["scanning": DiskScanStore.shared.isScanning, "volumes": (SystemMonitor.shared.reading?.volumes ?? []).map { ["name": $0.name, "totalBytes": $0.total, "freeBytes": $0.free] }]
+            case "disk_status": return ["scanning": DiskScanStore.shared.isScanning, "inventoryLoaded":DiskScanStore.shared.result != nil,"indexedFiles":DiskScanStore.shared.summary?.fileCount as Any? ?? NSNull(), "volumes": (SystemMonitor.shared.reading?.volumes ?? []).map { ["name": $0.name, "totalBytes": $0.total, "freeBytes": $0.free] }]
             default: throw LocalToolBridge.BridgeError(message: "Nicht unterstützte MacTools-Aktion.")
             }
         }

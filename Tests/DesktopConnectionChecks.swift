@@ -45,6 +45,20 @@ import Foundation
         try await desktop.answer("approval-fixture", method: "item/commandExecution/requestApproval", in: "test-thread", result: ["decision":"accept"])
         try await desktop.interrupt("test-thread", turnID: "turn-test")
         desktop.stop()
+        let recoveryPath = path + "-recovery"
+        let recoveryServer = Process();recoveryServer.executableURL = URL(fileURLWithPath:"/usr/bin/python3")
+        recoveryServer.arguments = [FileManager.default.currentDirectoryPath + "/Tests/Fixtures/codex-desktop-recovery.py",recoveryPath]
+        try recoveryServer.run()
+        defer { if recoveryServer.isRunning { recoveryServer.terminate() };try? FileManager.default.removeItem(atPath:recoveryPath) }
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath:recoveryPath) { try await Task.sleep(nanoseconds:20_000_000) }
+        let recovery = CodexDesktopConnection(socketPath:recoveryPath);recovery.selectedID = "recover-thread"
+        async let firstConnect: Void = recovery.connect()
+        async let secondConnect: Void = recovery.connect()
+        _ = try await (firstConnect,secondConnect)
+        let recovered = await recovery.recoverOwner("recover-thread")
+        precondition(recovered && recovery.hasOwner("recover-thread"))
+        recovery.stop()
+        print("PASS: concurrent connection attempts share handshake; stale owner discovery reconnects and recovers without any message or mutation")
         print("PASS: fragmented IPC frames, owner runtime snapshot, native queue, start/steer/interrupt contract" + (ProcessInfo.processInfo.environment["MACTOOLS_TEST_LARGE_FRAME"] == nil ? "" : "; valid 70-MiB snapshot accepted without disconnect"))
     }
 }

@@ -129,6 +129,10 @@ struct CodexChatsView: View {
                 if let id = store.selectedID, !(store.queuedMessages[id] ?? []).isEmpty {
                     CodexQueueStrip(store: store, threadID: id).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(.horizontal, 28).padding(.bottom, 8)
                 }
+                if !store.asyncQuestions.isEmpty {
+                    ScrollView { VStack(spacing:10) { ForEach(store.asyncQuestions) { question in CodexAsyncQuestionView(question:question,store:store) } } }
+                        .frame(height:min(300,CGFloat(store.asyncQuestions.reduce(0) { $0 + 180 + $1.options.count * 42 }))).padding(.horizontal,28).padding(.bottom,8)
+                }
                 CodexChatComposer(store: store).padding(.horizontal, 28).padding(.bottom, 20)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $droppingFiles) { providers in
@@ -494,6 +498,15 @@ private struct CodexMessageBody: View, Equatable {
     let text: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let replies = CodexQuestionReply.parse(text) {
+                ForEach(Array(replies.enumerated()),id:\.offset) { _,reply in
+                    VStack(alignment:.leading,spacing:8) {
+                        Label("Antwort auf Rückfrage",systemImage:"checkmark.bubble").font(.caption.weight(.semibold)).foregroundStyle(.mint)
+                        Text(reply.question).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(reply.answer).font(.body.weight(.medium)).textSelection(.enabled)
+                    }.padding(14).frame(maxWidth:.infinity,alignment:.leading).background(Color.mint.opacity(0.045),in:RoundedRectangle(cornerRadius:12))
+                }
+            } else {
             ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, part in
                 if index % 2 == 1 {
                     let lines = part.components(separatedBy: "\n")
@@ -506,6 +519,7 @@ private struct CodexMessageBody: View, Equatable {
                 } else if !part.isEmpty {
                     MarkdownContent(source: part)
                 }
+            }
             }
         }.frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
@@ -636,16 +650,23 @@ private struct CodexPromptView: View {
             if !prompt.supported {
                 Text("Codex benötigt eine Bestätigung im Originalchat").font(.callout.bold())
             } else if prompt.method == "item/tool/requestUserInput" {
+                Label("Codex hat eine Rückfrage",systemImage:"questionmark.bubble").font(.headline).foregroundStyle(.mint)
                 ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
                     let id = question["id"] as? String ?? ""
                     Text(question["question"] as? String ?? "Codex benötigt eine Antwort").font(.callout)
                     if let options = question["options"] as? [[String: Any]] {
                         ForEach(Array(options.enumerated()), id: \.offset) { _, option in
                             let label = option["label"] as? String ?? ""
-                            Button(label) { answers[id] = label }.help(option["description"] as? String ?? "")
+                            Button { answers[id] = label } label: {
+                                HStack(alignment:.top,spacing:9) {
+                                    Image(systemName:answers[id] == label ? "checkmark.circle.fill" : "circle").foregroundStyle(answers[id] == label ? Color.mint : .secondary)
+                                    VStack(alignment:.leading,spacing:4) { Text(label).fontWeight(.medium);if let detail = option["description"] as? String,!detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary) } };Spacer(minLength:0)
+                                }.padding(10).frame(maxWidth:.infinity,alignment:.leading).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:9))
+                            }.buttonStyle(.plain)
                         }
                     }
-                    TextField("Deine Antwort", text: Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0 }))
+                    if question["isSecret"] as? Bool == true { SecureField("Deine Antwort",text:Binding(get:{answers[id] ?? ""},set:{answers[id]=$0})).textFieldStyle(.roundedBorder) }
+                    else { TextField("Eigene Antwort",text:Binding(get:{answers[id] ?? ""},set:{answers[id]=$0})).textFieldStyle(.roundedBorder) }
                 }
                 Button("Antwort senden") {
                     let values = answers.mapValues { ["answers": [$0]] }
@@ -776,5 +797,25 @@ struct MermaidWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             decisionHandler(navigationAction.navigationType == .other && navigationAction.request.url?.scheme == "about" ? .allow : .cancel)
         }
+    }
+}
+
+struct CodexAsyncQuestionView: View {
+    let question: CodexAsyncQuestion
+    @ObservedObject var store: CodexStore
+    @State private var answer = ""
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack { Label("Rückfrage von Codex",systemImage:"questionmark.bubble").font(.caption.weight(.semibold)).foregroundStyle(.mint);Spacer();if store.answeringAsyncQuestions.contains(question.id) { ProgressView().controlSize(.small) } }
+            Text(question.title).font(.callout.weight(.medium)).textSelection(.enabled)
+            ForEach(Array(question.options.enumerated()),id:\.offset) { _,option in
+                Button { answer = option } label: {
+                    HStack { Image(systemName:answer == option ? "checkmark.circle.fill" : "circle");Text(option);Spacer() }.font(.callout).foregroundStyle(answer == option ? Color.mint : .primary).padding(10).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:9))
+                }.buttonStyle(.plain)
+            }
+            HStack { TextField("Eigene Antwort",text:$answer).textFieldStyle(.roundedBorder).accessibilityLabel("Antwort auf Rückfrage")
+                Button("Antwort senden") { let value = answer;Task { _ = await store.answerAsync(question,answer:value) } }.buttonStyle(.borderedProminent).tint(.mint).disabled(answer.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || store.sending)
+            }
+        }.padding(16).frame(maxWidth:760,alignment:.leading).frame(maxWidth:.infinity).background(Color.mint.opacity(0.05),in:RoundedRectangle(cornerRadius:14)).disabled(store.answeringAsyncQuestions.contains(question.id))
     }
 }
