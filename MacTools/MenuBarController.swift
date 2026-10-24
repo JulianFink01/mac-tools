@@ -294,14 +294,17 @@ final class MenuBarController: NSObject {
         let height = min(680, max(400, (NSScreen.main?.visibleFrame.height ?? 760) - 70))
         popover.contentSize = NSSize(width: 560, height: height)
         popover.contentViewController = NSHostingController(rootView: CodexChatsView(store: store, menuMode: true).frame(width: 560, height: height))
-        CodexStore.shared.$chats.combineLatest(store.$chats).receive(on: RunLoop.main).sink { [weak self] _, _ in self?.updateLabel() }.store(in: &subscriptions)
+        CodexStore.shared.objectWillChange.merge(with: store.objectWillChange).receive(on: RunLoop.main).sink { [weak self] _ in self?.updateLabel() }.store(in: &subscriptions)
         updateLabel(); warm()
     }
     private func updateLabel() {
-        let chat = store.selected ?? CodexStore.shared.chats.first { $0.id == id }
+        let chat = store.selected ?? CodexStore.shared.liveChats.first { $0.id == id }
+        let waiting = store.waitingChatIDs.contains(id) || CodexStore.shared.waitingChatIDs.contains(id)
+        let status = waiting ? "Wartet auf deine Eingabe" : chat?.statusLabel ?? "Live-Chat öffnen"
         item?.button?.title = " " + String((chat?.title ?? "Codex-Chat").prefix(18))
-        item?.button?.toolTip = (chat?.title ?? "Codex-Chat") + " · " + (chat?.statusLabel ?? "Live-Chat öffnen")
-        item?.button?.setAccessibilityLabel("Live-Chat " + (chat?.title ?? id))
+        item?.button?.contentTintColor = waiting ? .systemOrange : chat?.status == "active" ? .systemGreen : nil
+        item?.button?.toolTip = (chat?.title ?? "Codex-Chat") + " · " + status
+        item?.button?.setAccessibilityLabel("Live-Chat " + (chat?.title ?? id) + " · " + status)
     }
     private func warm() {
         guard warming == nil else { return }

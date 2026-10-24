@@ -8,6 +8,27 @@ import Combine
     @Published var messages: [String: [CodexQueuedMessage]] = [:] {
         didSet { defaults.set(try? JSONEncoder().encode(messages), forKey: "codexQueuedMessages") }
     }
+    // Runtime belongs to the connection that started the turn, not to thread/list
+    // on another app-server. Share only summaries, never complete transcripts.
+    @Published private(set) var ownedChats: [String: CodexChat] = [:]
+    private var chatOwners: [String: UUID] = [:]
+    private var localWorkOwners = Set<UUID>()
+    var hasLocalWork: Bool { !localWorkOwners.isEmpty }
+    func setLocalWork(owner: UUID, active: Bool) {
+        if active { localWorkOwners.insert(owner) } else { localWorkOwners.remove(owner) }
+    }
+    func publish(_ chat: CodexChat, owner: UUID) {
+        guard chat.parentID == nil else { return }
+        chatOwners[chat.id] = owner
+        if ownedChats[chat.id] != chat { ownedChats[chat.id] = chat }
+    }
+    func releaseChats(owner: UUID) {
+        localWorkOwners.remove(owner)
+        for id in chatOwners.keys.filter({ chatOwners[$0] == owner }) {
+            chatOwners.removeValue(forKey: id); ownedChats.removeValue(forKey: id)
+        }
+    }
+    func removeChat(_ id: String) { chatOwners.removeValue(forKey: id); ownedChats.removeValue(forKey: id) }
     @Published var needsReview = Set<UUID>() { didSet { defaults.set(needsReview.map(\.uuidString), forKey: "codexQueueNeedsReview") } }
     var editing = Set<UUID>()
     var blocked = Set<String>()
@@ -259,6 +280,7 @@ final class CodexStore: ObservableObject {
     private var nonArchivedChats: [CodexChat] = []
     @Published private(set) var chats: [CodexChat] = [] {
         didSet {
+            publishManagedChats()
             recordActivity()
             if !showingArchived {
                 nonArchivedChats = chats
@@ -269,7 +291,33 @@ final class CodexStore: ObservableObject {
             }
         }
     }
-    var liveChats: [CodexChat] { showingArchived ? nonArchivedChats : chats }
+    var liveChats: [CodexChat] {
+        let stored = showingArchived ? nonArchivedChats : chats
+        let merged = stored.map { value -> CodexChat in
+            guard let runtime = queue.ownedChats[value.id] else { return value }
+            var chat = value; chat.status = runtime.status; chat.flags = runtime.flags
+            chat.updatedAt = max(chat.updatedAt, runtime.updatedAt)
+            chat.projectID = chat.projectID ?? runtime.projectID
+            return chat
+        }
+        let ids = Set(stored.map(\.id))
+        return CodexChatOrder.sorted(merged + queue.ownedChats.values.filter { !ids.contains($0.id) }, previous: stableChatOrder)
+    }
+    var listedChats: [CodexChat] { showingArchived ? chats : liveChats }
+    private let runtimeOwner = UUID()
+    private func publishManagedChats() {
+        let localTurn = activeTurns.keys.contains { managedThreads.contains($0) && resumedThreads.contains($0) && !desktop.hasOwner($0) }
+        let localSend = sending && (selectedID == nil || selectedID.map { managedThreads.contains($0) && resumedThreads.contains($0) && !desktop.hasOwner($0) } == true)
+        queue.setLocalWork(owner: runtimeOwner, active: localTurn || localSend)
+        for value in chats where managedThreads.contains(value.id) && resumedThreads.contains(value.id) {
+            var chat = value
+            if activeTurns[chat.id] != nil { chat.status = "active" }
+            chat.flags.removeAll { ["waitingOnApproval", "waitingOnUserInput"].contains($0) }
+            if prompts.contains(where: { $0.threadID == chat.id }) { chat.flags.append("waitingOnApproval") }
+            if selectedID == chat.id, !asyncQuestions.isEmpty { chat.flags.append("waitingOnUserInput") }
+            queue.publish(chat, owner: runtimeOwner)
+        }
+    }
     @Published private(set) var activityHistory: [CodexActivityPoint] = []
     var waitingChatIDs: Set<String> {
         var ids = Set(liveChats.filter { $0.flags.contains(where: { ["waitingOnApproval","waitingOnUserInput","waitingOnElicitation"].contains($0) }) }.map(\.id))
@@ -294,7 +342,7 @@ final class CodexStore: ObservableObject {
     @Published var selectedID: String? { didSet { if oldValue != selectedID { selectedGoal = nil } } }
     @Published private(set) var selectedGoal: CodexGoal?
     @Published private(set) var messages: [CodexMessage] = []
-    @Published private(set) var asyncQuestions: [CodexAsyncQuestion] = [] { didSet { recordActivity() } }
+    @Published private(set) var asyncQuestions: [CodexAsyncQuestion] = [] { didSet { publishManagedChats(); recordActivity() } }
     @Published private(set) var answeringAsyncQuestions = Set<String>()
     private var confirmedAsyncAnswers = Set<String>()
     func answerAsync(_ question:CodexAsyncQuestion, answer:String) async -> Bool {
@@ -314,10 +362,10 @@ final class CodexStore: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var connecting = false
     @Published private(set) var loadingHistory = false
-    @Published private(set) var sending = false
+    @Published private(set) var sending = false { didSet { publishManagedChats() } }
     @Published var error: String?
     @Published private(set) var activity = ""
-    @Published private(set) var prompts: [CodexPrompt] = [] { didSet { recordActivity() } }
+    @Published private(set) var prompts: [CodexPrompt] = [] { didSet { publishManagedChats(); recordActivity() } }
     @Published private(set) var answeringPrompts = Set<UUID>()
     private var nativePromptPayloads: [String: Data] = [:]
     @Published private(set) var olderCursor: String?
@@ -377,7 +425,7 @@ final class CodexStore: ObservableObject {
         didSet { defaults.set(Array(managedThreads), forKey: "macToolsCodexThreads") }
     }
     private var resumedThreads = Set<String>()
-    var selected: CodexChat? { chats.first { $0.id == selectedID } ?? subagents.values.flatMap { $0 }.first { $0.id == selectedID } }
+    var selected: CodexChat? { listedChats.first { $0.id == selectedID } ?? subagents.values.flatMap { $0 }.first { $0.id == selectedID } }
     var selectedRootID: String? {
         guard let id = selectedID else { return nil }
         return subagents.first(where: { $0.value.contains { $0.id == id } })?.key ?? id
@@ -422,6 +470,7 @@ final class CodexStore: ObservableObject {
             guard let self else { return }
             self.connected = false; self.error = message; self.activity = "Verbindung getrennt"
             self.activeTurns.removeAll(); self.resumedThreads.removeAll(); self.prompts.removeAll { !$0.desktop }; self.approvalItems.removeAll()
+            self.queue.releaseChats(owner: self.runtimeOwner)
         }
     }
     func start() {
@@ -448,7 +497,7 @@ final class CodexStore: ObservableObject {
             }
         }
     }
-    func stop() { nativeProjectionTask?.cancel(); nativeProjectionPending = nil; nativeProjectionEpoch = UUID(); nativeQueueTask?.cancel(); nativeQueueTask = nil; queueTasks.values.forEach { $0.cancel() }; queueTasks.removeAll(); poll?.cancel(); poll = nil; desktop.stop(); desktopConnected = false; connection.stop(); connected = false }
+    func stop() { nativeProjectionTask?.cancel(); nativeProjectionPending = nil; nativeProjectionEpoch = UUID(); nativeQueueTask?.cancel(); nativeQueueTask = nil; queueTasks.values.forEach { $0.cancel() }; queueTasks.removeAll(); poll?.cancel(); poll = nil; desktop.stop(); desktopConnected = false; connection.stop(); connected = false; queue.releaseChats(owner: runtimeOwner) }
     func connect() async {
         guard !connecting else { return }; connecting = true; defer { connecting = false }
         do {
@@ -518,7 +567,8 @@ final class CodexStore: ObservableObject {
                 return chat
             }
             let ids = Set(found.map(\.id))
-            let merged = older ? chats.filter { !ids.contains($0.id) } + incoming : incoming
+            let locallyOwned = showingArchived ? [] : chats.filter { managedThreads.contains($0.id) && resumedThreads.contains($0.id) && !ids.contains($0.id) }
+            let merged = older ? chats.filter { !ids.contains($0.id) } + incoming : incoming + locallyOwned
             let ordered = CodexChatOrder.sorted(merged, previous: stableChatOrder)
             if chats != ordered { chats = ordered }
             listCursor = next
@@ -577,8 +627,9 @@ final class CodexStore: ObservableObject {
     func archive(_ ids: [String], archived: Bool = true) async {
         do {
             for id in ids {
-                if chats.first(where: { $0.id == id })?.status == "active" { throw CodexFailure(message: "Laufenden Chat zuerst beenden; er wurde nicht archiviert.") }
+                if liveChats.first(where: { $0.id == id })?.status == "active" { throw CodexFailure(message: "Laufenden Chat zuerst beenden; er wurde nicht archiviert.") }
                 _ = try await connection.request(archived ? "thread/archive" : "thread/unarchive", ["threadId": id])
+                queue.removeChat(id)
                 chats.removeAll { $0.id == id }
                 if selectedID == id { newChat() }
             }
@@ -680,7 +731,13 @@ final class CodexStore: ObservableObject {
             guard (response["thread"] as? [String: Any])?["projectId"] as? String == project else { throw CodexFailure(message: "Projektzuordnung noch nicht bestätigt") }
             if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].projectID = project }
             pendingProjects.removeValue(forKey: id)
-        } catch { self.error = "Die Nachricht wurde übergeben. Die Projektzuordnung wird erneut versucht: " + error.localizedDescription }
+            if selectedID == id, error?.hasPrefix("Die Nachricht wurde übergeben. Die Projektzuordnung") == true { self.error = nil }
+        } catch {
+            // A new rollout can still be empty immediately after turn/start.
+            // The normal poll retries the metadata only; never resend the turn.
+            if error.localizedDescription.contains("is empty") { return }
+            if selectedID == id { self.error = "Die Nachricht wurde übergeben. Die Projektzuordnung wird erneut versucht." }
+        }
     }
     func loadHistory(older: Bool = false) async {
         guard let id = selectedID, connected else { return }
@@ -890,10 +947,12 @@ final class CodexStore: ObservableObject {
             let id: String
             if let selectedID { id = selectedID }
             else {
-                let result = try await connection.request("thread/start", ["cwd": workingDirectory])
+                var start: [String: Any] = ["cwd": workingDirectory]
+                if let project = newChatProjectID { start["projectId"] = project }
+                let result = try await connection.request("thread/start", start)
                 guard let json = result["thread"] as? [String: Any], let chat = CodexChat(json) else { throw CodexFailure(message: "Codex hat keine Chat-ID geliefert.") }
                 id = chat.id; managedThreads.insert(id); resumedThreads.insert(id); selectedID = id
-                if let project = newChatProjectID { pendingProjects[id] = project }
+                if let project = newChatProjectID, chat.projectID != project { pendingProjects[id] = project }
                 chats.removeAll { $0.id == id }; chats.insert(chat, at: 0)
                 options[id] = option; drafts[id] = text; self.references[id] = references
             }
@@ -909,6 +968,7 @@ final class CodexStore: ObservableObject {
                 let result = try await connection.request("turn/start", params)
                 if let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String, !completedTurns.contains(turnID), turn["status"] as? String == "inProgress" { activeTurns[id] = turnID }
             }
+            publishManagedChats()
             await assignPendingProject(id)
             if activeTurns[id] != nil { activity = "Codex arbeitet …" }; await refresh(); return true
         } catch { self.error = error.localizedDescription; return false }
@@ -1089,15 +1149,20 @@ final class CodexStore: ObservableObject {
                 chats[index].status = status["type"] as? String ?? "notLoaded"; chats[index].flags = status["activeFlags"] as? [String] ?? []
             }
         case "thread/archived", "thread/deleted":
+            if let id { queue.removeChat(id) }
             chats.removeAll { $0.id == id }
             if selectedID == id { newChat() }
         case "thread/name/updated":
             if let index = chats.firstIndex(where: { $0.id == id }), let name = p["threadName"] as? String ?? p["name"] as? String { chats[index].title = name }
         case "turn/started":
-            if let id, let turn = p["turn"] as? [String: Any], let turnID = turn["id"] as? String { activeTurns[id] = turnID; queue.observe(id, active: true) }
+            if let id, let turn = p["turn"] as? [String: Any], let turnID = turn["id"] as? String { activeTurns[id] = turnID; queue.observe(id, active: true); publishManagedChats() }
         case "turn/completed":
             if let turn = p["turn"] as? [String: Any], let turnID = turn["id"] as? String { completedTurns.insert(turnID) }
-            if let id { activeTurns.removeValue(forKey: id); prompts.removeAll { !$0.desktop && $0.threadID == id }; queueCompleted(id) }
+            if let id {
+                activeTurns.removeValue(forKey: id)
+                if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].status = "idle"; chats[index].flags = [] }
+                prompts.removeAll { !$0.desktop && $0.threadID == id }; queueCompleted(id)
+            }
             if id == selectedID {
                 let turn = p["turn"] as? [String: Any] ?? [:]
                 let status = turn["status"] as? String ?? "unknown"

@@ -102,6 +102,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         WindowPinController.shared.refreshAccessibilityPermission()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard CodexQueueRepository.shared.hasLocalWork else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "MacTools führt noch Codex-Chats aus"
+        alert.informativeText = "Ein Beenden würde diese Arbeit unterbrechen. Lass MacTools bis zum Abschluss geöffnet oder beende den betroffenen Chat gezielt. Chats, die im Original-Codex laufen, sind davon nicht betroffen."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Weiterlaufen lassen")
+        alert.addButton(withTitle: "Trotzdem beenden")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         PrivateMCPStore.shared.stop()
         menuBarController?.shutdown(); monitorWidgets?.shutdown()

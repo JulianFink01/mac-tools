@@ -91,13 +91,14 @@ struct CodexChatsView: View {
     @State private var followLive = true
     @State private var activityExpansion = CodexActivityExpansionState()
     @State private var loadingOlder = false
+    @State private var visibleMessageID: String?
     @StateObject private var transcriptScroll = CodexTranscriptScrollState()
     @State private var showScheduled = false
     @State private var showGoal = false
     @AppStorage("codexChatSidebarWidth") private var chatSidebarWidth = 260.0
     @State private var droppingFiles = false
     @AppStorage("codexChatSidebarVisible") private var chatSidebarVisible = true
-    private var roots: [CodexChat] { store.chats.filter { filter.isEmpty || $0.title.localizedCaseInsensitiveContains(filter) } }
+    private var roots: [CodexChat] { store.listedChats.filter { filter.isEmpty || $0.title.localizedCaseInsensitiveContains(filter) } }
     private var folders: [String] { store.orderedFolders(roots) }
     private var sidebarVisible: Bool { menuMode ? false : popupMode ? popupSidebarVisible : chatSidebarVisible }
     var body: some View {
@@ -332,10 +333,10 @@ struct CodexChatsView: View {
                     }
                     ForEach(store.prompts.filter { $0.threadID == store.selectedID }) { prompt in CodexPromptView(prompt: prompt, store: store) }
                     Color.clear.frame(height: 1).id("end")
-                }.frame(maxWidth: 760, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity)
+                }.modifier(CodexTranscriptTargets()).frame(maxWidth: 760, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity)
                     .background(CodexTranscriptScrollObserver(state:transcriptScroll,scrolled:{ atBottom in followLive = atBottom },reachedTop:{ loadOlderHistory(proxy) }))
                     .background(GeometryReader { geometry in Color.clear.onChange(of: geometry.size.height) { _ in scrollToLatest(proxy) } })
-            }.modifier(CodexInitialScrollAnchor())
+            }.modifier(CodexInitialScrollAnchor()).modifier(CodexTranscriptPosition(id: $visibleMessageID))
                 .background(GeometryReader { geometry in
                     Color.clear.onChange(of: geometry.size.height) { _ in
                         scrollToLatest(proxy)
@@ -365,7 +366,11 @@ struct CodexChatsView: View {
         loadingOlder = true; transcriptScroll.userPaused = true; followLive = false
         Task {
             if store.hasOlderNativeHistory { await store.loadOlderNativeHistory() } else { await store.loadHistory(older:true) }
-            if store.selectedID == id, let anchor { await Task.yield(); proxy.scrollTo(anchor,anchor:.top) }
+            if store.selectedID == id {
+                await Task.yield()
+                if #available(macOS 14, *) { /* SwiftUI preserves the visible message ID across prepends. */ }
+                else if let anchor { proxy.scrollTo(anchor,anchor:.top) }
+            }
             loadingOlder = false
         }
     }
@@ -394,6 +399,17 @@ private struct CodexInitialScrollAnchor: ViewModifier {
         if #available(macOS 15, *) { content.defaultScrollAnchor(.bottom, for: .initialOffset) }
         else if #available(macOS 14, *) { content.defaultScrollAnchor(.bottom) }
         else { content }
+    }
+}
+private struct CodexTranscriptTargets: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14, *) { content.scrollTargetLayout() } else { content }
+    }
+}
+private struct CodexTranscriptPosition: ViewModifier {
+    @Binding var id: String?
+    func body(content: Content) -> some View {
+        if #available(macOS 14, *) { content.scrollPosition(id: $id, anchor: .top) } else { content }
     }
 }
 
@@ -463,8 +479,8 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in self?.schedulePositionRead() }
         }
         private func schedulePositionRead() {
-            positionRead?.cancel()
-            let work = DispatchWorkItem { [weak self] in self?.readPosition(userInitiated: false) }
+            guard positionRead == nil else { return }
+            let work = DispatchWorkItem { [weak self] in self?.positionRead = nil; self?.readPosition(userInitiated: false) }
             positionRead = work
             // Wait for both document and viewport geometry after a disclosure or lazy-row layout.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: work)
@@ -480,10 +496,14 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             let atBottom = distance <= 32 && !scrollingUp
             // Lazy rows can finish measuring during a user's return to the bottom.
             let returnedToBottom = moved && atBottom && state?.userPaused == true
-            guard userInitiated || draggingScrollbar || (!scrollingUp && state?.userPaused == true && (returnedToBottom || (!changedGeometry && moved))) else { return }
             let topDistance = progress.map { CGFloat($0) * max(0,document.bounds.height-visible.height) } ?? visible.minY
-            if topDistance > 100 { topTriggered = false }
-            if topDistance <= 45, state?.userPaused == true, !topTriggered {
+            // Start before the reader hits the edge, while there is still a
+            // viewport of content available to cover the request/layout latency.
+            let preloadDistance: CGFloat
+            if #available(macOS 14, *) { preloadDistance = max(600, visible.height * 1.5) } else { preloadDistance = 45 }
+            if topDistance > preloadDistance * 1.5 { topTriggered = false }
+            guard userInitiated || draggingScrollbar || (state?.userPaused == true && (returnedToBottom || (!changedGeometry && moved))) else { return }
+            if topDistance <= preloadDistance, state?.userPaused == true, !topTriggered {
                 topTriggered = true
                 DispatchQueue.main.async { [weak self] in self?.reachedTop?() }
             }
@@ -525,19 +545,22 @@ private struct CodexMessageBody: View, Equatable {
     }
 }
 
-private struct MarkdownContent: View {
+struct MarkdownContent: View {
     let source: String
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(MarkdownBlock.parse(source).enumerated()), id: \.offset) { _, block in
                 if let table = block.table {
                     ScrollView(.horizontal) {
-                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                        Grid(alignment: .topLeading, horizontalSpacing: 24, verticalSpacing: 0) {
                             ForEach(Array(table.enumerated()), id: \.offset) { index, row in
-                                GridRow { ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                    Text((try? AttributedString(markdown: cell)) ?? AttributedString(cell)).font(.system(size: 13, weight: index == 0 ? .semibold : .regular)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(minWidth: 80, maxWidth: 300, alignment: .leading)
+                                GridRow(alignment: .top) { ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
+                                    Text((try? AttributedString(markdown: cell)) ?? AttributedString(cell))
+                                        .font(.system(size: 14, weight: index == 0 ? .semibold : .regular)).lineSpacing(5).textSelection(.enabled)
+                                        .frame(width: table.first?.count == 2 ? (column == 0 ? 210 : 430) : 260, alignment: .topLeading)
+                                        .fixedSize(horizontal: false, vertical: true).padding(.vertical, 12)
                                 } }
-                                if index == 0 { Divider().gridCellColumns(table.first?.count ?? 1) }
+                                if index < table.count - 1 { Divider().gridCellColumns(table.first?.count ?? 1) }
                             }
                         }.padding(12)
                     }.background(Color.primary.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -758,13 +781,48 @@ struct MermaidDiagram: View {
     let source: String
     @State private var height: CGFloat = 240
     var body: some View {
-        MermaidWebView(source: source, height: $height).frame(height: height).frame(maxWidth: .infinity).background(Color.primary.opacity(0.025)).clipShape(RoundedRectangle(cornerRadius: 10))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack { Label("Diagramm", systemImage: "point.3.connected.trianglepath.dotted").foregroundStyle(.secondary); Spacer(); Button { MermaidDiagramWindow.show(source) } label: { Label("Vergrößern", systemImage: "arrow.up.left.and.arrow.down.right") }.buttonStyle(.plain).accessibilityLabel("Diagramm vergrößern") }.font(.caption).padding(12)
+            MermaidWebView(source: source, height: $height).frame(height: height).frame(maxWidth: .infinity)
+        }.background(Color.primary.opacity(0.025)).clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+@MainActor private enum MermaidDiagramWindow {
+    private static var windows: [MermaidDiagramWindowController] = []
+    static func closed(_ controller: MermaidDiagramWindowController) { windows.removeAll { $0 === controller } }
+    static func show(_ source: String) {
+        windows.removeAll { $0.window?.isVisible != true }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Codex · Diagramm"; window.minSize = NSSize(width: 600, height: 400); window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: MermaidExpandedView(source: source))
+        let controller = MermaidDiagramWindowController(window: window); window.delegate = controller; windows.append(controller)
+        window.center(); controller.showWindow(nil); window.makeKeyAndOrderFront(nil)
+    }
+}
+@MainActor private final class MermaidDiagramWindowController: NSWindowController, NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        window?.contentViewController = nil
+        MermaidDiagramWindow.closed(self)
+    }
+}
+private struct MermaidExpandedView: View {
+    let source: String
+    @State private var height: CGFloat = 600
+    @State private var zoom = 1.0
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("Diagramm").font(.headline); Spacer(); Button("−") { zoom = max(0.25, zoom - 0.25) }.accessibilityLabel("Diagramm verkleinern"); Text(zoom, format: .percent.precision(.fractionLength(0))).monospacedDigit().frame(width: 50); Button("+") { zoom = min(3, zoom + 0.25) }.accessibilityLabel("Diagramm vergrößern"); Button("100 %") { zoom = 1 } }.padding(12)
+            Divider()
+            MermaidWebView(source: source, height: $height, zoom: zoom).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 
 struct MermaidWebView: NSViewRepresentable {
     let source: String
     @Binding var height: CGFloat
+    var zoom: Double = 1
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
@@ -775,6 +833,7 @@ struct MermaidWebView: NSViewRepresentable {
     }
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.parent = self
+        if context.coordinator.zoom != zoom { context.coordinator.zoom = zoom; web.pageZoom = zoom }
         guard context.coordinator.source != source else { return }; context.coordinator.source = source
         let encoded = try? JSONSerialization.data(withJSONObject: [source])
         let payload = encoded?.base64EncodedString() ?? "W10="
@@ -793,6 +852,7 @@ struct MermaidWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var parent: MermaidWebView
         var source: String?
+        var zoom: Double = 1
         init(_ parent: MermaidWebView) { self.parent = parent }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let value = message.body as? NSNumber else { return }

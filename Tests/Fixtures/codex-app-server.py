@@ -114,6 +114,10 @@ for line in sys.stdin:
     elif method == 'project/list':
         reply(m, {'data':[{'id':'project-fixture','name':'Zielprojekt','roots':[{'path':'/tmp/destination'}]}], 'nextCursor':None})
     elif method == 'thread/metadata/update':
+        metadata_attempts = globals().get('metadata_attempts', 0) + 1
+        if os.environ.get('MACTOOLS_TEST_PROJECT_STARTUP_FAILURE') and metadata_attempts <= 2:
+            emit({'id':m['id'],'error':{'code':-1,'message':'failed to read session metadata: rollout is empty'}})
+            continue
         assigned_projects[p['threadId']] = p['projectId']; reply(m, {})
     elif method == 'thread/resume':
         assert p['threadId']=='test-old'
@@ -186,8 +190,10 @@ for line in sys.stdin:
     elif method == 'thread/start':
         assert p['cwd'] in ['/tmp', '/tmp/destination']
         last_started_cwd = p['cwd']
-        reply(m, {'thread': chat('test-new')})
-        event('thread/started', {'thread': chat('test-new')})
+        if p.get('projectId'): assigned_projects['test-new'] = p['projectId']
+        value = chat('test-new'); value['projectId'] = assigned_projects.get('test-new')
+        reply(m, {'thread': value})
+        event('thread/started', {'thread': value})
     elif method == 'turn/start':
         turn_counter += 1
         tid = 'turn-test-' + str(turn_counter)
@@ -223,7 +229,10 @@ for line in sys.stdin:
         assert p['threadId'] == 'test-new' and p['input'][0]['text'] == 'Steuerung'
         reply(m, {'turnId': p['expectedTurnId']})
     elif method == 'test/start-state':
-        reply(m, {'cwd': last_started_cwd, 'projectId': assigned_projects.get('test-new')})
+        reply(m, {'cwd': last_started_cwd, 'projectId': assigned_projects.get('test-new'), 'metadataAttempts':globals().get('metadata_attempts',0), 'turns':turn_counter})
+    elif method == 'test/complete-turn':
+        event('turn/completed', {'threadId':'test-new','turn':{'id':'turn-test-'+str(turn_counter),'status':'completed'}})
+        reply(m,{})
     elif method == 'test/first':
         held = m
     elif method == 'test/second':
