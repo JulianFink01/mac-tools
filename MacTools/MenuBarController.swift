@@ -239,11 +239,47 @@ final class MenuBarController: NSObject {
     }
 }
 
-@MainActor final class CodexPinnedChatMenu: NSObject, NSPopoverDelegate {
+/// Status-item views may belong to a different display than their mirrored
+/// menu-bar copy. Give chat popovers a real positioning view on the clicked screen.
+@MainActor final class PinnedChatPopoverAnchor: NSObject, NSPopoverDelegate {
+    private static weak var active: PinnedChatPopoverAnchor?
+    private let popover: NSPopover
+    private var anchor: NSPanel?
+    private(set) var targetScreen: NSScreen?
+    init(popover:NSPopover) { self.popover=popover;super.init();popover.delegate=self }
+    static func frame(at point:NSPoint, screen:NSRect, visible:NSRect, menuHeight:CGFloat) -> NSRect {
+        let x = min(max(point.x,screen.minX+1),screen.maxX-1)
+        let menuBottom = min(visible.maxY,screen.maxY-menuHeight)
+        return NSRect(x:x-1,y:menuBottom,width:2,height:1)
+    }
+    func show(from button:NSStatusBarButton, at point:NSPoint) {
+        Self.active?.close()
+        targetScreen = NSScreen.screens.first { $0.frame.contains(point) } ?? button.window?.screen ?? NSScreen.main
+        guard let screen = targetScreen else { popover.show(relativeTo:button.bounds,of:button,preferredEdge:.minY);return }
+        if anchor == nil {
+            let panel = NSPanel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+            panel.isReleasedWhenClosed=false;panel.isOpaque=false;panel.backgroundColor = .clear
+            panel.hasShadow=false;panel.ignoresMouseEvents=true;panel.level = .statusBar
+            panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.ignoresCycle]
+            panel.contentView=NSView(frame:NSRect(x:0,y:0,width:2,height:1));anchor=panel
+        }
+        guard let anchor,let view=anchor.contentView else { return }
+        anchor.setFrame(Self.frame(at:point,screen:screen.frame,visible:screen.visibleFrame,menuHeight:NSStatusBar.system.thickness),display:false)
+        anchor.orderFrontRegardless();Self.active=self
+        popover.show(relativeTo:view.bounds,of:view,preferredEdge:.minY)
+        if !popover.isShown { close() }
+    }
+    func close() { popover.close();anchor?.orderOut(nil);if Self.active === self { Self.active=nil } }
+    func popoverDidClose(_ notification:Notification) { guard !popover.isShown else { return };anchor?.orderOut(nil);if Self.active === self { Self.active=nil } }
+    var diagnostics:[String:Any] { ["targetScreen":targetScreen?.localizedName ?? "", "anchorFrame":anchor.map {NSStringFromRect($0.frame)} ?? "", "popoverFrame":popover.contentViewController?.view.window.map {NSStringFromRect($0.frame)} ?? "", "popoverScreen":popover.contentViewController?.view.window?.screen?.localizedName ?? ""] }
+}
+
+@MainActor final class CodexPinnedChatMenu: NSObject {
     private let id: String
     private weak var item: NSStatusItem?
     let store: CodexStore
     private let popover = NSPopover()
+    private lazy var positioning = PinnedChatPopoverAnchor(popover:popover)
     private var subscriptions = Set<AnyCancellable>()
     private var warming: Task<Void, Never>?
     init(id: String, item: NSStatusItem, store supplied: CodexStore? = nil) {
@@ -254,7 +290,7 @@ final class MenuBarController: NSObject {
         item.button?.image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: "Angehefteter Codex-Chat")
         item.button?.image?.isTemplate = true; item.button?.imagePosition = .imageLeft
         item.button?.target = self; item.button?.action = #selector(toggle)
-        popover.behavior = .transient; popover.delegate = self
+        popover.behavior = .transient
         let height = min(680, max(400, (NSScreen.main?.visibleFrame.height ?? 760) - 70))
         popover.contentSize = NSSize(width: 560, height: height)
         popover.contentViewController = NSHostingController(rootView: CodexChatsView(store: store, menuMode: true).frame(width: 560, height: height))
@@ -283,14 +319,15 @@ final class MenuBarController: NSObject {
     }
     @objc func toggle() {
         guard let button = item?.button else { return }
-        if popover.isShown { popover.close(); return }
+        let clickPoint = NSEvent.mouseLocation
+        if popover.isShown { positioning.close(); return }
         if !store.connected { warm() }
         store.presentationRevision += 1
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        positioning.show(from:button,at:clickPoint)
     }
     // Keep the follower and transcript warm while this chat remains pinned.
-    func stop() { warming?.cancel(); warming = nil; popover.close(); store.stop() }
-    var diagnostics: [String: Any] { ["chatId": id, "popoverShown": popover.isShown, "selectedChatId": store.selectedID as Any? ?? NSNull(), "messageCount": store.messages.count, "imageCount": store.messages.reduce(0) { $0 + $1.images.count }, "connected": store.connected, "queuedCount": (store.queuedMessages[id] ?? []).count + (store.nativeQueuedMessages[id] ?? []).count] }
+    func stop() { warming?.cancel(); warming = nil; positioning.close(); store.stop() }
+    var diagnostics: [String: Any] { ["chatId": id, "popoverShown": popover.isShown, "selectedChatId": store.selectedID as Any? ?? NSNull(), "messageCount": store.messages.count, "imageCount": store.messages.reduce(0) { $0 + $1.images.count }, "connected": store.connected, "queuedCount": (store.queuedMessages[id] ?? []).count + (store.nativeQueuedMessages[id] ?? []).count].merging(positioning.diagnostics) {_,new in new} }
 }
 
 /// A single measured text block avoids NSButtonCell's different baselines for two fonts.
