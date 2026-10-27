@@ -97,3 +97,11 @@ von [Chromium](https://chromium.googlesource.com/chromium/src/+/HEAD/ui/display/
 Mermaid 11.12.0 · MIT · https://github.com/mermaid-js/mermaid · license: Vendor/Mermaid/LICENSE
 
 xterm.js 6.0.0 and addon-fit 0.11.0 · MIT · https://github.com/xtermjs/xterm.js · licenses: Vendor/Terminal/LICENSE-xterm, Vendor/Terminal/LICENSE-addon-fit
+
+Chat rendering libraries (bundled under Contents/Resources/ChatRenderer; full license texts in LICENSE-*):
+
+- KaTeX 0.19.1 (including fonts) · MIT · https://github.com/KaTeX/KaTeX
+- Marked 18.1.2 · MIT · https://github.com/markedjs/marked
+- DOMPurify 3.4.17 · MPL-2.0 OR Apache-2.0 · https://github.com/cure53/DOMPurify
+- Plotly.js 4.1.2 · MIT · https://github.com/plotly/plotly.js
+- Vega 6.4.0, Vega-Lite 6.5.0, Vega Embed 7.3.0 · BSD-3-Clause · https://github.com/vega

@@ -16,6 +16,7 @@ struct CodexMenuStatsView: View {
             HStack {
                 Label("Codex", systemImage: "bubble.left.and.bubble.right").font(.headline).foregroundStyle(.mint)
                 Spacer()
+                Button { Task { await store.loadUsage(force: true); await store.loadLocalStats(force: true) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Limits und Nutzungsstatistik aktualisieren").accessibilityLabel("Codex-Statistik aktualisieren")
                 if let newChat { Button(action: newChat) { Image(systemName: "square.and.pencil") }.buttonStyle(.plain).help("Neuer Chat in eigenem Fenster").accessibilityLabel("Neuen Chat in eigenem Fenster starten") }
                 Button(action: openSettings) { Image(systemName: "gearshape") }.buttonStyle(.plain).help("Menüleisten-Favoriten einstellen").accessibilityLabel("Menüleisten-Favoriten einstellen")
                 Button(action: openChats) { Image(systemName: "arrow.up.right.square") }.buttonStyle(.plain).help("Alle Codex-Chats öffnen").accessibilityLabel("Alle Codex-Chats öffnen")
@@ -31,11 +32,7 @@ struct CodexMenuStatsView: View {
                 stat("Letzte 24 Stunden", value: store.recentChats.count, icon: "clock", color: .mint)
             }
             CodexUsageWidget(store: store, height: 86, open: openLimits)
-            HStack {
-                Label("\(store.queuedMessages.values.reduce(0) { $0 + $1.count }) in MacTools wartend", systemImage: "text.line.first.and.arrowtriangle.forward")
-                Spacer()
-                Button { Task { await store.loadUsage(force: true) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Codex-Limits aktualisieren")
-            }.font(.caption).foregroundStyle(.secondary)
+            usageStats
             HStack { Text("VERLAUF").font(.caption2.weight(.semibold)).foregroundStyle(.secondary); Spacer(); Picker("Zeitraum", selection: $minutes) { Text("2 Min.").tag(2); Text("10 Min.").tag(10); Text("30 Min.").tag(30) }.labelsHidden().frame(width: 95) }
             Chart(history) { point in
                 AreaMark(x: .value("Zeit", point.date), y: .value("Laufend", point.running)).foregroundStyle(LinearGradient(colors: [.mint.opacity(0.25), .clear], startPoint: .top, endPoint: .bottom)).interpolationMethod(.stepEnd)
@@ -61,7 +58,50 @@ struct CodexMenuStatsView: View {
                 }
             }.scrollIndicators(.hidden).frame(maxHeight: 190)
             Text("\(store.liveChats.count) geladene Chats · Subagenten im jeweiligen Chat").font(.system(size: 10)).foregroundStyle(.secondary)
-        }.padding(18) }.scrollIndicators(.hidden).frame(width: 390).onAppear { store.start() }
+        }.padding(18) }.scrollIndicators(.hidden).frame(width: 390).task {
+            store.start()
+            while !Task.isCancelled {
+                await store.loadLocalStats()
+                do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            }
+        }
+    }
+    private var usageStats: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("LOKALE NUTZUNG").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if store.readingLocalStats { ProgressView().controlSize(.mini) }
+                else if let date = store.localStats?.updatedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
+            }
+            if let stats = store.localStats {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Tokens gesamt", systemImage: "number").font(.caption).foregroundStyle(.secondary)
+                        Text(Double(stats.totalTokens).formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))).font(.title2.weight(.semibold)).monospacedDigit()
+                            .help(stats.totalTokens.formatted() + " lokal gespeicherte Tokens, inklusive Cache-Eingaben")
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Chats mit Tokens", systemImage: "bubble.left.and.bubble.right").font(.caption).foregroundStyle(.secondary)
+                        Text("\(stats.chatsWithTokens.formatted()) / \(stats.chats.formatted())").font(.title3.weight(.semibold)).monospacedDigit()
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !stats.models.isEmpty {
+                    Text("MODELLE · ANZAHL CHATS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(Array(stats.models.prefix(5))) { model in
+                        VStack(spacing: 4) {
+                            HStack { Text(model.name).lineLimit(1); Spacer(); Text(model.chats.formatted()).monospacedDigit().foregroundStyle(.secondary) }.font(.caption)
+                            GeometryReader { proxy in
+                                Capsule().fill(Color.mint.opacity(0.7)).frame(width: max(2, proxy.size.width * Double(model.chats) / Double(max(1, stats.chats))))
+                            }.frame(height: 3).background(Color.primary.opacity(0.06), in: Capsule())
+                        }.accessibilityElement(children: .ignore).accessibilityLabel("\(model.name): \(model.chats) Chats")
+                    }
+                    if stats.models.count > 5 { Text("Weitere \(stats.models.count - 5) Modelle · \(stats.models.dropFirst(5).reduce(0) { $0 + $1.chats }) Chats").font(.caption2).foregroundStyle(.secondary) }
+                }
+                Text("Gesamter lokaler Verlauf inkl. Archiv und Subagenten. Modell pro Chat: zuletzt gespeichert. Tokenzähler inkl. Cache und wiederholter Eingaben; keine Abrechnungswerte.").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if store.localStatsError == nil { Text("Nutzungsstatistik wird geladen …").font(.caption).foregroundStyle(.secondary) }
+            if let error = store.localStatsError { Text((store.localStats == nil ? "" : "Letzter Stand · ") + error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+        }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
     }
     private func stat(_ title: String, value: Int, icon: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 7) {

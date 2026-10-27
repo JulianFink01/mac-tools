@@ -1,6 +1,63 @@
 import Foundation
 import AppKit
 import Combine
+import SQLite3
+
+/// Read the same persisted counters as Codex, without loading transcripts or modifying its database.
+struct CodexLocalStats: Equatable {
+    struct Model: Identifiable, Equatable {
+        var name: String
+        var chats: Int
+        var id: String { name }
+    }
+    var totalTokens: Int64
+    var chats: Int
+    var chatsWithTokens: Int
+    var models: [Model]
+    var updatedAt: Date
+    static var home: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex", isDirectory: true) }
+    static func read(home: URL = home) throws -> Self {
+        let candidates = try FileManager.default.contentsOfDirectory(at: home, includingPropertiesForKeys: nil).compactMap { url -> (URL, Int)? in
+            let name = url.deletingPathExtension().lastPathComponent
+            guard url.pathExtension == "sqlite", name.hasPrefix("state_"), let version = Int(name.dropFirst(6)) else { return nil }
+            return (url, version)
+        }.sorted { $0.1 > $1.1 }
+        guard let url = candidates.first?.0 else { throw CodexFailure(message: "Keine lokale Codex-Nutzungsdatenbank gefunden.") }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
+            if let db { sqlite3_close(db) }
+            throw CodexFailure(message: "Die lokale Codex-Nutzungsdatenbank ist nicht lesbar.")
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 1000)
+        guard sqlite3_exec(db, "PRAGMA query_only=ON; BEGIN;", nil, nil, nil) == SQLITE_OK else { throw CodexFailure(message: "Lokale Codex-Statistik ist gerade nicht verfügbar.") }
+        defer { sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
+        func query(_ sql: String, row: (OpaquePointer) -> Void) throws {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw CodexFailure(message: "Die lokale Codex-Datenbankversion unterstützt diese Statistik noch nicht.") }
+            defer { sqlite3_finalize(statement) }
+            var status = sqlite3_step(statement)
+            while status == SQLITE_ROW { row(statement); status = sqlite3_step(statement) }
+            guard status == SQLITE_DONE else { throw CodexFailure(message: "Lokale Codex-Statistik konnte nicht vollständig gelesen werden.") }
+        }
+        var columns = Set<String>()
+        try query("PRAGMA table_info(threads)") { statement in
+            if let text = sqlite3_column_text(statement, 1) { columns.insert(String(cString: text)) }
+        }
+        guard columns.contains("tokens_used") else { throw CodexFailure(message: "Codex speichert hier noch keine Tokenzähler.") }
+        var tokens: Int64 = 0, chats = 0, counted = 0, models: [Model] = []
+        try query("SELECT COALESCE(SUM(MAX(tokens_used,0)),0), COUNT(*), SUM(CASE WHEN tokens_used>0 THEN 1 ELSE 0 END) FROM threads") { statement in
+            tokens = sqlite3_column_int64(statement, 0); chats = Int(sqlite3_column_int64(statement, 1)); counted = Int(sqlite3_column_int64(statement, 2))
+        }
+        if columns.contains("model") {
+            try query("SELECT COALESCE(NULLIF(TRIM(model),''),'Unbekannt'), COUNT(*) FROM threads GROUP BY 1 ORDER BY 2 DESC, 1") { statement in
+                guard let text = sqlite3_column_text(statement, 0) else { return }
+                models.append(Model(name: String(cString: text), chats: Int(sqlite3_column_int64(statement, 1))))
+            }
+        }
+        return Self(totalTokens: tokens, chats: chats, chatsWithTokens: counted, models: models, updatedAt: Date())
+    }
+}
 
 /// One outbox per conversation, shared by all windows. UI state and drafts stay local.
 @MainActor final class CodexQueueRepository: ObservableObject {
@@ -375,6 +432,19 @@ final class CodexStore: ObservableObject {
     @Published private(set) var usageBuckets: [CodexUsageBucket] = []
     @Published private(set) var usageError: String?
     @Published private(set) var usageUpdatedAt: Date?
+    @Published private(set) var localStats: CodexLocalStats?
+    @Published private(set) var localStatsError: String?
+    @Published private(set) var readingLocalStats = false
+    private var localStatsAttemptAt = Date.distantPast
+    func loadLocalStats(force: Bool = false) async {
+        guard !readingLocalStats, force || Date().timeIntervalSince(localStatsAttemptAt) >= 30 else { return }
+        readingLocalStats = true; localStatsAttemptAt = Date()
+        defer { readingLocalStats = false }
+        do {
+            localStats = try await Task.detached(priority: .utility) { try CodexLocalStats.read() }.value
+            localStatsError = nil
+        } catch { localStatsError = error.localizedDescription }
+    }
     private var readingUsage = false
     @Published private(set) var models: [CodexModelChoice] = []
     @Published private(set) var availableReferences: [CodexReference] = []

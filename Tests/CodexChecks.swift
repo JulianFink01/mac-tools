@@ -1,9 +1,32 @@
 import Foundation
+import SQLite3
 
 @main
 struct CodexChecks {
     @MainActor
     static func main() async throws {
+        if CommandLine.arguments.contains("--local-stats") {
+            let stats = try CodexLocalStats.read()
+            print("LOCAL-STATS: \(stats.totalTokens) tokens, \(stats.chats) chats, \(stats.chatsWithTokens) chats with tokens, \(stats.models.count) models")
+            return
+        }
+        let statsHome = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-stats-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: statsHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: statsHome) }
+        let statsURL = statsHome.appendingPathComponent("state_10.sqlite")
+        var statsDB: OpaquePointer?
+        precondition(sqlite3_open(statsURL.path, &statsDB) == SQLITE_OK)
+        precondition(sqlite3_exec(statsDB, "CREATE TABLE threads(tokens_used INTEGER,model TEXT); INSERT INTO threads VALUES(12345678900,'model-a'),(100,'model-a'),(50,'model-b'),(0,NULL),(-5,'');", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(statsDB)
+        // Numeric version ordering must prefer state_10 over state_9.
+        try Data().write(to: statsHome.appendingPathComponent("state_9.sqlite"))
+        let statsBefore = try Data(contentsOf: statsURL)
+        let localStats = try CodexLocalStats.read(home: statsHome)
+        precondition(localStats.totalTokens == 12345679050 && localStats.chats == 5 && localStats.chatsWithTokens == 3)
+        precondition(localStats.models.first(where: { $0.name == "model-a" })?.chats == 2 && localStats.models.first(where: { $0.name == "Unbekannt" })?.chats == 2)
+        let statsAfter = try Data(contentsOf: statsURL)
+        precondition(statsAfter == statsBefore, "Local usage must never modify the Codex database")
+        print("PASS: persisted 64-bit token totals, model distribution, unknown models, numeric DB versions and read-only database access")
         var disclosure = CodexActivityExpansionState()
         precondition(!disclosure.group(thread:"one",ids:["a","b"],running:true))
         precondition(!disclosure.detail(thread:"one",id:"a",running:true))

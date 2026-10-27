@@ -42,6 +42,7 @@ else
   lipo -create "${APP_BINARIES[@]}" -output "$APP_PATH/Contents/MacOS/MacTools"
   lipo -create "${SAVER_BINARIES[@]}" -output "$SAVER_PATH/Contents/MacOS/MacToolsScreenSaver"
 fi
+ditto Vendor/ChatRenderer "$APP_PATH/Contents/Resources/ChatRenderer"
 ditto Vendor/Mermaid "$APP_PATH/Contents/Resources/Mermaid"
 ditto Vendor/Terminal "$APP_PATH/Contents/Resources/Terminal"
 ditto Vendor/ClamAV "$APP_PATH/Contents/Resources/ClamAV"

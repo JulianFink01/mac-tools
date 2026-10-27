@@ -565,7 +565,7 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
     }
 }
 
-private struct CodexMessageBody: View, Equatable {
+struct CodexMessageBody: View, Equatable {
     let text: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -578,17 +578,18 @@ private struct CodexMessageBody: View, Equatable {
                     }.padding(14).frame(maxWidth:.infinity,alignment:.leading).background(Color.mint.opacity(0.045),in:RoundedRectangle(cornerRadius:12))
                 }
             } else {
-            ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, part in
-                if index % 2 == 1 {
-                    let lines = part.components(separatedBy: "\n")
-                    if lines.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mermaid" {
-                        MermaidDiagram(source: lines.dropFirst().joined(separator: "\n"))
-                    } else {
-                    ScrollView(.horizontal) { Text(lines.dropFirst().joined(separator: "\n")).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(12) }
+            ForEach(Array(CodexContentBlock.parse(text).enumerated()), id: \.offset) { _, block in
+                if block.language == "visualization-reference" {
+                    CodexVisualizationReference(path: block.source)
+                } else if let kind = block.richKind {
+                    CodexRichContent(source: block.source, kind: kind)
+                } else if block.language == "mermaid", block.complete {
+                    MermaidDiagram(source: block.source)
+                } else if block.language != nil {
+                    ScrollView(.horizontal) { Text(block.source).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(12) }
                         .background(Color.primary.opacity(0.04)).clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                } else if !part.isEmpty {
-                    MarkdownContent(source: part)
+                } else if !block.source.isEmpty {
+                    MarkdownContent(source: block.source)
                 }
             }
             }
@@ -599,6 +600,9 @@ private struct CodexMessageBody: View, Equatable {
 struct MarkdownContent: View {
     let source: String
     var body: some View {
+        if CodexRichDocument.containsMath(source) {
+            CodexRichContent(source: source)
+        } else {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(MarkdownBlock.parse(source).enumerated()), id: \.offset) { _, block in
                 if let table = block.table {
@@ -622,6 +626,7 @@ struct MarkdownContent: View {
                 }
             }
         }
+    }
     }
 }
 
