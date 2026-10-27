@@ -6,6 +6,15 @@ struct CodexFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// A server rejection is distinct from a timeout or a broken transport: only an explicit
+/// missing-thread rejection can safely trigger a single rehydration before retrying a turn.
+struct CodexRPCFailure: LocalizedError {
+    let code: Int?
+    let message: String
+    var errorDescription: String? { message }
+    func isMissingThread(_ id: String) -> Bool { message == "thread not found: " + id }
+}
+
 /// JSONL transport to the installed Codex CLI. No credentials are read by MacTools.
 @MainActor
 final class CodexConnection {
@@ -130,7 +139,7 @@ final class CodexConnection {
                 timeouts.removeValue(forKey: id)?.cancel()
                 guard let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = message["error"] as? [String: Any] {
-                    continuation.resume(throwing: CodexFailure(message: error["message"] as? String ?? "Codex-Anfrage fehlgeschlagen."))
+                    continuation.resume(throwing: CodexRPCFailure(code: error["code"] as? Int, message: error["message"] as? String ?? "Codex-Anfrage fehlgeschlagen."))
                 } else { continuation.resume(returning: message["result"] as? [String: Any] ?? [:]) }
             }
     }

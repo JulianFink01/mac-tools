@@ -5,6 +5,7 @@ import SQLite3
 struct CodexChecks {
     @MainActor
     static func main() async throws {
+        setbuf(stdout, nil)
         if CommandLine.arguments.contains("--local-stats") {
             let stats = try CodexLocalStats.read()
             print("LOCAL-STATS: \(stats.totalTokens) tokens, \(stats.chats) chats, \(stats.chatsWithTokens) chats with tokens, \(stats.models.count) models")
@@ -148,6 +149,59 @@ struct CodexChecks {
         precondition(nativeInput.isServerQueue && nativeInput.text == "old" && editedInput[1]["path"] as? String == "/tmp/picture.png" && editedInput[0]["text"] as? String == "new")
         print("PASS: native server queue input decoded; individual edit preserves attached image; image-only chat messages retained")
         let fixture = URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/Tests/Fixtures/codex-app-server.py")
+        let savedWindows = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-window-restore-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: savedWindows, withIntermediateDirectories: true)
+        let savedWindowID = UUID()
+        let savedState: [String:Any] = ["selectedChatID":"test-restored", "macToolsCodexThreads":["test-restored"], "codexChatDrafts":["test-restored":"Entwurf mit Bild"]]
+        try PropertyListSerialization.data(fromPropertyList: savedState, format: .binary, options: 0).write(to: savedWindows.appendingPathComponent("com.julianfink.MacTools.ChatWindow." + savedWindowID.uuidString + ".plist"))
+        precondition(CodexSavedWindow.find(chatID: "test-restored", excluding: [], directory: savedWindows) == savedWindowID)
+        precondition(CodexSavedWindow.find(chatID: "test-restored", excluding: [savedWindowID], directory: savedWindows) == nil)
+        precondition(CodexSavedWindow.find(chatID: "other-chat", excluding: [], directory: savedWindows) == nil)
+        try FileManager.default.removeItem(at: savedWindows)
+        print("PASS: reopening a closed window after app restart reuses its persisted session; active windows and other chats remain isolated")
+        let lifecycleDomain = "MacTools.thread-lifecycle." + UUID().uuidString
+        let lifecycleDefaults = UserDefaults(suiteName: lifecycleDomain)!
+        let lifecycleRPC = CodexConnection(executableURL: fixture, environment: ["MACTOOLS_TEST_THREAD_LIFECYCLE":"1"])
+        let lifecycle = CodexStore(connection: lifecycleRPC, defaults: lifecycleDefaults)
+        await lifecycle.connect(); lifecycle.newChat(inFolder: "/tmp")
+        let initialLifecycleSend = await lifecycle.send("Sofort")
+        precondition(initialLifecycleSend)
+        for _ in 0..<100 where lifecycle.currentTurn != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        let attachment = CodexReference(name: "draft.png", path: "/tmp/draft.png", kind: "image")
+        lifecycle.drafts["test-new"] = "Entwurf mit Bild"
+        lifecycle.references["test-new"] = [attachment]
+        lifecycle.stop()
+        precondition(lifecycle.currentTurn == nil && lifecycle.drafts["test-new"] == "Entwurf mit Bild" && lifecycle.references["test-new"] == [attachment])
+        await lifecycle.connect(); await lifecycle.select("test-new")
+        let reopenedSend = await lifecycle.send("Sofort", references: [attachment])
+        precondition(reopenedSend, lifecycle.error ?? "Reopened turn failed")
+        let reopenedState = try await lifecycleRPC.request("test/runtime-state")
+        precondition(reopenedSend && reopenedState["resumes"] as? Int == 1 && reopenedState["attempts"] as? Int == 1 && reopenedState["turns"] as? Int == 1, "Reopening the same window must resume its thread in the new process before starting a turn")
+        precondition((reopenedState["input"] as? [[String:Any]])?.last?["path"] as? String == "/tmp/draft.png")
+        for _ in 0..<100 where lifecycle.currentTurn != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        _ = try await lifecycleRPC.request("test/unload-thread", ["threadId":"test-new"])
+        let recoveredSend = await lifecycle.send("Sofort", references: [attachment])
+        precondition(recoveredSend, lifecycle.error ?? "Runtime recovery failed")
+        let recoveredState = try await lifecycleRPC.request("test/runtime-state")
+        precondition(recoveredSend && recoveredState["resumes"] as? Int == 2 && recoveredState["attempts"] as? Int == 3 && recoveredState["turns"] as? Int == 2, "Only an explicitly rejected start may be retried after rehydration; it must execute exactly once")
+        precondition((recoveredState["input"] as? [[String:Any]])?.last?["path"] as? String == "/tmp/draft.png")
+        for _ in 0..<100 where lifecycle.currentTurn != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        _ = try await lifecycleRPC.request("test/start-error", ["message":"upstream timeout; delivery unknown"])
+        let ambiguousSend = await lifecycle.send("Sofort", references: [attachment])
+        let ambiguousState = try await lifecycleRPC.request("test/runtime-state")
+        precondition(!ambiguousSend && ambiguousState["resumes"] as? Int == 2 && ambiguousState["attempts"] as? Int == 4 && ambiguousState["turns"] as? Int == 2, "An ambiguous failure must not resume or resend")
+        precondition(lifecycle.drafts["test-new"] == "Entwurf mit Bild" && lifecycle.references["test-new"] == [attachment])
+        _ = try await lifecycleRPC.request("test/start-error")
+        _ = try await lifecycleRPC.request("test/unload-thread", ["threadId":"test-new"])
+        lifecycle.enqueue("Sofort", references: [attachment], in: "test-new")
+        let recoveredQueueID = lifecycle.queuedMessages["test-new"]!.first!.id
+        let recoveredQueueSend = await lifecycle.deliverQueued(recoveredQueueID, in: "test-new", steer: false)
+        let queueState = try await lifecycleRPC.request("test/runtime-state")
+        precondition(recoveredQueueSend && lifecycle.queuedMessages["test-new"]?.isEmpty == true && queueState["resumes"] as? Int == 3 && queueState["attempts"] as? Int == 6 && queueState["turns"] as? Int == 3)
+        lifecycle.stop(); lifecycleDefaults.removePersistentDomain(forName: lifecycleDomain)
+        precondition(CodexStore.followTargets(recent: [], selectedID: "old-selected", followAll: false, archived: false) == ["old-selected"])
+        precondition(CodexStore.followTargets(recent: [], selectedID: "archived-selected", followAll: true, archived: true) == ["archived-selected"])
+        print("PASS: close/reopen rehydrates thread; lost runtime recovers once; text/image retained; ambiguous send never retried; queued delivery executes once; old/archived selected chats stay subscribed")
         let catalogDomain = "MacTools.catalog-tests." + UUID().uuidString
         let catalogDefaults = UserDefaults(suiteName:catalogDomain)!
         let catalogConnection = CodexConnection(executableURL:fixture,environment:["MACTOOLS_TEST_SLOW_CATALOG":"1"])
@@ -322,6 +376,11 @@ struct CodexChecks {
         precondition(!store.chats.contains { $0.id == "test-older" })
         await store.select("test-old")
         precondition(store.messages.map(\.text) == ["Neuere Antwort"])
+        store.desktop.onState?("test-old", ["turns":[["id":"fallback","items":[["id":"stored-0-1","type":"userMessage","content":[["type":"text","text":"<environment_context>bootstrap</environment_context>"]]]]]]])
+        for _ in 0..<100 where !store.messages.contains(where: { $0.id == "stored-0-1" }) { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(store.messages.contains { $0.id == "stored-0-1" })
+        await store.loadHistory()
+        precondition(store.messages.map(\.text) == ["Neuere Antwort"], "Canonical recovery must replace raw rollout fallback rows instead of duplicating internal scaffolding")
         let nativeRequest: [String:Any] = ["id":"native-request-1", "method":"item/commandExecution/requestApproval", "params":["threadId":"test-old","command":"echo native-fixture","reason":"native live request"]]
         store.desktop.onState?("test-old", ["requests":[nativeRequest]])
         let nativePrompt = store.prompts.first!

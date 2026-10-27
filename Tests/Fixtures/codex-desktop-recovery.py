@@ -24,7 +24,7 @@ try:
     elif method=='thread-stream-following-changed':
      write(dict(type='broadcast',method='thread-stream-state-changed',version=11,sourceClientId='owner',params=dict(conversationId='recover-thread',hostId='local',change=dict(type='snapshot',revision=1,conversationState=dict(threadRuntimeStatus=dict(type='active'),turns=[])))))
     else:raise AssertionError('Recovery must not send prompts or mutations: '+str(method))
-  except EOFError:pass
+  except (EOFError, BrokenPipeError, ConnectionResetError):pass
   finally:client.close()
 finally:
  server.close()

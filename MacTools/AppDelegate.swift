@@ -326,6 +326,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let chatID, let existing = windows.values.first(where: { !$0.isOpen && $0.store.selectedID == chatID }) {
             existing.present(); saveOpenWindows(); return existing.id
         }
+        if let chatID, let saved = CodexSavedWindow.find(chatID: chatID, excluding: Set(windows.keys)) {
+            return makeWindow(id: saved, chatID: chatID, restoring: true)
+        }
         return makeWindow(id: UUID(), chatID: chatID, restoring: false)
     }
     @discardableResult private func makeWindow(id: UUID, chatID: String?, restoring: Bool) -> UUID {

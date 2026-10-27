@@ -1,5 +1,20 @@
 import Foundation
 
+enum CodexSavedWindow {
+    static func find(chatID: String, excluding: Set<UUID>, directory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Preferences")) -> UUID? {
+        let prefix = "com.julianfink.MacTools.ChatWindow."
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        return files.compactMap { file -> (UUID, Date)? in
+            guard file.pathExtension == "plist", file.lastPathComponent.hasPrefix(prefix),
+                  let id = UUID(uuidString: String(file.deletingPathExtension().lastPathComponent.dropFirst(prefix.count))),
+                  !excluding.contains(id), let data = try? Data(contentsOf: file),
+                  let state = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+                  state["selectedChatID"] as? String == chatID else { return nil }
+            return (id, (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }.sorted { $0.1 == $1.1 ? $0.0.uuidString < $1.0.uuidString : $0.1 > $1.1 }.first?.0
+    }
+}
+
 struct CodexModelChoice: Identifiable, Equatable {
     let id: String
     let name: String

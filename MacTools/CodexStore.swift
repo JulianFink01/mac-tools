@@ -568,7 +568,14 @@ final class CodexStore: ObservableObject {
             }
         }
     }
-    func stop() { nativeProjectionTask?.cancel(); nativeProjectionPending = nil; nativeProjectionEpoch = UUID(); nativeQueueTask?.cancel(); nativeQueueTask = nil; queueTasks.values.forEach { $0.cancel() }; queueTasks.removeAll(); poll?.cancel(); poll = nil; desktop.stop(); desktopConnected = false; connection.stop(); connected = false; queue.releaseChats(owner: runtimeOwner) }
+    func stop() {
+        nativeProjectionTask?.cancel(); nativeProjectionPending = nil; nativeProjectionEpoch = UUID()
+        nativeQueueTask?.cancel(); nativeQueueTask = nil; queueTasks.values.forEach { $0.cancel() }; queueTasks.removeAll()
+        poll?.cancel(); poll = nil; desktop.stop(); desktopConnected = false; connection.stop(); connected = false
+        // These IDs belong to the terminated app-server process, never to the window's lifetime.
+        resumedThreads.removeAll(); activeTurns.removeAll(); prompts.removeAll { !$0.desktop }; approvalItems.removeAll()
+        queue.releaseChats(owner: runtimeOwner)
+    }
     func connect() async {
         guard !connecting else { return }; connecting = true; defer { connecting = false }
         do {
@@ -646,15 +653,22 @@ final class CodexStore: ObservableObject {
 
             for id in Array(pendingProjects.keys) { await assignPendingProject(id) }
             if enableDesktop, !desktop.connected { try? await desktop.connect(); desktopConnected = desktop.connected }
-            for chat in recentChats where !showingArchived && (followAllChats || chat.id == selectedID) && !checkingOwners.contains(chat.id) {
-                checkingOwners.insert(chat.id)
+            let followed = Self.followTargets(recent: recentChats, selectedID: selectedID, followAll: followAllChats, archived: showingArchived)
+            for id in followed where enableDesktop && !checkingOwners.contains(id) {
+                checkingOwners.insert(id)
                 Task { [weak self] in
                     guard let self else { return }
-                    _ = await self.desktop.follow(chat.id)
-                    self.checkingOwners.remove(chat.id); self.objectWillChange.send()
+                    _ = await self.desktop.follow(id)
+                    self.checkingOwners.remove(id); self.objectWillChange.send()
                 }
             }
         } catch { self.error = error.localizedDescription }
+    }
+    static func followTargets(recent: [CodexChat], selectedID: String?, followAll: Bool, archived: Bool) -> [String] {
+        // A selected archived, old or nested chat must reconnect even outside the recent-chat list.
+        var result = selectedID.map { [$0] } ?? []
+        if followAll && !archived { result += recent.map(\.id).filter { $0 != selectedID } }
+        return result
     }
     func goal(_ operation: String, fields: [String: Any] = [:]) async throws -> [String: Any] {
         guard let id = selectedID, ["get", "set", "clear"].contains(operation) else { throw CodexFailure(message: "Wähle zuerst einen Chat.") }
@@ -815,17 +829,15 @@ final class CodexStore: ObservableObject {
         let token = UUID(); historyToken = token; loadingHistory = true
         defer { if historyToken == token { loadingHistory = false } }
         do {
-            if enableDesktop, !desktop.hasOwner(id), let path = selected?.rolloutPath {
-                let stored = await CodexTranscript.storedMessages(path: path)
-                guard selectedID == id, historyToken == token else { return }
-                messages = stored; olderCursor = nil; historyPagingInitialized = true; return
-            }
             var params: [String: Any] = ["threadId": id, "limit": 12, "itemsView": "full", "sortDirection": "desc"]
             if older, let olderCursor { params["cursor"] = olderCursor }
             let response = try await connection.request("thread/turns/list", params)
             let turns = response["data"] as? [[String: Any]] ?? []
             let items = turns.reversed().flatMap(CodexTranscript.items).compactMap(CodexMessage.from)
             guard selectedID == id, historyToken == token else { return }
+            // Once canonical history is available, retire synthetic rollout rows instead
+            // of merging raw prompt scaffolding and duplicates into the restored chat.
+            messages.removeAll { $0.id.hasPrefix("stored-") }
             let existing = Set(items.map(\.id))
             if older { messages = items + messages.filter { !existing.contains($0.id) } }
             else {
@@ -839,7 +851,16 @@ final class CodexStore: ObservableObject {
             historyPagingInitialized = true
             if !older { asyncQuestions = CodexAsyncQuestion.pending(in:Array(turns.reversed())).filter { !confirmedAsyncAnswers.contains($0.id) } }
             if connection.sharedServer, let turn = turns.first, turn["status"] as? String == "inProgress", let turnID = turn["id"] as? String { activeTurns[id] = turnID }
-        } catch { if selectedID == id && historyToken == token { self.error = error.localizedDescription } }
+        } catch {
+            guard selectedID == id, historyToken == token else { return }
+            if enableDesktop, let path = selected?.rolloutPath {
+                let stored = await CodexTranscript.storedMessages(path: path)
+                guard selectedID == id, historyToken == token else { return }
+                if !stored.isEmpty && messages.isEmpty { messages = stored }
+                if !messages.isEmpty { return }
+            }
+            self.error = error.localizedDescription
+        }
     }
     private func publishNativeQueue(_ id: String) {
         let server = serverQueues[id] ?? []
@@ -961,13 +982,13 @@ final class CodexStore: ObservableObject {
                 try await desktop.send(item.text, to: id, active: steer, inputs: input, options: params)
             } else {
                 guard managedThreads.contains(id) else { throw CodexFailure(message: "Der ursprüngliche Codex-Chat ist gerade nicht erreichbar. Die Nachricht bleibt in der Warteschlange.") }
-                if !resumedThreads.contains(id) { _ = try await connection.request("thread/resume", ["threadId": id]); resumedThreads.insert(id) }
+                try await resumeManagedThread(id)
                 if steer, let turn = activeTurns[id] {
                     let result = try await connection.request("turn/steer", ["threadId": id, "expectedTurnId": turn, "input": input])
                     guard let acceptedTurn = result["turnId"] as? String, !acceptedTurn.isEmpty else { throw CodexFailure(message: "Codex hat die Steuerung nicht bestätigt. Die Nachricht bleibt erhalten.") }
                 } else {
                     var request = params; request["threadId"] = id; request["input"] = input
-                    let result = try await connection.request("turn/start", request)
+                    let result = try await startManagedTurn(id, parameters: request)
                     guard let confirmed = result["turn"] as? [String: Any], let confirmedID = confirmed["id"] as? String, !confirmedID.isEmpty else { throw CodexFailure(message: "Codex hat den Start nicht bestätigt. Die Nachricht bleibt erhalten.") }
                     if let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String, turn["status"] as? String == "inProgress", !completedTurns.contains(turnID) { activeTurns[id] = turnID }
                 }
@@ -994,6 +1015,22 @@ final class CodexStore: ObservableObject {
             if !Task.isCancelled, let first = self.queuedMessages[id]?.first, !self.queue.editing.contains(first.id), !self.queue.needsReview.contains(first.id), self.queue.ready.contains(id), !self.queue.blocked.contains(id) { if !(await self.deliverQueued(first.id, in: id, steer: false)) { self.queue.ready.remove(id) } }
             self.queueTasks[id] = nil
             if self.queue.ready.contains(id), !self.queue.blocked.contains(id), let next = self.queuedMessages[id]?.first, !self.queue.needsReview.contains(next.id) { self.scheduleQueue(id) }
+        }
+    }
+    private func resumeManagedThread(_ id: String) async throws {
+        guard managedThreads.contains(id) else { throw CodexFailure(message: "Der ursprüngliche Codex-Chat ist gerade nicht erreichbar. Der Entwurf bleibt erhalten.") }
+        guard !resumedThreads.contains(id) else { return }
+        _ = try await connection.request("thread/resume", ["threadId": id])
+        resumedThreads.insert(id)
+    }
+    private func startManagedTurn(_ id: String, parameters: [String: Any]) async throws -> [String: Any] {
+        do { return try await connection.request("turn/start", parameters) }
+        catch let error as CodexRPCFailure where error.isMissingThread(id) && managedThreads.contains(id) {
+            // The first start was explicitly rejected. Never retry timeouts, ambiguous receipts,
+            // steering, or external-owner requests: they may already have executed.
+            resumedThreads.remove(id); activeTurns.removeValue(forKey: id)
+            try await resumeManagedThread(id)
+            return try await connection.request("turn/start", parameters)
         }
     }
     func send(_ text: String, references: [CodexReference] = []) async -> Bool {
@@ -1030,16 +1067,13 @@ final class CodexStore: ObservableObject {
                 chats.removeAll { $0.id == id }; chats.insert(chat, at: 0)
                 options[id] = option; drafts[id] = text; self.references[id] = references
             }
-            if !resumedThreads.contains(id) {
-                // Never take over an externally owned thread on an isolated app-server.
-                guard managedThreads.contains(id) else { throw CodexFailure(message: "Der ursprüngliche Codex-Chat ist gerade nicht erreichbar. Der Entwurf bleibt erhalten.") }
-                _ = try await connection.request("thread/resume", ["threadId": id]); resumedThreads.insert(id)
-            }
+            try await resumeManagedThread(id)
             if let turnID = activeTurns[id] {
                 _ = try await connection.request("turn/steer", ["threadId": id, "expectedTurnId": turnID, "input": input])
             } else {
                 var params = turnParameters; params["threadId"] = id; params["input"] = input
-                let result = try await connection.request("turn/start", params)
+                let result = try await startManagedTurn(id, parameters: params)
+                guard let turn = result["turn"] as? [String: Any], let confirmedID = turn["id"] as? String, !confirmedID.isEmpty else { throw CodexFailure(message: "Codex hat den Start nicht bestätigt. Der Entwurf bleibt erhalten; bitte vor erneutem Senden den Chat prüfen.") }
                 if let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String, !completedTurns.contains(turnID), turn["status"] as? String == "inProgress" { activeTurns[id] = turnID }
             }
             publishManagedChats()

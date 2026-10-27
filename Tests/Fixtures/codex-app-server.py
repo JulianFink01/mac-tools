@@ -7,6 +7,11 @@ import os
 NOW = time.time()
 archived_ids = set()
 assigned_projects = {}
+loaded_threads = set()
+resume_count = 0
+start_attempts = 0
+start_error = None
+last_start_input = None
 
 
 def emit(message, split=False):
@@ -60,6 +65,15 @@ for line in sys.stdin:
     m = json.loads(line)
     method = m.get('method')
     p = m.get('params', {})
+    if method == 'turn/start':
+        start_attempts += 1
+        if os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE') and p.get('threadId') not in loaded_threads:
+            emit({'id':m['id'],'error':{'code':-32600,'message':'thread not found: '+p['threadId']}})
+            continue
+        if start_error:
+            emit({'id':m['id'],'error':{'code':-32603,'message':start_error}})
+            continue
+        last_start_input = p.get('input')
     if method in ('app/list','skills/list','plugin/list'):catalog_calls[method]=catalog_calls.get(method,0)+1
     if method == 'initialize':
         reply(m, {'userAgent': 'fixture'})
@@ -122,9 +136,16 @@ for line in sys.stdin:
             emit({'id':m['id'],'error':{'code':-1,'message':'failed to read session metadata: rollout is empty'}})
             continue
         assigned_projects[p['threadId']] = p['projectId']; reply(m, {})
+    elif method == 'test/unload-thread':
+        loaded_threads.discard(p['threadId']); reply(m,{})
+    elif method == 'test/start-error':
+        start_error = p.get('message'); reply(m,{})
+    elif method == 'test/runtime-state':
+        reply(m,{'resumes':resume_count,'attempts':start_attempts,'turns':turn_counter,'input':last_start_input})
     elif method == 'thread/resume':
-        assert p['threadId']=='test-old'
-        reply(m,{'thread':chat('test-old')})
+        assert p['threadId']=='test-old' or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE')
+        loaded_threads.add(p['threadId']); resume_count += 1
+        reply(m,{'thread':chat(p['threadId'])})
     elif method == 'thread/read':
         value = chat(p['threadId']); value['projectId'] = assigned_projects.get(p['threadId']); reply(m, {'thread':value})
     elif method in ('thread/archive', 'thread/unarchive'):
@@ -133,7 +154,7 @@ for line in sys.stdin:
         reply(m, {})
     elif method == 'thread/list':
         if p.get('ancestorThreadId'):
-            assert p['ancestorThreadId'] in ['test-old', 'test-second-root', 'test-third-root']
+            assert p['ancestorThreadId'] in ['test-old', 'test-second-root', 'test-third-root'] or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE')
             child = chat('test-agent-archived' if p.get('archived') else 'test-agent')
             child.update(parentThreadId='test-old', agentNickname='Prüfagent', agentRole='explorer')
             nested = chat('test-nested'); nested['parentThreadId'] = 'test-agent'
@@ -200,6 +221,7 @@ for line in sys.stdin:
         reply(m, {'data': [turn('old', 'Ältere Antwort')] if p.get('cursor') else [recent],
                   'nextCursor': None if p.get('cursor') else 'next-turns'})
     elif method == 'thread/start':
+        loaded_threads.add('test-new')
         assert p['cwd'] in ['/tmp', '/tmp/destination']
         last_started_cwd = p['cwd']
         if p.get('projectId'): assigned_projects['test-new'] = p['projectId']

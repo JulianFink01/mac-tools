@@ -92,14 +92,21 @@ final class CodexDesktopConnection {
     }
     func follow(_ id: String, resnapshot: Bool = false) async -> Bool {
         guard connected else { return false }
-        if let owner = owners[id] { if resnapshot { try? subscribe(id, owner: owner, following: true) }; return true }
+        if let owner = owners[id] {
+            do {
+                // Discovery can succeed before the first stream snapshot arrives. A dropped
+                // subscription must not leave a window permanently "connected" without data.
+                if resnapshot || snapshots[id] == nil { try subscribe(id, owner: owner, following: true) }
+                return true
+            } catch { owners.removeValue(forKey: id); return false }
+        }
         do {
             let response = try await request("thread-owner-discovery", ["hostId": "local", "conversationId": id], version: 1)
             guard let owner = response["_handledBy"] as? String else { return false }
             owners[id] = owner
             try subscribe(id, owner: owner, following: true)
             return true
-        } catch { return false }
+        } catch { owners.removeValue(forKey: id); return false }
     }
     func send(_ text: String, to id: String, active: Bool, inputs: [[String: Any]]? = nil, options: [String: Any] = [:]) async throws {
         guard let owner = owners[id] else { throw CodexFailure(message: "Der Originalchat ist im Codex Desktop nicht geöffnet.") }

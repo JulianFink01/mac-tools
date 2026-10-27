@@ -4,6 +4,7 @@ import socket, struct, json, sys, os
 path=sys.argv[1]
 s=socket.socket(socket.AF_UNIX);s.bind(path);os.chmod(path,0o600);s.listen(1)
 c,_=s.accept()
+subscriptions=0
 def write(m):
  d=json.dumps(m).encode(); frame=struct.pack('<I',len(d))+d
  c.sendall(frame[:3]);c.sendall(frame[3:])
@@ -23,6 +24,8 @@ try:
    assert p['clientType']=='mactools';response(m,dict(clientId='test-client'))
   elif method=='thread-owner-discovery':response(m,dict(supportsUntrustedAppInput=True))
   elif method=='thread-stream-following-changed':
+   subscriptions+=1
+   if os.environ.get('MACTOOLS_TEST_DROP_FIRST_SNAPSHOT') and subscriptions==1:continue
    state=dict(type='snapshot',revision=1,conversationState=dict(threadRuntimeStatus=dict(type='active'),turns=[dict(items=[dict(id='m',type='agentMessage',text='before')])]))
    if os.environ.get('MACTOOLS_TEST_LARGE_FRAME'):state['conversationState']['largeFixture']='x'*(70*1024*1024)
    write(dict(type='broadcast',method='thread-stream-state-changed',version=11,sourceClientId='owner',params=dict(conversationId='test-thread',hostId='local',change=state)))
