@@ -231,6 +231,26 @@ struct CodexMessage: Identifiable, Equatable {
     var kind = "message"
     var images: [CodexMessageImage] = []
     var activity: CodexActivityDetails?
+    /// Only recognize injected bootstrap envelopes, never XML examples in ordinary messages.
+    static func setup(_ source: String, id: String) -> CodexMessage? {
+        let text = source.trimmingCharacters(in:.whitespacesAndNewlines)
+        let instructions = text.hasPrefix("# AGENTS.md instructions") || text.hasPrefix("<INSTRUCTIONS>")
+        guard instructions || text.hasPrefix("<environment_context>") else { return nil }
+        func content(_ tag: String) -> String? {
+            guard let start = text.range(of:"<" + tag + ">"), let end = text.range(of:"</" + tag + ">", range:start.upperBound..<text.endIndex) else { return nil }
+            return String(text[start.upperBound..<end.lowerBound]).trimmingCharacters(in:.whitespacesAndNewlines)
+        }
+        var sections: [String] = []
+        if instructions, let body = content("INSTRUCTIONS"), !body.isEmpty { sections.append(body) }
+        let fields = [("cwd","Arbeitsverzeichnis"),("shell","Shell"),("current_date","Datum"),("timezone","Zeitzone")]
+        let environment = fields.compactMap { tag, label -> String? in
+            guard let value = content(tag), !value.isEmpty else { return nil }
+            return "**" + label + ":** " + value
+        }
+        if !environment.isEmpty { sections.append("### Arbeitsumgebung\n\n" + environment.joined(separator:"\n\n")) }
+        guard !sections.isEmpty else { return nil }
+        return CodexMessage(id:id,role:instructions ? "Standardanweisungen" : "Arbeitsumgebung",text:sections.joined(separator:"\n\n"),kind:"context")
+    }
     static func from(_ item: [String: Any]) -> CodexMessage? {
         guard let id = item["id"] as? String, let type = item["type"] as? String else { return nil }
         if type == "agentMessage" {
@@ -242,6 +262,7 @@ struct CodexMessage: Identifiable, Equatable {
             var text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
             if text.isEmpty { text = (item["restoreMessage"] as? [String: Any])?["text"] as? String ?? item["text"] as? String ?? "" }
             let images = CodexMessageImage.collect(item, text: text)
+            if let context = setup(text,id:id) { return context }
             if let marker = text.range(of: "## My request:") { text = String(text[marker.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) }
             return text.isEmpty && images.isEmpty ? nil : CodexMessage(id: id, role: "Du", text: text, images: images)
         }
@@ -267,14 +288,41 @@ enum CodexTranscript {
     /// Only format the requested tail; historical tool arguments/output can be very large.
     static func window(_ state: [String: Any], limit: Int) -> (messages: [CodexMessage], hasMore: Bool, questions:[CodexAsyncQuestion]) {
         let ordered = turns(state)
-        let total = ordered.reduce(0) { $0 + ($1["items"] as? [[String: Any]] ?? []).count }
-        var remaining = max(1, limit), selected: [[String: Any]] = []
-        for turn in ordered.reversed() where remaining > 0 {
-            let raw = Array((turn["items"] as? [[String: Any]] ?? []).suffix(remaining))
+        let textTypes: Set<String> = ["agentMessage", "userMessage", "steeringUserMessage"]
+        let activityTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "subAgentActivity", "collabAgentToolCall"]
+        // Hidden reasoning/tool bookkeeping must not evict actual conversation rows.
+        // Bound expensive tool formatting separately from user/assistant messages.
+        var messagesLeft = max(1, limit), activitiesLeft = max(1, limit), omitted = false
+        var selected: [[String: Any]] = []
+        for turn in ordered.reversed() {
+            var raw: [[String: Any]] = []
+            for item in (turn["items"] as? [[String: Any]] ?? []).reversed() {
+                let type = item["type"] as? String ?? ""
+                if textTypes.contains(type) {
+                    if messagesLeft > 0 { raw.append(item); messagesLeft -= 1 } else { omitted = true }
+                } else if activityTypes.contains(type) {
+                    if messagesLeft > 0 && activitiesLeft > 0 { raw.append(item); activitiesLeft -= 1 } else { omitted = true }
+                }
+            }
+            raw.reverse()
             var slice = turn; slice["items"] = raw
-            selected.insert(contentsOf: items(slice), at: 0); remaining -= raw.count
+            selected.insert(contentsOf: items(slice), at: 0)
         }
-        return (selected.compactMap(CodexMessage.from), total > limit || mayHaveOlder(state),CodexAsyncQuestion.pending(in:ordered))
+        return (selected.compactMap(CodexMessage.from), omitted || mayHaveOlder(state),CodexAsyncQuestion.pending(in:ordered))
+    }
+    static func mergingLiveWindow(_ existing: [CodexMessage], incoming: [CodexMessage]) -> [CodexMessage] {
+        // The bounded snapshot omits older activities as the turn grows. Removing
+        // those rows changes the height above a reader even if all text survives.
+        // Retain already displayed rows and insert new rows before their next
+        // known neighbour. Selection changes clear this per-conversation state.
+        var result = existing.filter { !$0.id.hasPrefix("stored-") && $0.kind != "context" }
+        var insertion = result.count
+        for message in incoming.reversed() {
+            if let index = result.firstIndex(where: { $0.id == message.id }) {
+                result[index] = message; insertion = index
+            } else { result.insert(message, at: insertion) }
+        }
+        return result
     }
     static func mayHaveOlder(_ state: [String:Any]) -> Bool {
         if let history = (state["turnHistory"] as? [String:Any])?["history"] as? [String:Any], history["isComplete"] as? Bool == false || (history["islands"] as? [Any] ?? []).count > 1 { return true }
@@ -290,7 +338,14 @@ enum CodexTranscript {
             guard let key = entry["value"] as? String else { return nil }; return entities[key] as? [String: Any]
         }
         for turn in live {
-            if let id = turn["turnId"] as? String ?? turn["id"] as? String, let index = result.firstIndex(where: { ($0["turnId"] as? String ?? $0["id"] as? String) == id }) { result[index] = turn }
+            if let id = turn["turnId"] as? String ?? turn["id"] as? String, let index = result.firstIndex(where: { ($0["turnId"] as? String ?? $0["id"] as? String) == id }) {
+                let oldItems = items(result[index]), newItems = items(turn)
+                let updated = Dictionary(newItems.compactMap { item in (item["id"] as? String).map { ($0,item) } },uniquingKeysWith:{ _,last in last })
+                let ids = Set(oldItems.compactMap { $0["id"] as? String })
+                var merged = turn
+                merged["items"] = oldItems.map { updated[$0["id"] as? String ?? ""] ?? $0 } + newItems.filter { !ids.contains($0["id"] as? String ?? "") }
+                result[index] = merged
+            }
             else { result.append(turn) }
         }
         return result
@@ -435,6 +490,19 @@ final class CodexStore: ObservableObject {
     @Published private(set) var localStats: CodexLocalStats?
     @Published private(set) var localStatsError: String?
     @Published private(set) var readingLocalStats = false
+    @Published private(set) var localUsageHistory: CodexUsageHistory?
+    @Published private(set) var localUsageHistoryError: String?
+    @Published private(set) var readingUsageHistory = false
+    private var usageHistoryAttemptAt = Date.distantPast
+    func loadLocalUsageHistory(force: Bool = false) async {
+        guard !readingUsageHistory, force || Date().timeIntervalSince(usageHistoryAttemptAt) >= 30 else { return }
+        readingUsageHistory = true; usageHistoryAttemptAt = Date()
+        defer { readingUsageHistory = false }
+        do {
+            localUsageHistory = try await Task.detached(priority: .utility) { try CodexUsageHistoryIndex.read(home: CodexLocalStats.home) }.value
+            localUsageHistoryError = nil
+        } catch { localUsageHistoryError = error.localizedDescription }
+    }
     private var localStatsAttemptAt = Date.distantPast
     func loadLocalStats(force: Bool = false) async {
         guard !readingLocalStats, force || Date().timeIntervalSince(localStatsAttemptAt) >= 30 else { return }
@@ -496,6 +564,45 @@ final class CodexStore: ObservableObject {
         didSet { defaults.set(Array(managedThreads), forKey: "macToolsCodexThreads") }
     }
     private var resumedThreads = Set<String>()
+    // Keep submissions visible while a follower snapshot or persisted tail catches up.
+    private struct SubmissionEcho {
+        var message: CodexMessage
+        var previousIDs: Set<String>
+        var canonicalID: String?
+    }
+    private var submissionEchoes: [String: [SubmissionEcho]] = [:]
+    private var setupMessages: [String: [CodexMessage]] = [:]
+    private func beginEcho(_ id: String, input: [[String:Any]]) -> String {
+        let key = "submission-" + UUID().uuidString
+        if let message = CodexMessage.from(["id":key,"type":"userMessage","content":input]) {
+            submissionEchoes[id,default:[]].append(.init(message:message,previousIDs:selectedID == id ? Set(messages.map(\.id)) : []))
+            if selectedID == id { messages.append(message) }
+        }
+        return key
+    }
+    private func discardEcho(_ key: String, in id: String) {
+        submissionEchoes[id]?.removeAll { $0.message.id == key }
+        if selectedID == id { messages.removeAll { $0.id == key } }
+    }
+    private func preservingSubmissions(_ incoming: [CodexMessage], in id: String) -> [CodexMessage] {
+        let setup = setupMessages[id] ?? []
+        var result = setup.isEmpty ? incoming : setup + incoming.filter { $0.kind != "context" }
+        var echoes = submissionEchoes[id] ?? []
+        var claimed = Set<String>()
+        for index in echoes.indices {
+            let echo = echoes[index]
+            let match = incoming.first { item in
+                item.role == "Du" && !claimed.contains(item.id) &&
+                (item.id == echo.canonicalID || (!echo.previousIDs.contains(item.id) && !item.id.hasPrefix("submission-") && item.text == echo.message.text && item.images == echo.message.images))
+            }
+            if let match { echoes[index].canonicalID = match.id; claimed.insert(match.id) }
+            else if !result.contains(where: { $0.id == echo.message.id }) { result.append(echo.message) }
+            // Once identified, the canonical row replaces the temporary echo even in merged history.
+            if match != nil { result.removeAll { $0.id == echo.message.id } }
+        }
+        submissionEchoes[id] = echoes
+        return result
+    }
     var selected: CodexChat? { listedChats.first { $0.id == selectedID } ?? subagents.values.flatMap { $0 }.first { $0.id == selectedID } }
     var selectedRootID: String? {
         guard let id = selectedID else { return nil }
@@ -507,7 +614,7 @@ final class CodexStore: ObservableObject {
     var runningCount: Int { liveChats.filter { $0.status == "active" }.count }
     var externalChat: Bool { selectedID.map { !managedThreads.contains($0) } ?? false }
     var canSubmit: Bool { selectedID != nil || canSend }
-    var canSend: Bool { connected && !sending && (!externalChat || enableDesktop) }
+    var canSend: Bool { connected && !sending }
     var sharedServer: Bool { connection.sharedServer }
     var currentTurn: String? { selectedID.flatMap { activeTurns[$0] } }
     var hasPendingWork: Bool { sending || !activeTurns.isEmpty || queuedMessages.values.contains { !$0.isEmpty } || chats.contains { managedThreads.contains($0.id) && $0.status == "active" } }
@@ -560,7 +667,7 @@ final class CodexStore: ObservableObject {
                     await self.refresh()
                     self.recordActivity()
                     await self.loadUsage()
-                    if self.selectedID != nil, !self.selectedIsDesktopOwned, self.currentTurn == nil, !self.loadingHistory { await self.loadHistory() }
+                    if self.selectedID != nil, !self.loadingHistory { await self.loadHistory() }
                     if self.selectedID != nil { await self.loadGoal() }
                     if let root = self.selectedRootID { await self.loadSubagents(root) }
                 }
@@ -654,7 +761,7 @@ final class CodexStore: ObservableObject {
             for id in Array(pendingProjects.keys) { await assignPendingProject(id) }
             if enableDesktop, !desktop.connected { try? await desktop.connect(); desktopConnected = desktop.connected }
             let followed = Self.followTargets(recent: recentChats, selectedID: selectedID, followAll: followAllChats, archived: showingArchived)
-            for id in followed where enableDesktop && !checkingOwners.contains(id) {
+            for id in followed where enableDesktop && !checkingOwners.contains(id) && (connection.sharedServer || !resumedThreads.contains(id)) {
                 checkingOwners.insert(id)
                 Task { [weak self] in
                     guard let self else { return }
@@ -780,10 +887,14 @@ final class CodexStore: ObservableObject {
     }
     func finishSelection(_ id: String) async {
         guard selectedID == id else { return }
-        if enableDesktop { _ = await desktop.follow(id, resnapshot: true); objectWillChange.send() }
+        async let setup = CodexTranscript.storedSetup(path:selected?.rolloutPath,threadID:id)
+        if enableDesktop, connection.sharedServer || !resumedThreads.contains(id) { _ = await desktop.follow(id, resnapshot: true); objectWillChange.send() }
         guard selectedID == id else { return }
         if desktop.hasOwner(id) { loadingHistory = false } else { await loadHistory() }
+        let initialSetup = await setup
         guard selectedID == id else { return }
+        setupMessages[id] = initialSetup
+        messages = preservingSubmissions(messages,in:id)
         if let root = selectedRootID { await loadSubagents(root) }
         await refreshNativeQueue()
     }
@@ -826,15 +937,24 @@ final class CodexStore: ObservableObject {
     }
     func loadHistory(older: Bool = false) async {
         guard let id = selectedID, connected else { return }
+        if !older, desktop.hasOwner(id), latestNativeTranscript != nil { return }
         let token = UUID(); historyToken = token; loadingHistory = true
         defer { if historyToken == token { loadingHistory = false } }
         do {
             var params: [String: Any] = ["threadId": id, "limit": 12, "itemsView": "full", "sortDirection": "desc"]
             if older, let olderCursor { params["cursor"] = olderCursor }
-            let response = try await connection.request("thread/turns/list", params)
+            let response: [String:Any]
+            do { response = try await connection.request("thread/turns/list", params) }
+            catch let error as CodexRPCFailure where !older && (error.message.contains("not supported") || error.code == -32601) {
+                let stored = try await connection.request("thread/read",["threadId":id,"includeTurns":true])
+                response = ["data":Array(((stored["thread"] as? [String:Any])?["turns"] as? [[String:Any]] ?? []).reversed())]
+            }
             let turns = response["data"] as? [[String: Any]] ?? []
             let items = turns.reversed().flatMap(CodexTranscript.items).compactMap(CodexMessage.from)
             guard selectedID == id, historyToken == token else { return }
+            // A persisted poll can finish after live streaming has already supplied
+            // a newer timeline. Never append an older partial source over that view.
+            if !older, desktop.hasOwner(id), latestNativeTranscript != nil { return }
             // Once canonical history is available, retire synthetic rollout rows instead
             // of merging raw prompt scaffolding and duplicates into the restored chat.
             messages.removeAll { $0.id.hasPrefix("stored-") }
@@ -845,6 +965,7 @@ final class CodexStore: ObservableObject {
                 let known = Set(messages.map(\.id))
                 messages = messages.map { incoming[$0.id] ?? $0 } + items.filter { !known.contains($0.id) }
             }
+            messages = preservingSubmissions(messages,in:id)
             // Refreshing the recent tail must not rewind pagination already
             // advanced by the reader (including a confirmed end of history).
             if older || !historyPagingInitialized { olderCursor = response["nextCursor"] as? String }
@@ -976,12 +1097,12 @@ final class CodexStore: ObservableObject {
         defer { sending = false; queue.release(id) }
         let input: [[String: Any]] = (item.text.isEmpty ? [] : [["type": "text", "text": item.text]]) + item.references.map(\.input)
         let params = item.options.parameters(cwd: item.cwd, fallbackModel: item.modelHint)
+        let echo = beginEcho(id,input:input)
         do {
             if enableDesktop, !managedThreads.contains(id) { _ = await desktop.recoverOwner(id) }
             if desktop.hasOwner(id) {
                 try await desktop.send(item.text, to: id, active: steer, inputs: input, options: params)
             } else {
-                guard managedThreads.contains(id) else { throw CodexFailure(message: "Der ursprüngliche Codex-Chat ist gerade nicht erreichbar. Die Nachricht bleibt in der Warteschlange.") }
                 try await resumeManagedThread(id)
                 if steer, let turn = activeTurns[id] {
                     let result = try await connection.request("turn/steer", ["threadId": id, "expectedTurnId": turn, "input": input])
@@ -998,6 +1119,7 @@ final class CodexStore: ObservableObject {
             queue.delivered(id, since: epoch)
             return true
         } catch {
+            discardEcho(echo,in:id)
             queue.needsReview.insert(message)
             self.error = error.localizedDescription + " Bitte vor erneutem Senden den Originalchat prüfen."
             return false
@@ -1018,10 +1140,12 @@ final class CodexStore: ObservableObject {
         }
     }
     private func resumeManagedThread(_ id: String) async throws {
-        guard managedThreads.contains(id) else { throw CodexFailure(message: "Der ursprüngliche Codex-Chat ist gerade nicht erreichbar. Der Entwurf bleibt erhalten.") }
         guard !resumedThreads.contains(id) else { return }
-        _ = try await connection.request("thread/resume", ["threadId": id])
-        resumedThreads.insert(id)
+        if !connection.sharedServer, queue.ownedChats[id]?.status == "active" || selectedID == id && selected?.status == "active" {
+            throw CodexFailure(message: "Dieser Chat läuft bereits in einer anderen Verbindung. Warte auf den Abschluss oder sende im ausführenden Fenster. Der Entwurf bleibt erhalten.")
+        }
+        _ = try await connection.request("thread/resume", ["threadId": id, "excludeTurns": true])
+        managedThreads.insert(id); resumedThreads.insert(id)
     }
     private func startManagedTurn(_ id: String, parameters: [String: Any]) async throws -> [String: Any] {
         do { return try await connection.request("turn/start", parameters) }
@@ -1042,14 +1166,10 @@ final class CodexStore: ObservableObject {
         let option = options[key] ?? CodexTurnOptions()
         let turnParameters = option.parameters(cwd: selected?.cwd ?? workingDirectory, fallbackModel: currentModel ?? models.first?.id ?? "")
         let input: [[String: Any]] = (text.isEmpty ? [] : [["type": "text", "text": text]]) + references.map(\.input)
+        var echoThread = selectedID
+        var echoKey = selectedID.map { beginEcho($0,input:input) }
         do {
-            if let id = selectedID, externalChat, enableDesktop {
-                if !(await desktop.recoverOwner(id)) {
-                    openInCodex(id)
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                    _ = await desktop.recoverOwner(id)
-                }
-            }
+            if let id = selectedID, !resumedThreads.contains(id), enableDesktop { _ = await desktop.recoverOwner(id) }
             guard selectedID == sendingThreadID else { throw CodexFailure(message:"Der Chat wurde während der Übergabe gewechselt. Der Entwurf bleibt erhalten.") }
             if let id = selectedID, desktop.hasOwner(id) {
                 try await desktop.send(text, to: id, active: currentTurn != nil || selected?.status == "active", inputs: input, options: turnParameters)
@@ -1066,10 +1186,12 @@ final class CodexStore: ObservableObject {
                 if let project = newChatProjectID, chat.projectID != project { pendingProjects[id] = project }
                 chats.removeAll { $0.id == id }; chats.insert(chat, at: 0)
                 options[id] = option; drafts[id] = text; self.references[id] = references
+                echoThread = id; echoKey = beginEcho(id,input:input)
             }
             try await resumeManagedThread(id)
             if let turnID = activeTurns[id] {
-                _ = try await connection.request("turn/steer", ["threadId": id, "expectedTurnId": turnID, "input": input])
+                let response = try await connection.request("turn/steer", ["threadId": id, "expectedTurnId": turnID, "input": input])
+                guard let accepted = response["turnId"] as? String, !accepted.isEmpty else { throw CodexFailure(message:"Codex hat die Nachricht nicht bestätigt. Der Entwurf bleibt erhalten.") }
             } else {
                 var params = turnParameters; params["threadId"] = id; params["input"] = input
                 let result = try await startManagedTurn(id, parameters: params)
@@ -1078,8 +1200,14 @@ final class CodexStore: ObservableObject {
             }
             publishManagedChats()
             await assignPendingProject(id)
-            if activeTurns[id] != nil { activity = "Codex arbeitet …" }; await refresh(); return true
-        } catch { self.error = error.localizedDescription; return false }
+            if activeTurns[id] != nil { activity = "Codex arbeitet …" }; await refresh()
+            let setup = await CodexTranscript.storedSetup(path:chats.first { $0.id == id }?.rolloutPath,threadID:id)
+            if selectedID == id, !setup.isEmpty { setupMessages[id] = setup; messages = preservingSubmissions(messages,in:id) }
+            return true
+        } catch {
+            if let echoThread, let echoKey { discardEcho(echoKey,in:echoThread) }
+            self.error = error.localizedDescription; return false
+        }
     }
     func interrupt() async {
         guard let id = selectedID, let turnID = activeTurns[id] else { return }
@@ -1149,6 +1277,7 @@ final class CodexStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
     private func applyDesktopState(_ id: String, _ state: [String: Any]) {
+        guard connection.sharedServer || !resumedThreads.contains(id) else { return }
         if id == selectedID, error?.hasPrefix("Der ursprüngliche Codex-Chat ist gerade nicht erreichbar.") == true { error = nil }
         syncNativePrompts(id, state: state)
         if let runtime = state["threadRuntimeStatus"] as? [String: Any], let status = runtime["type"] as? String, ["active", "idle"].contains(status) {
@@ -1206,7 +1335,8 @@ final class CodexStore: ObservableObject {
                 let projected = await Task.detached(priority: .userInitiated) { CodexTranscript.window(next.state, limit: next.limit) }.value
                 guard !Task.isCancelled, self.selectedID == next.id, self.nativeProjectionEpoch == next.epoch, self.nativeHistoryLimit == next.limit else { continue }
                 let old = Dictionary(self.messages.compactMap { message in message.activity.map { (message.id, $0) } }, uniquingKeysWith: { _, last in last })
-                let incoming = projected.messages.map { self.preservingActivity($0, old: old[$0.id]) }
+                let native = projected.messages.map { self.preservingActivity($0, old: old[$0.id]) }
+                let incoming = self.preservingSubmissions(CodexTranscript.mergingLiveWindow(self.messages, incoming: native),in:next.id)
                 if self.messages != incoming { self.messages = incoming }
                 let questions = projected.questions.filter { !self.confirmedAsyncAnswers.contains($0.id) }
                 if self.asyncQuestions != questions { self.asyncQuestions = questions }
@@ -1284,12 +1414,13 @@ final class CodexStore: ObservableObject {
                 if method == "item/started", ["commandExecution", "fileChange"].contains(item["type"] as? String ?? "") { approvalItems[key] = item }
                 if method == "item/completed" { approvalItems.removeValue(forKey: key) }
             }
-            guard id == selectedID, let item = p["item"] as? [String: Any] else { return }
+            guard let id, id == selectedID, let item = p["item"] as? [String: Any] else { return }
             if var message = CodexMessage.from(item) {
                 message = preservingActivity(message)
                 if method == "item/started", message.activity?.isRunning == true, message.activity?.startedAt == nil { message.activity?.startedAt = Date() }
                 if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message }
                 else { messages.append(message) }
+                messages = preservingSubmissions(messages,in:id)
             } else if method == "item/started" {
                 switch item["type"] as? String {
                 case "commandExecution": activity = "Befehl wird ausgeführt …"
@@ -1427,6 +1558,48 @@ final class CodexStore: ObservableObject {
 }
 
 extension CodexTranscript {
+    static func storedSetup(path: String?, threadID: String? = nil) async -> [CodexMessage] {
+        return await Task.detached(priority:.utility) {
+            let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"
+            var sourcePath = path
+            // Paginated thread/list responses may omit path, including while selection warms.
+            if sourcePath == nil, let threadID {
+                let files = (try? FileManager.default.contentsOfDirectory(at:URL(fileURLWithPath:home),includingPropertiesForKeys:nil)) ?? []
+                let versions = files.compactMap { file -> (URL,Int)? in
+                    guard file.pathExtension == "sqlite", file.lastPathComponent.hasPrefix("state_"), let version = Int(file.deletingPathExtension().lastPathComponent.dropFirst(6)) else { return nil }
+                    return (file,version)
+                }.sorted { $0.1 > $1.1 }
+                if let database = versions.first?.0 {
+                    var db: OpaquePointer?
+                    if sqlite3_open_v2(database.path,&db,SQLITE_OPEN_READONLY,nil) == SQLITE_OK, let db {
+                        defer { sqlite3_close(db) }
+                        var query: OpaquePointer?
+                        if sqlite3_prepare_v2(db,"SELECT rollout_path FROM threads WHERE id=?",-1,&query,nil) == SQLITE_OK, let query {
+                            defer { sqlite3_finalize(query) }
+                            sqlite3_bind_text(query,1,threadID,-1,unsafeBitCast(-1,to:sqlite3_destructor_type.self))
+                            if sqlite3_step(query) == SQLITE_ROW, let value = sqlite3_column_text(query,0) { sourcePath = String(cString:value) }
+                        }
+                    } else if let db { sqlite3_close(db) }
+                }
+            }
+            guard let sourcePath else { return [] }
+            let url = URL(fileURLWithPath:sourcePath).standardizedFileURL.resolvingSymlinksInPath()
+            let root = URL(fileURLWithPath:home).standardizedFileURL.resolvingSymlinksInPath().path + "/"
+            guard url.path.hasPrefix(root), url.pathExtension == "jsonl", let handle = try? FileHandle(forReadingFrom:url) else { return [] }
+            defer { try? handle.close() }
+            // Startup instructions precede the first user turn; never scan large tool history.
+            let data = (try? handle.read(upToCount:524_288)) ?? Data()
+            var result: [CodexMessage] = []
+            for (index,line) in data.split(separator:10).enumerated() {
+                guard let value = (try? JSONSerialization.jsonObject(with:Data(line))) as? [String:Any], value["type"] as? String == "response_item",
+                      let item = value["payload"] as? [String:Any], item["type"] as? String == "message", item["role"] as? String == "user" else { continue }
+                let text = (item["content"] as? [[String:Any]] ?? []).compactMap { $0["text"] as? String }.joined(separator:"\n")
+                guard let message = CodexMessage.setup(text,id:"setup-" + String(index)) else { break }
+                result.append(message)
+            }
+            return result
+        }.value
+    }
     static func storedMessages(path: String) async -> [CodexMessage] {
         await Task.detached(priority: .utility) {
             let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"

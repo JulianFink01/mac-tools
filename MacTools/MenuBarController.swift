@@ -595,7 +595,7 @@ struct QuickPanelView: View {
             }.scrollIndicators(.hidden)
             HStack {
                 Button { openSection(.disk) } label: {
-                    Label(security.report?.threatCount ?? 0 > 0 ? "Funde prüfen" : warnings.warnings.isEmpty ? "Disk & Sicherheit" : "\(warnings.warnings.count) Warnungen", systemImage: "shield")
+                    Label((security.currentFindings?.threatCount ?? 0) > 0 ? "Funde prüfen" : security.criticalMessages(root: disk.root).isEmpty ? "Disk & Sicherheit" : "\(security.criticalMessages(root: disk.root).count) Warnungen", systemImage: "shield")
                 }.buttonStyle(.plain).font(.caption)
                 Spacer()
                 Button { randomWallpaper() } label: { Image(systemName: "shuffle").font(.caption) }.buttonStyle(.plain).disabled(library.videos.isEmpty).help("Video wechseln").accessibilityLabel("Video wechseln")
@@ -603,6 +603,7 @@ struct QuickPanelView: View {
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.buttonStyle(.plain).help("MacTools beenden")
             }.foregroundStyle(.secondary)
         }.padding(16).frame(width: 420, height: panelHeight, alignment: .top).background(Color(nsColor: .windowBackgroundColor))
+            .task { await security.refreshCurrentFindings(legacyPaths: warnings.warnings.flatMap(\.findingPaths)) }
             .onAppear { if startsEditing { editingWidgets = true }; audio.start(); containers.start(); codex.start(); menuChats = codex.menuChats; multipleRunningChats = codex.menuChats.filter { $0.status == "active" }.count > 1 }
             .onChange(of: codex.menuChats) { chats in
                 codexVisibilityTask?.cancel()
@@ -688,8 +689,8 @@ struct QuickPanelView: View {
     }
     private var events: [LiveEvent] {
         var values: [LiveEvent] = []
-        if let report = security.report, report.threatCount > 0 {
-            values.append(LiveEvent(id: "threats", priority: 100, title: "\(report.threatCount) verdächtige Dateien", detail: "Funde in Disk & Sicherheit prüfen", icon: "shield.lefthalf.filled", color: .red, section: .disk))
+        if let current = security.currentFindings, current.threatCount > 0 {
+            values.append(LiveEvent(id: "threats", priority: 100, title: "\(current.threatCount) verdächtige Dateien", detail: "Funde in Disk & Sicherheit prüfen", icon: "shield.lefthalf.filled", color: .red, section: .disk))
         }
         if disk.isScanning || disk.isSaving || security.isScanning || security.isUpdating {
             values.append(LiveEvent(id: "scan", priority: 90, title: disk.isScanning ? "Scan läuft · \(disk.progress.files.formatted()) Dateien" : "Virenschutz läuft", detail: disk.isScanning ? disk.progress.phase : security.status, icon: "waveform.path", color: .cyan, section: .disk, fraction: disk.isScanning ? disk.progress.fraction : security.progressFraction))

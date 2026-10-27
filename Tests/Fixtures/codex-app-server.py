@@ -140,9 +140,15 @@ for line in sys.stdin:
         loaded_threads.discard(p['threadId']); reply(m,{})
     elif method == 'test/start-error':
         start_error = p.get('message'); reply(m,{})
+    elif method == 'test/echo-confirm':
+        event('item/completed',{'threadId':p['threadId'],'item':{'id':'confirmed-echo','type':'userMessage','content':[{'type':'text','text':p['text']}]}})
+        reply(m,{})
     elif method == 'test/runtime-state':
         reply(m,{'resumes':resume_count,'attempts':start_attempts,'turns':turn_counter,'input':last_start_input})
     elif method == 'thread/resume':
+        if start_error:
+            emit({'id':m['id'],'error':{'code':-32603,'message':start_error}})
+            continue
         assert p['threadId']=='test-old' or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE')
         loaded_threads.add(p['threadId']); resume_count += 1
         reply(m,{'thread':chat(p['threadId'])})
@@ -206,6 +212,10 @@ for line in sys.stdin:
         recent=turn('recent','Neuere Antwort')
         if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):
             recent['items']=[{'id':'long-'+str(i),'type':'agentMessage','text':'Historie Nachricht '+str(i)+' – alter Verlauf. '*8} for i in range(180)]+[{'id':'final-qa','type':'agentMessage','text':'ENDE DES PRUEFCHATS – neueste Nachricht'}]
+        if os.environ.get('MACTOOLS_QA_RICH_SCROLL'):
+            recent['items']=[{'id':'rich-scroll','type':'agentMessage','text':'\n\n'.join('Abschnitt '+str(i)+r' – Formel \(x_i^2+1\) und langer erklärender Text. '*5 for i in range(1,19))+'\n\nENDE DER FORMATIERTEN ANTWORT'}]
+        if os.environ.get('MACTOOLS_QA_RICH_SCROLL'):
+            recent['items'].insert(0,{'id':'qa-context','type':'userMessage','content':[{'type':'text','text':'# AGENTS.md instructions\n<INSTRUCTIONS>\n## Arbeitsweise\n\n1. Selbstständig arbeiten.\n2. Änderungen prüfen.\n3. Ergebnisse knapp erklären.\n</INSTRUCTIONS><environment_context><cwd>/tmp/scroll-check</cwd><shell>bash</shell><timezone>Europe/Zurich</timezone></environment_context>'}]})
         if os.environ.get('MACTOOLS_QA_MULTI_HISTORY'):
             recent['items'][:0]=[{'id':'initial-command-'+str(i),'type':'commandExecution','command':'echo fixture','status':'completed','exitCode':0} for i in range(8)]
         if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):
@@ -240,6 +250,9 @@ for line in sys.stdin:
         turn_counter += 1
         tid = 'turn-test-' + str(turn_counter)
         reply(m, {'turn': {'id': tid, 'status': 'inProgress'}})
+        if p['input'][0]['text'].startswith('Standalone'):
+            event('turn/completed',{'threadId':p['threadId'],'turn':{'id':tid,'status':'completed'}})
+            continue
         if p['input'][0]['text'] == 'Optionscheck':
             assert p['model']=='fixture-model' and p['effort']=='high'
             assert p['approvalPolicy']=='untrusted' and p['sandboxPolicy']['type']=='workspaceWrite'

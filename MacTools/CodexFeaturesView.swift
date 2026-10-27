@@ -352,7 +352,7 @@ struct CodexUsageView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                if !inPopover { VStack(alignment: .leading, spacing: 8) { Label("Codex-Limit", systemImage: "gauge.with.dots.needle.33percent").font(.largeTitle.bold()); Text("Verbleibendes Kontingent deines Codex-Kontos").foregroundStyle(.secondary) } }
+                if !inPopover { VStack(alignment: .leading, spacing: 8) { Label("Codex-Nutzung", systemImage: "chart.bar.xaxis").font(.largeTitle.bold()); Text("Kontingent, Tokenverlauf und Monatsvergleich").foregroundStyle(.secondary) } }
                 HStack { if inPopover { Label("Codex-Limit", systemImage: "gauge.with.dots.needle.33percent").font(.headline) }; Spacer(); Button { Task { await store.loadUsage(force: true) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Nutzung aktualisieren") }
                 if let error = store.usageError { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
                 if store.usageBuckets.allSatisfy({ $0.windows.isEmpty }) { Text("Codex stellt für dieses Konto gerade keine Nutzungsfenster bereit.").foregroundStyle(.secondary) }
@@ -370,7 +370,118 @@ struct CodexUsageView: View {
                 }
                 if let updated = store.usageUpdatedAt { Text("Stand " + updated.formatted(date: .omitted, time: .shortened) + " · Aktualisierung jede Minute").font(.caption).foregroundStyle(.secondary) }
                 Text("Die Limits gelten für dein gesamtes Codex-Konto. Angezeigt wird der verbleibende Anteil, nicht der verbrauchte.").font(.caption).foregroundStyle(.secondary)
+                if !inPopover { Divider(); CodexUsageHistoryDetail(store: store) }
             }.padding(inPopover ? 20 : 32).frame(maxWidth: 900, alignment: .leading).frame(maxWidth: .infinity)
         }.onAppear { store.start() }.task { await store.loadUsage() }
+    }
+}
+
+struct CodexUsageHistoryDetail: View {
+    @ObservedObject var store: CodexStore
+    @State private var primary = Calendar.current.dateInterval(of: .month, for: Date())!.start
+    @State private var comparison = Calendar.current.date(byAdding: .month, value: -1, to: Calendar.current.dateInterval(of: .month, for: Date())!.start)!
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Lokal erfasste Tokenereignisse").font(.title2.weight(.semibold))
+                    Text("Verbrauch zum Zeitpunkt des Tokenereignisses, inklusive Cache-Eingaben.").font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { Task { await store.loadLocalUsageHistory(force: true) } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.plain).disabled(store.readingUsageHistory).accessibilityLabel("Tokenverlauf aktualisieren")
+            }
+            if let history = store.localUsageHistory {
+                Text(history.coverageText).font(.caption).foregroundStyle(history.missingFiles > 0 ? Color.orange : .secondary).fixedSize(horizontal: false, vertical: true)
+                if history.rows.isEmpty {
+                    Text("Es sind noch keine zeitlich zuordenbaren Tokenereignisse in den lokalen Verläufen vorhanden.").foregroundStyle(.secondary)
+                } else {
+                    let months = history.months()
+                    Text(history.missingFiles > 0 ? "Erfasste Tokens pro Monat · unvollständig" : "Erfasste Tokens pro Monat").font(.headline)
+                    Chart(Array(months.prefix(12).reversed()), id: \.self) { month in
+                        BarMark(x: .value("Monat", month.formatted(.dateTime.month(.abbreviated).year(.twoDigits))), y: .value("Erfasste Tokens", history.summary(month: month).totals.total)).foregroundStyle(.mint)
+                    }.chartXAxis { AxisMarks { AxisValueLabel() } }
+                        .chartYAxis { AxisMarks { value in AxisGridLine(); AxisValueLabel { if let tokens = value.as(Int64.self) { Text(CodexUsageFormat.tokens(tokens)) } } } }
+                        .frame(height: 190).accessibilityLabel("Monatlich erfasste Tokens der letzten zwölf Monate")
+                    Divider()
+                    Text("Monate vergleichen").font(.headline)
+                    HStack(spacing: 24) {
+                        Picker("Monat", selection: $primary) { ForEach(months, id: \.self) { month in Text(CodexUsageFormat.month(month)).tag(month) } }
+                            .accessibilityLabel("Erster Vergleichsmonat")
+                        Picker("Vergleich", selection: $comparison) { ForEach(months, id: \.self) { month in Text(CodexUsageFormat.month(month)).tag(month) } }
+                            .accessibilityLabel("Zweiter Vergleichsmonat")
+                    }
+                    let first = history.summary(month: primary), second = history.summary(month: comparison)
+                    HStack(alignment: .top, spacing: 16) {
+                        monthCard(primary, summary: first, history: history, color: .mint)
+                        monthCard(comparison, summary: second, history: history, color: .blue)
+                    }
+                    if history.canCompare(primary, comparison) {
+                    let difference = first.totals.total-second.totals.total
+                    HStack {
+                        Text("Differenz").foregroundStyle(.secondary)
+                        Spacer()
+                        Text((difference >= 0 ? "+" : "−") + CodexUsageFormat.tokens(abs(difference)) + " Tokens").monospacedDigit()
+                        if second.totals.total > 0 {
+                            Text((Double(difference)/Double(second.totals.total)).formatted(.percent.precision(.fractionLength(1)))).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    }.font(.callout)
+                    } else {
+                        Label("Kein belastbarer Verbrauchsvergleich: Es fehlen historische Tokenereignisse. Die Zahlen zeigen nur den lokal verfügbaren Ausschnitt, keine vollständige Monatsnutzung.", systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if history.calendar.isDate(primary, equalTo: Date(), toGranularity: .month) || history.calendar.isDate(comparison, equalTo: Date(), toGranularity: .month) {
+                        Text("Der laufende Monat enthält nur die bisher erfassten Tage. Auch abgeschlossene Monate können Datenlücken enthalten.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Chart {
+                        ForEach(history.cumulativeDays(month: primary)) { point in
+                            LineMark(x: .value("Tag", point.day), y: .value("Tokens kumuliert", point.tokens)).foregroundStyle(by: .value("Monat", "A · " + CodexUsageFormat.month(primary)))
+                        }
+                        ForEach(history.cumulativeDays(month: comparison)) { point in
+                            LineMark(x: .value("Tag", point.day), y: .value("Tokens kumuliert", point.tokens)).foregroundStyle(by: .value("Monat", "B · " + CodexUsageFormat.month(comparison)))
+                        }
+                    }.chartForegroundStyleScale(range: [Color.mint, .blue]).chartXScale(domain: 1...31)
+                        .chartXAxis { AxisMarks(values: [1,5,10,15,20,25,31]) }
+                        .chartXAxisLabel("Tag im Monat").chartYAxisLabel("Tokens kumuliert")
+                        .chartYAxis { AxisMarks { value in AxisGridLine(); AxisValueLabel { if let tokens = value.as(Int64.self) { Text(CodexUsageFormat.tokens(tokens)) } } } }
+                        .frame(height: 240).accessibilityLabel("Kumulierte Tokens der beiden ausgewählten Monate nach Tag")
+                    Text("Modelle im Vergleich").font(.headline)
+                    let names = Set(first.models.map(\.name) + second.models.map(\.name)).sorted()
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+                        GridRow { Text("Modell").fontWeight(.semibold); Text("Monat A").fontWeight(.semibold); Text("Monat B").fontWeight(.semibold) }
+                        ForEach(names, id: \.self) { name in
+                            GridRow {
+                                Text(name).textSelection(.enabled)
+                                Text(CodexUsageFormat.tokens(first.models.first { $0.name == name }?.tokens ?? 0)).monospacedDigit()
+                                Text(CodexUsageFormat.tokens(second.models.first { $0.name == name }?.tokens ?? 0)).monospacedDigit()
+                            }
+                        }
+                    }.font(.callout)
+                    Text("Modellzuordnung aus dem zum Ereignis gespeicherten Kontext; fehlende Angaben erscheinen als „Unbekannt“. Kopierte identische Tokenereignisse werden nur einmal gezählt.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } else if store.readingUsageHistory {
+                HStack(spacing: 12) { ProgressView().controlSize(.small); Text("Tokenereignisse werden einmalig lokal erfasst. Weitere Aktualisierungen lesen nur neue Daten.").foregroundStyle(.secondary) }
+            }
+            if let error = store.localUsageHistoryError { Text((store.localUsageHistory == nil ? "" : "Letzter Stand · ") + error).font(.caption).foregroundStyle(.orange) }
+            if store.readingUsageHistory && store.localUsageHistory != nil { ProgressView("Tokenverlauf wird aktualisiert …").controlSize(.small) }
+        }.task {
+            while !Task.isCancelled {
+                await store.loadLocalUsageHistory()
+                do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            }
+        }
+    }
+    private func monthCard(_ date: Date, summary: CodexUsageSummary, history: CodexUsageHistory, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(CodexUsageFormat.month(date)).font(.headline)
+            Text(CodexUsageFormat.tokens(summary.totals.total) + " erfasste Tokens").font(.title2.weight(.semibold)).monospacedDigit()
+                .help(summary.totals.total.formatted() + " erfasste Tokens")
+            Text("\(history.coverage(month: date).created) angelegte Chats laut Datenbank").font(.caption)
+            Text("Tokenereignisse aus \(summary.chats) Chats verfügbar").font(.caption).foregroundStyle(.secondary)
+            if history.missingFiles > 0 { Text("Unvollständiger Tokenverlauf").font(.caption.weight(.semibold)).foregroundStyle(.orange) }
+            HStack { Text("Input"); Spacer(); Text(CodexUsageFormat.tokens(summary.totals.input)).monospacedDigit() }.font(.caption)
+            HStack { Text("davon Cache"); Spacer(); Text(CodexUsageFormat.tokens(summary.totals.cached)).monospacedDigit() }.font(.caption).foregroundStyle(.secondary)
+            HStack { Text("Output"); Spacer(); Text(CodexUsageFormat.tokens(summary.totals.output)).monospacedDigit() }.font(.caption)
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
     }
 }

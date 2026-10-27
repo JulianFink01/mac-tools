@@ -14,7 +14,7 @@ struct CodexChatImage: View {
                 else if let image { Image(nsImage: image).resizable().scaledToFit() }
                 else if loaded { Label("Bild nicht mehr verfügbar", systemImage: "photo.badge.exclamationmark").font(.caption).foregroundStyle(.secondary).padding(16) }
                 else { ProgressView().padding(20) }
-            }.frame(maxWidth: 480, maxHeight: 260).clipShape(RoundedRectangle(cornerRadius: 10))
+            }.frame(maxWidth: 480, maxHeight: 260).frame(height: 260).clipShape(RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).accessibilityLabel("Bildanhang öffnen").help("Bild vergrößern")
             .task(id: source) {
                 let source = source

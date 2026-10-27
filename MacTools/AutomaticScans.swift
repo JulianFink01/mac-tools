@@ -7,6 +7,8 @@ struct ScanWarning: Codable, Identifiable {
     let date: Date
     let title: String
     let detail: String
+    var isSecurityFinding: Bool { title == "Verdächtige Dateien gefunden" }
+    var findingPaths: [String] { isSecurityFinding ? detail.components(separatedBy: .newlines).filter { $0.hasPrefix("/") } : [] }
     var isImportant: Bool {
         title.hasPrefix("Kritisch") || ["Verdächtige Dateien gefunden", "Virenschutz nicht verfügbar"].contains(title)
     }

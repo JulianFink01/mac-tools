@@ -6,14 +6,61 @@ struct CodexChecks {
     @MainActor
     static func main() async throws {
         setbuf(stdout, nil)
+        if let index = CommandLine.arguments.firstIndex(of:"--standalone-home") {
+            let home = CommandLine.arguments[index+1], thread = CommandLine.arguments[index+2]
+            let domain = "MacTools.RealStandalone." + UUID().uuidString
+            let prefs = UserDefaults(suiteName:domain)!
+            defer { prefs.removePersistentDomain(forName:domain) }
+            let rpc = CodexConnection(executableURL:CodexConnection.executable(),environment:["CODEX_HOME":home])
+            let store = CodexStore(connection:rpc,defaults:prefs,followAllChats:false)
+            await store.connect(); precondition(store.connected && !store.sharedServer,store.error ?? "CLI unavailable")
+            await store.select(thread)
+            precondition(!store.messages.isEmpty,store.error ?? "Stored history missing")
+            let accepted = await store.send("Standalone actual MacTools store")
+            precondition(accepted && store.selectedID == thread,store.error ?? "Existing thread not resumed")
+            precondition(store.messages.contains { $0.role == "Du" && $0.text == "Standalone actual MacTools store" })
+            await store.interrupt(); await store.loadHistory()
+            precondition(store.messages.filter { $0.role == "Du" && $0.text == "Standalone actual MacTools store" }.count == 1)
+            store.stop()
+            print("PASS: real MacTools store + installed standalone CLI resumes existing chat, sends once, shows own input, reads canonical history and interrupts without desktop IPC or external provider")
+            return
+        }
         if CommandLine.arguments.contains("--local-stats") {
             let stats = try CodexLocalStats.read()
             print("LOCAL-STATS: \(stats.totalTokens) tokens, \(stats.chats) chats, \(stats.chatsWithTokens) chats with tokens, \(stats.models.count) models")
             return
         }
+        let setup = CodexMessage.from(["id":"bootstrap","type":"userMessage","content":[["type":"text","text":"# AGENTS.md instructions\n<INSTRUCTIONS>\n1. Selbstständig arbeiten\n2. Ergebnis prüfen\n</INSTRUCTIONS><environment_context><cwd>/tmp/project</cwd><shell>bash</shell><timezone>Europe/Zurich</timezone></environment_context>"]]])!
+        precondition(setup.kind == "context" && setup.role == "Standardanweisungen" && setup.text.contains("1. Selbstständig arbeiten") && setup.text.contains("**Arbeitsverzeichnis:** /tmp/project") && !setup.text.contains("<INSTRUCTIONS>"))
+        precondition(CodexMessage.setup("So sieht XML aus: <environment_context><cwd>/tmp</cwd></environment_context>",id:"normal") == nil)
+        precondition(CodexMessage.setup("```xml\n<INSTRUCTIONS>Beispiel</INSTRUCTIONS>\n```",id:"code") == nil)
+        print("PASS: standard instructions rendered as a dedicated readable context; ordinary XML examples remain untouched")
         let statsHome = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-stats-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: statsHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: statsHome) }
+        let setupFile = statsHome.appendingPathComponent("startup.jsonl")
+        func startupLine(_ text:String) throws -> Data {
+            var data = try JSONSerialization.data(withJSONObject:["type":"response_item","payload":["type":"message","role":"user","content":[["type":"input_text","text":text]]]])
+            data.append(10); return data
+        }
+        var startup = try startupLine("# AGENTS.md instructions\n<INSTRUCTIONS>Gespeicherter Standardprompt</INSTRUCTIONS><environment_context><cwd>/tmp/chat</cwd></environment_context>")
+        startup.append(try startupLine("Erste echte Nachricht"))
+        startup.append(try startupLine("<INSTRUCTIONS>XML-Beispiel nach Chatstart</INSTRUCTIONS>"))
+        try startup.write(to:setupFile)
+        var setupDB: OpaquePointer?
+        precondition(sqlite3_open(statsHome.appendingPathComponent("state_1.sqlite").path,&setupDB) == SQLITE_OK)
+        precondition(sqlite3_exec(setupDB,"CREATE TABLE threads(id TEXT,rollout_path TEXT); INSERT INTO threads VALUES('saved-thread','\(setupFile.path)');",nil,nil,nil) == SQLITE_OK)
+        sqlite3_close(setupDB)
+        let originalCodexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
+        setenv("CODEX_HOME",statsHome.path,1)
+        let restoredSetup = await CodexTranscript.storedSetup(path:setupFile.path)
+        let metadataSetup = await CodexTranscript.storedSetup(path:nil,threadID:"saved-thread")
+        precondition(metadataSetup == restoredSetup,"Resolve saved instructions by thread ID when paginated API responses omit the rollout path")
+        setenv("CODEX_HOME",statsHome.appendingPathComponent("other").path,1)
+        let outsideSetup = await CodexTranscript.storedSetup(path:setupFile.path)
+        if let originalCodexHome { setenv("CODEX_HOME",originalCodexHome,1) } else { unsetenv("CODEX_HOME") }
+        precondition(restoredSetup.count == 1 && restoredSetup[0].text.contains("Gespeicherter Standardprompt") && outsideSetup.isEmpty,"Read only stored startup instructions, stop before user conversation, reject paths outside CODEX_HOME")
+        print("PASS: saved startup prompt recovered independently of canonical history; conversation XML and out-of-root paths excluded")
         let statsURL = statsHome.appendingPathComponent("state_10.sqlite")
         var statsDB: OpaquePointer?
         precondition(sqlite3_open(statsURL.path, &statsDB) == SQLITE_OK)
@@ -117,6 +164,25 @@ struct CodexChecks {
         let timeline = CodexTranscript.turns(["turnHistory": ["history": ["entitiesByKey": ["old": old], "islands": [["entries": [["value": "old"]]]]]], "turns": [liveTurn]])
         precondition(timeline.count == 2 && timeline.flatMap { $0["items"] as? [[String: Any]] ?? [] }.compactMap(CodexMessage.from).last?.text == "Gerade gesendet", "Live outgoing messages must remain visible alongside committed history")
         print("PASS: actual effort inherited when latest field is null; live user turn merged with persisted transcript")
+        let progressMessages: [[String: Any]] = [
+            ["id":"visible-user", "type":"userMessage", "content":[["type":"text", "text":"Behebe das"]]],
+            ["id":"visible-progress", "type":"agentMessage", "phase":"commentary", "text":"Ich prüfe den Fehler."]
+        ]
+        let bookkeeping = (0..<180).map { ["id":"reasoning-\($0)", "type":"reasoning", "text":"hidden"] as [String:Any] }
+        let commands = (0..<180).map { ["id":"command-\($0)", "type":"commandExecution", "command":"fixture", "status":"completed"] as [String:Any] }
+        let progressWindow = CodexTranscript.window(["turns":[["id":"long-live", "items":progressMessages + bookkeeping + commands + [["id":"latest-progress", "type":"agentMessage", "text":"Der Fix wird geprüft."]]]]], limit:80)
+        precondition(progressWindow.messages.filter { $0.kind == "message" }.map(\.id) == ["visible-user", "visible-progress", "latest-progress"], "Reasoning and busy tools must not make chat messages disappear")
+        precondition(progressWindow.messages.filter { $0.kind == "activity" }.count == 80 && progressWindow.hasMore)
+        let loadedPrefix = [CodexMessage(id:"previous-page",role:"Codex",text:"Ältere geladene Nachricht"), CodexMessage(id:"overlap",role:"Codex",text:"Alte Version")]
+        let newTail = [CodexMessage(id:"overlap",role:"Codex",text:"Aktualisiert"),CodexMessage(id:"new-tail",role:"Codex",text:"Neu")]
+        let preserved = CodexTranscript.mergingLiveWindow(loadedPrefix,incoming:newTail)
+        precondition(preserved.map(\.id) == ["previous-page","overlap","new-tail"] && preserved[1].text == "Aktualisiert")
+        let visibleRows = [CodexMessage(id:"first",role:"Codex",text:"Anfang"),CodexMessage(id:"evicted-command",role:"Codex",text:"Tool",kind:"activity"),CodexMessage(id:"reading",role:"Codex",text:"Leseposition")]
+        let rotated = CodexTranscript.mergingLiveWindow(visibleRows,incoming:[visibleRows[0],visibleRows[2],CodexMessage(id:"new-commentary",role:"Codex",text:"Live-Update")])
+        precondition(rotated.map(\.id) == ["first","evicted-command","reading","new-commentary"],"Activity-window rotation must not remove a row above the reader")
+        let inserted = CodexTranscript.mergingLiveWindow(visibleRows,incoming:[visibleRows[0],CodexMessage(id:"middle",role:"Codex",text:"Nachgeliefert"),visibleRows[2]])
+        precondition(inserted.map(\.id) == ["first","evicted-command","middle","reading"],"Late rows must precede their next canonical neighbour instead of being appended out of order")
+        print("PASS: commentary survives long tool streams; loaded older messages remain visible while the native tail updates")
         let now = Date()
         let stale = CodexChat(["id": "stale", "updatedAt": now.timeIntervalSince1970 - 4000])!
         let fresh = CodexChat(["id": "fresh", "updatedAt": now.timeIntervalSince1970 - 60])!
@@ -159,6 +225,25 @@ struct CodexChecks {
         precondition(CodexSavedWindow.find(chatID: "other-chat", excluding: [], directory: savedWindows) == nil)
         try FileManager.default.removeItem(at: savedWindows)
         print("PASS: reopening a closed window after app restart reuses its persisted session; active windows and other chats remain isolated")
+        let standaloneDomain = "MacTools.standalone." + UUID().uuidString
+        let standaloneDefaults = UserDefaults(suiteName:standaloneDomain)!
+        let standaloneRPC = CodexConnection(executableURL:fixture,environment:["MACTOOLS_TEST_THREAD_LIFECYCLE":"1"])
+        let standalone = CodexStore(connection:standaloneRPC,defaults:standaloneDefaults)
+        await standalone.connect(); await standalone.select("test-old")
+        let standaloneSent = await standalone.send("Standalone restored chat")
+        precondition(standaloneSent,standalone.error ?? "Standalone failed")
+        precondition(standalone.messages.filter { $0.role == "Du" && $0.text == "Standalone restored chat" }.count == 1)
+        await standalone.loadHistory() // intentionally stale history omits the accepted input
+        precondition(standalone.messages.filter { $0.role == "Du" && $0.text == "Standalone restored chat" }.count == 1,"Stale history must not erase an accepted input")
+        _ = try await standaloneRPC.request("test/echo-confirm",["threadId":"test-old","text":"Standalone restored chat"])
+        try await Task.sleep(nanoseconds:50_000_000)
+        precondition(standalone.messages.filter { $0.role == "Du" && $0.text == "Standalone restored chat" }.count == 1,"Canonical input replaces temporary input exactly once")
+        let standaloneState = try await standaloneRPC.request("test/runtime-state")
+        precondition(standaloneState["resumes"] as? Int == 1 && standaloneState["turns"] as? Int == 1)
+        standalone.stop(); standaloneDefaults.removePersistentDomain(forName:standaloneDomain)
+        print("PASS: desktop-created stored chat resumes in standalone server; accepted input survives stale history; canonical receipt deduplicates exactly once")
+        let partialState: [String:Any] = ["turnHistory":["history":["entitiesByKey":["same":["id":"same","items":[["id":"first-input","type":"userMessage","content":[["text":"first"]]]]]],"islands":[["entries":[["value":"same"]]]]]],"turns":[["id":"same","items":[["id":"second-input","type":"userMessage","content":[["text":"second"]]]]]]]
+        precondition(CodexTranscript.window(partialState,limit:80).messages.map(\.text) == ["first","second"],"Partial live turn must preserve earlier canonical user inputs")
         let lifecycleDomain = "MacTools.thread-lifecycle." + UUID().uuidString
         let lifecycleDefaults = UserDefaults(suiteName: lifecycleDomain)!
         let lifecycleRPC = CodexConnection(executableURL: fixture, environment: ["MACTOOLS_TEST_THREAD_LIFECYCLE":"1"])
@@ -328,6 +413,7 @@ struct CodexChecks {
         precondition(store.usageBuckets.first?.windows.first?.remaining == 70 && store.usageBuckets.first?.windows.last?.label == "7 Tage")
         precondition(CodexUsageBucket.parse(["rateLimits": ["primary": NSNull(), "secondary": NSNull()]]).first?.windows.isEmpty == true, "Unavailable usage must not appear as zero percent")
         print("PASS: real rate-limit contract parsed as remaining percentage; absent usage stays unavailable")
+        _ = try await connection.request("test/start-error",["message":"fixture delivery rejected"])
         store.enqueue("nicht bestätigt", in: "test-old")
         let failedQueueID = store.queuedMessages["test-old"]!.first!.id
         let failedQueueSend = await store.deliverQueued(failedQueueID, in: "test-old", steer: false)
@@ -335,6 +421,7 @@ struct CodexChecks {
         let restoredFailedQueue = CodexStore(connection: CodexConnection(executableURL: fixture), defaults: defaults)
         precondition(restoredFailedQueue.queuedMessages["test-old"]?.first?.id == failedQueueID && restoredFailedQueue.queueNeedsReview(failedQueueID))
         store.removeQueued(failedQueueID, in: "test-old")
+        _ = try await connection.request("test/start-error")
         print("PASS: failed delivery remains visible and persisted with review flag; automatic resubmission suspended across store recreation")
         precondition(store.chats.first?.title == "Prüfchat äöü")
         precondition(!store.chats.contains { $0.statusLabel == "Läuft" })
@@ -416,7 +503,7 @@ struct CodexChecks {
         precondition(store.subagents["test-second-root"]?.count == 1 && store.subagents["test-third-root"]?.count == 1, "Simultaneous expansions must each load their own descendants")
         precondition(store.subagents["test-old"]?.count == 3 && store.subagents["test-old"]?.contains { $0.id == "test-unrelated" } == false)
         precondition(!store.recentChats.contains { $0.id == "test-outdated" })
-        precondition(!store.canSend, "Isolated server must not take over external chats")
+        precondition(store.canSend, "Stored chats must be resumable without the desktop app")
         await store.loadHistory(older: true)
         precondition(store.messages.map(\.text) == ["Ältere Antwort", "Neuere Antwort"])
         await store.loadHistory()

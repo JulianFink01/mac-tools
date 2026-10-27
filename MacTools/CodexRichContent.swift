@@ -1,6 +1,36 @@
 import SwiftUI
 import WebKit
 
+/// Keep one native scroll view in charge for the entire trackpad gesture,
+/// including zero-delta phase boundaries and the subsequent momentum stream.
+struct CodexWheelRouting {
+    enum Route { case native, primeOuter, outer }
+    private(set) var isForwarding = false
+    private var decided = false
+    private var primed = false
+    func needsHitTest(precise: Bool, phase: NSEvent.Phase, momentum: NSEvent.Phase) -> Bool {
+        !precise || (phase.isEmpty && momentum.isEmpty) || phase.contains(.began) || phase.contains(.mayBegin) || !decided
+    }
+    mutating func route(x: CGFloat, y: CGFloat, precise: Bool, phase: NSEvent.Phase, momentum: NSEvent.Phase, overWeb: Bool, modified: Bool) -> Route {
+        if !precise || (phase.isEmpty && momentum.isEmpty) {
+            return !modified && overWeb && abs(y) > abs(x) ? .outer : .native
+        }
+        if phase.contains(.began) || phase.contains(.mayBegin) { isForwarding = false; decided = false; primed = false }
+        if modified { isForwarding = false; decided = true; return .native }
+        if !decided, x != 0 || y != 0 { decided = true; isForwarding = overWeb && abs(y) > abs(x) }
+        let terminal = phase.contains(.cancelled) || momentum.contains(.ended) || momentum.contains(.cancelled)
+        if isForwarding {
+            if terminal { isForwarding = false; decided = false; primed = false }
+            return .outer
+        }
+        // A zero-delta begin carries no direction yet. Prime AppKit while also
+        // leaving that boundary available to WebKit for a horizontal gesture.
+        if !decided, overWeb, phase.contains(.began) { primed = true; return .primeOuter }
+        if primed, phase.contains(.ended) || phase.contains(.cancelled) { primed = false; return .primeOuter }
+        return .native
+    }
+}
+
 /// Keep fenced payloads opaque: Markdown must never consume TeX row separators or chart JSON.
 struct CodexContentBlock: Equatable {
     var language: String? = nil

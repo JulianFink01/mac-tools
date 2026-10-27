@@ -20,6 +20,8 @@ struct SecurityReport: Codable, Sendable {
     var limitedFiles: Int? = nil
     var emptyFiles: Int? = nil
     var removedPaths: [String]? = nil
+    var cloudFiles: Int? = nil
+    var missingFiles: Int? = nil
     private struct Parsed: Sendable {
         var findings: [String] = []
         var items: [SecurityFinding] = []
@@ -41,14 +43,15 @@ struct SecurityReport: Codable, Sendable {
         }
     }
     private let parsed: Parsed
-    private enum CodingKeys: String,CodingKey { case exitCode,output,cancelled,reusedFiles,excludedFiles,limitedFiles,emptyFiles,removedPaths }
-    init(exitCode:Int32,output:String,cancelled:Bool,reusedFiles:Int? = nil,excludedFiles:Int? = nil,limitedFiles:Int? = nil,emptyFiles:Int? = nil,removedPaths:[String]? = nil) {
+    private enum CodingKeys: String,CodingKey { case exitCode,output,cancelled,reusedFiles,excludedFiles,limitedFiles,emptyFiles,removedPaths,cloudFiles,missingFiles }
+    init(exitCode:Int32,output:String,cancelled:Bool,reusedFiles:Int? = nil,excludedFiles:Int? = nil,limitedFiles:Int? = nil,emptyFiles:Int? = nil,removedPaths:[String]? = nil,cloudFiles:Int? = nil,missingFiles:Int? = nil) {
         self.exitCode=exitCode;self.output=output;self.cancelled=cancelled;self.reusedFiles=reusedFiles;self.excludedFiles=excludedFiles;self.limitedFiles=limitedFiles;self.emptyFiles=emptyFiles;self.removedPaths=removedPaths
         parsed = Parsed(output)
+        self.cloudFiles = cloudFiles; self.missingFiles = missingFiles
     }
     init(from decoder:Decoder) throws {
         let c = try decoder.container(keyedBy:CodingKeys.self)
-        self.init(exitCode:try c.decode(Int32.self,forKey:.exitCode),output:try c.decode(String.self,forKey:.output),cancelled:try c.decode(Bool.self,forKey:.cancelled),reusedFiles:try c.decodeIfPresent(Int.self,forKey:.reusedFiles),excludedFiles:try c.decodeIfPresent(Int.self,forKey:.excludedFiles),limitedFiles:try c.decodeIfPresent(Int.self,forKey:.limitedFiles),emptyFiles:try c.decodeIfPresent(Int.self,forKey:.emptyFiles),removedPaths:try c.decodeIfPresent([String].self,forKey:.removedPaths))
+        self.init(exitCode:try c.decode(Int32.self,forKey:.exitCode),output:try c.decode(String.self,forKey:.output),cancelled:try c.decode(Bool.self,forKey:.cancelled),reusedFiles:try c.decodeIfPresent(Int.self,forKey:.reusedFiles),excludedFiles:try c.decodeIfPresent(Int.self,forKey:.excludedFiles),limitedFiles:try c.decodeIfPresent(Int.self,forKey:.limitedFiles),emptyFiles:try c.decodeIfPresent(Int.self,forKey:.emptyFiles),removedPaths:try c.decodeIfPresent([String].self,forKey:.removedPaths),cloudFiles:try c.decodeIfPresent(Int.self,forKey:.cloudFiles),missingFiles:try c.decodeIfPresent(Int.self,forKey:.missingFiles))
     }
     var findings: [String] { parsed.findings }
     var items: [SecurityFinding] {
@@ -58,14 +61,14 @@ struct SecurityReport: Codable, Sendable {
     var scannedFiles: Int { parsed.scannedFiles }
     var hasWarnings: Bool { (excludedFiles ?? 0) > 0 || (limitedFiles ?? 0) > 0 || parsed.warnings }
     var threatCount: Int { items.filter { !$0.isTest && !$0.isLimit }.count }
+    var hasCriticalIssue: Bool { !cancelled && exitCode != 0 && exitCode != 1 }
     var title: String {
         if cancelled { return "Prüfung abgebrochen" }
         if exitCode != 0 && exitCode != 1 { return "Prüfung konnte nicht abgeschlossen werden" }
         if threatCount > 0 { return "Verdächtige Dateien gefunden" }
-        if hasWarnings { return "Prüfung mit Einschränkungen" }
         if items.contains(where: \.isTest) { return "Testdatei erkannt – Schutzprüfung erfolgreich" }
         if !(removedPaths ?? []).isEmpty && items.isEmpty { return "Gemeldete Dateien entfernt" }
-        if exitCode == 1 { return "Die Engine meldet einen Fund – Details prüfen" }
+        if exitCode == 1 && !hasWarnings { return "Die Engine meldet einen Fund – Details prüfen" }
         if scannedFiles == 0 { return "Keine Dateien geprüft" }
         return "Keine Bedrohung im geprüften Bereich erkannt"
     }
@@ -73,7 +76,6 @@ struct SecurityReport: Codable, Sendable {
         if cancelled { return "Die Prüfung wurde gestoppt. Einige Dateien wurden noch nicht geprüft." }
         if exitCode != 0 && exitCode != 1 { return "Es liegt kein vollständiges Ergebnis vor. Aktualisiere die Schutzdaten und starte die Prüfung erneut." }
         if threatCount > 0 { return "Öffne diese Dateien vorerst nicht. Prüfe ihren Ursprung. Bei Unsicherheit kannst du sie in den Papierkorb verschieben." }
-        if hasWarnings { return "Ein Teil der Dateien konnte nicht vollständig geprüft werden. Das Ergebnis gilt nur für die tatsächlich geprüften Dateien." }
         if items.contains(where: \.isTest) { return "Die harmlose EICAR-Testdatei wurde erkannt. Sie dient zur Prüfung des Virenschutzes und ist kein echter Virus." }
         if !(removedPaths ?? []).isEmpty && items.isEmpty { return "Die ausgewählten Dateien wurden aus dem Scan-Ergebnis entfernt. Die übrigen Dateien benötigen dafür keinen neuen Scan." }
         if scannedFiles == 0 { return "Im gewählten Bereich wurden keine Dateien geprüft. Wähle einen anderen Ordner oder prüfe die Zugriffsrechte." }
@@ -83,6 +85,11 @@ struct SecurityReport: Codable, Sendable {
 
 /// Runs a local ClamAV process without a shell or any remove/move options.
 final class ClamAVRunner: @unchecked Sendable {
+    // Preserve finite resource budgets while allowing normal SDK archives and ML files.
+    // MaxFileSize is capped at 2 GiB inside ClamAV; larger files remain scan details.
+    static let scanArguments = ["--follow-dir-symlinks=0", "--follow-file-symlinks=0", "--alert-exceeds-max=yes",
+                                "--max-filesize=2G", "--max-scansize=4G", "--max-scantime=120000",
+                                "--max-files=100000", "--max-recursion=64", "--fail-if-cvd-older-than=7"]
     private let lock = NSLock()
     private var processes: [Process] = []
     private var cancelled = false
@@ -94,9 +101,50 @@ final class ClamAVRunner: @unchecked Sendable {
     }
 
     func run(executable: URL, root: URL, extraArguments: [String] = []) throws -> SecurityReport {
-        try runProcess(executable: executable, arguments: ["--recursive", "--infected", "--follow-dir-symlinks=0",
-                           "--follow-file-symlinks=0", "--cross-fs=no", "--alert-exceeds-max=yes",
-                           "--fail-if-cvd-older-than=7"] + extraArguments + ["--", root.path])
+        try runProcess(executable: executable, arguments: ["--recursive", "--infected", "--cross-fs=no"]
+                           + Self.scanArguments + extraArguments + ["--", root.path])
+    }
+
+    func recheckFindings(executable: URL?, paths: [String], extraArguments: [String] = []) throws -> CurrentSecurityFindings {
+        var files: [DiskFile] = [], pending: [String] = []
+        for path in Set(paths).sorted() {
+            var info = stat()
+            if lstat(path, &info) != 0 {
+                if errno != ENOENT && errno != ENOTDIR { pending.append(path) }
+                continue
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG, info.st_flags & UInt32(SF_DATALESS) == 0,
+                  info.st_size <= 2_147_483_648, let file = try? DiskFile.snapshot(at: URL(fileURLWithPath: path)) else {
+                pending.append(path); continue
+            }
+            files.append(file)
+        }
+        guard !files.isEmpty, let executable else {
+            return CurrentSecurityFindings(items: [], pendingPaths: pending + files.map(\.path), checkedAt: Date())
+        }
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-recheck-\(UUID()).txt")
+        defer { try? FileManager.default.removeItem(at: list) }
+        let safe = files.filter { !$0.path.contains("\n") }
+        pending += files.filter { $0.path.contains("\n") }.map(\.path)
+        guard !safe.isEmpty else { return CurrentSecurityFindings(items: [], pendingPaths: pending, checkedAt: Date()) }
+        try Data((safe.map(\.path).joined(separator: "\n") + "\n").utf8).write(to: list)
+        let result = try runProcess(executable: executable, arguments: Self.scanArguments + ["--infected", "--file-list=\(list.path)"] + extraArguments)
+        var current: [SecurityFinding] = []
+        for file in safe {
+            guard let after = try? DiskFile.snapshot(at: file.url), file.identity == after.identity,
+                  file.bytes == after.bytes, file.modified == after.modified else {
+                var info = stat()
+                if lstat(file.path, &info) == 0 || (errno != ENOENT && errno != ENOTDIR) { pending.append(file.path) }
+                continue
+            }
+            let matches = result.items.filter { $0.path == file.path }
+            current += matches.filter { !$0.isLimit }
+            if matches.contains(where: \.isLimit) || result.cancelled || result.hasCriticalIssue
+                || result.output.components(separatedBy: .newlines).contains(where: { $0.contains(file.path) && ($0.hasPrefix("WARNING:") || $0.hasSuffix(" ERROR")) }) {
+                pending.append(file.path)
+            }
+        }
+        return CurrentSecurityFindings(items: current, pendingPaths: pending, checkedAt: Date())
     }
 
     func runProcess(executable: URL, arguments: [String], progress: @Sendable (Int) -> Void = { _ in },
@@ -192,7 +240,9 @@ final class ClamAVRunner: @unchecked Sendable {
         }
         FileManager.default.createFile(atPath: list.path, contents: nil)
         let handle = try FileHandle(forWritingTo: list)
-        var buffer = Data(), planned = 0, excluded = inventory.omissions?.unavailable ?? 0, limited = 0, empty = 0
+        // Duplicate-hash failures are not antivirus failures. Classify the current
+        // file state once instead of inheriting the unrelated inventory counters.
+        var buffer = Data(), planned = 0, excluded = 0, cloud = 0, missing = 0, limited = 0, empty = 0
         do {
             for (index, file) in inventory.files.reversed().enumerated() {
                 if index % 4096 == 0 {
@@ -202,8 +252,12 @@ final class ClamAVRunner: @unchecked Sendable {
                 }
                 if reusedPaths.contains(file.path) { continue }
                 var info = stat()
-                guard !file.path.contains("\n"), lstat(file.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-                      info.st_flags & UInt32(SF_DATALESS) == 0 else { excluded += 1; continue }
+                if lstat(file.path, &info) != 0 {
+                    if errno == ENOENT || errno == ENOTDIR { missing += 1 } else { excluded += 1 }
+                    continue
+                }
+                guard !file.path.contains("\n"), (info.st_mode & S_IFMT) == S_IFREG else { excluded += 1; continue }
+                if info.st_flags & UInt32(SF_DATALESS) != 0 { cloud += 1; continue }
                 if info.st_size == 0 { empty += 1; continue }
                 // Mirror the explicit ClamAV per-file limit, reporting these files
                 // as unexamined rather than accepting its assumed-clean shortcut.
@@ -215,7 +269,7 @@ final class ClamAVRunner: @unchecked Sendable {
         } catch { try? handle.close(); throw error }
         progress("Virenprüfung · Engine starten · \(planned.formatted()) Dateien")
         fileProgress(0, planned)
-        if planned == 0 { return SecurityReport(exitCode: 0, output: "Scanned files: 0\n", cancelled: false, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty) }
+        if planned == 0 { return SecurityReport(exitCode: 0, output: "Scanned files: 0\n", cancelled: false, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing) }
         // A few long-lived workers load signatures once each. Thousands of
         // short-lived batches would repeatedly pay the engine startup cost.
         let capacity = min(max(1, maximumWorkers), max(1, ProcessInfo.processInfo.activeProcessorCount / 2),
@@ -254,8 +308,7 @@ final class ClamAVRunner: @unchecked Sendable {
         aggregate.publish()
         DispatchQueue.concurrentPerform(iterations: workerCount) { index in
             do {
-                let result = try self.runProcess(executable: executable, arguments: ["--verbose", "--follow-dir-symlinks=0", "--follow-file-symlinks=0",
-                    "--alert-exceeds-max=yes", "--max-filesize=2G", "--max-scansize=400M", "--max-scantime=30000", "--fail-if-cvd-older-than=7", "--file-list=\(lists[index].path)"] + extraArguments,
+                let result = try self.runProcess(executable: executable, arguments: ["--verbose", "--file-list=\(lists[index].path)"] + Self.scanArguments + extraArguments,
                     progress: { aggregate.update(worker: index, completed: $0) },
                     activity: { aggregate.activity(worker: index, name: $0) })
                 aggregate.finish(worker: index, report: result)
@@ -283,7 +336,7 @@ final class ClamAVRunner: @unchecked Sendable {
                 }
             }
         }
-        return SecurityReport(exitCode: report.exitCode, output: output, cancelled: report.cancelled, reusedFiles: accepted, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty)
+        return SecurityReport(exitCode: report.exitCode, output: output, cancelled: report.cancelled, reusedFiles: accepted, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing)
     }
 
     static func executable() -> URL? {
@@ -292,6 +345,13 @@ final class ClamAVRunner: @unchecked Sendable {
         return nil
     }
 
+}
+
+struct CurrentSecurityFindings: Sendable {
+    let items: [SecurityFinding]
+    let pendingPaths: [String]
+    let checkedAt: Date
+    var threatCount: Int { items.filter { !$0.isTest }.count }
 }
 
 /// Serializes cross-worker counters and retains failures instead of reporting a
@@ -369,6 +429,43 @@ final class SecurityScanStore: ObservableObject {
     private let reportURL: URL
     @Published private(set) var completedAt: Date?
     @Published private(set) var restoredReport = false
+    @Published private(set) var currentFindings: CurrentSecurityFindings?
+    @Published private(set) var isCheckingFindings = false
+    private var findingGeneration = UUID()
+    private var findingRunner: ClamAVRunner?
+
+    func criticalMessages(root: URL) -> [String] {
+        var messages: [String] = []
+        if let currentFindings, currentFindings.threatCount > 0 { messages.append("\(currentFindings.threatCount) aktuell vorhandene verdächtige Dateien. Details im Virenscan.") }
+        if executable == nil { messages.append("Die Virenschutz-Engine fehlt.") }
+        if let issue { messages.append(issue) }
+        if report?.hasCriticalIssue == true { messages.append("Die Virenprüfung ist fehlgeschlagen. Bitte erneut starten.") }
+        if let capacity = try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity,
+           capacity < 2_000_000_000 { messages.append("Kritisch wenig Speicher: \(diskBytes(Int64(capacity))) frei.") }
+        return messages
+    }
+
+    func refreshCurrentFindings(legacyPaths: [String] = []) async {
+        guard !isScanning, !isUpdating, !isCheckingFindings else { return }
+        isCheckingFindings = true
+        let generation = findingGeneration
+        let worker = ClamAVRunner(); findingRunner = worker
+        defer { isCheckingFindings = false; findingRunner = nil }
+        let paths = (report?.items.filter { !$0.isLimit }.map(\.path) ?? []) + legacyPaths
+        let executable = self.executable
+        do {
+            let result = try await Task.detached(priority: .utility) {
+                try worker.recheckFindings(executable: executable, paths: paths,
+                    extraArguments: ["--database=\(Self.databaseDirectory.path)"])
+            }.value
+            if findingGeneration == generation { currentFindings = result }
+        } catch {
+            if findingGeneration == generation {
+                currentFindings = CurrentSecurityFindings(items: [], pendingPaths: Array(Set(paths)).sorted(), checkedAt: Date())
+                technicalLog = error.localizedDescription
+            }
+        }
+    }
 
     init(directory: URL = VideoLibraryStore.appSupportDirectory) {
         reportURL = directory.appendingPathComponent("last-virus-scan.plist")
@@ -386,6 +483,15 @@ final class SecurityScanStore: ObservableObject {
     /// Keep the original scan output for history, but remove handled paths
     /// from the actionable list immediately and persist without running engines.
     func applyRemoved(paths: [String]) {
+        if let currentFindings {
+            let canonical = Set(paths.map(DiskScanner.canonicalPath))
+            func removed(_ path: String) -> Bool {
+                let path = DiskScanner.canonicalPath(path)
+                return canonical.contains { path == $0 || path.hasPrefix($0 + "/") }
+            }
+            self.currentFindings = CurrentSecurityFindings(items: currentFindings.items.filter { !removed($0.path) },
+                pendingPaths: currentFindings.pendingPaths.filter { !removed($0) }, checkedAt: currentFindings.checkedAt)
+        }
         guard !isScanning, var value = report, let root = scannedRoot, let date = completedAt else { return }
         let canonical = paths.map(DiskScanner.canonicalPath)
         let matching = Set(value.items.map(\.path).filter { candidate in let path = DiskScanner.canonicalPath(candidate); return canonical.contains { path == $0 || path.hasPrefix($0 + "/") } })
@@ -438,6 +544,7 @@ final class SecurityScanStore: ObservableObject {
         guard !isScanning, !isUpdating, let executable else { return false }
         isUpdating = true
         issue = nil
+        findingGeneration = UUID(); findingRunner?.cancel()
         technicalLog = ""
         status = "Virensignaturen werden aktualisiert …"
         let worker = ClamAVRunner()
@@ -478,6 +585,7 @@ final class SecurityScanStore: ObservableObject {
         }
         guard hasSignatures else { status = "Die Schutzdaten fehlen. Bitte zuerst aktualisieren."; issue = status; return }
         issue = nil
+        findingGeneration = UUID(); findingRunner?.cancel()
         technicalLog = ""
         isScanning = true
         progressFraction = nil
@@ -498,6 +606,7 @@ final class SecurityScanStore: ObservableObject {
                 }.value
                 if !value.cancelled {
                     report = value; scannedRoot = root; completedAt = Date(); restoredReport = false
+                    currentFindings = CurrentSecurityFindings(items: value.items.filter { !$0.isLimit }, pendingPaths: [], checkedAt: completedAt!)
                     let saved = SavedScan(report: value, root: root, date: completedAt!)
                     let url = reportURL
                     let saveError = await Task.detached(priority: .utility) { () -> String? in
@@ -523,5 +632,5 @@ final class SecurityScanStore: ObservableObject {
         }
     }
 
-    func cancel() { runner?.cancel(); status = isUpdating ? "Signaturupdate wird abgebrochen …" : "Virenscan wird abgebrochen …" }
+    func cancel() { runner?.cancel(); findingRunner?.cancel(); findingGeneration = UUID(); status = isUpdating ? "Signaturupdate wird abgebrochen …" : "Virenscan wird abgebrochen …" }
 }

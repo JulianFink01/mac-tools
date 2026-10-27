@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+F07600000000000000000003 = {isa = PBXBuildFile; fileRef = F07600000000000000000001; };
 F07400000000000000000003 = {isa = PBXBuildFile; fileRef = F07400000000000000000001; };
 F07400000000000000000004 = {isa = PBXBuildFile; fileRef = F07400000000000000000002; };
 F06900000000000000000003 = {isa = PBXBuildFile; fileRef = F06900000000000000000001; };
@@ -77,6 +78,7 @@ F06900000000000000000006 = {isa = PBXBuildFile; fileRef = F069000000000000000000
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+F07600000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageHistory.swift; sourceTree = "<group>"; };
 F07400000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRichContent.swift; sourceTree = "<group>"; };
 F07400000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/ChatRenderer; sourceTree = SOURCE_ROOT; };
 F06900000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalProcess.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@ F06900000000000000000001,
 F06900000000000000000002,
 F06900000000000000000005,
 F07400000000000000000001,
+F07600000000000000000001,
 F07400000000000000000002,
                 0A0000350000000000000001,
                 0A0000310000000000000001,
@@ -357,6 +360,7 @@ F06900000000000000000004,
                 0A00012B0000000000000001,
                 0A00012C0000000000000001,
 F07400000000000000000003,
+F07600000000000000000003,
                 0A0001290000000000000001,
 				0A0001010000000000000001 /* AspectMode.swift in Sources */,
 				0A0001020000000000000001 /* WallpaperVideo.swift in Sources */,

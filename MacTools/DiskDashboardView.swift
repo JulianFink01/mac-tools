@@ -99,18 +99,15 @@ struct DiskDashboardView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if tab == "Virenscan" { securityPanel }
                     else if tab == "Warnungen" {
-                        if !usesAutomaticPipeline {
-                            let warnings = (store.result?.warningSamples ?? []) + (security.issue.map { [$0] } ?? [])
-                            if warnings.isEmpty { Text("Keine gespeicherten Warnungen für dieses Laufwerk.") }
-                            ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in Text(warning).font(.callout).textSelection(.enabled) }
-                        } else {
-                        if automatic.warnings.isEmpty { Text("Keine gespeicherten Warnungen.") }
-                        ForEach(automatic.warnings) { warning in
-                            panel(warning.title) {
-                                Text(warning.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                                Text(warning.detail).font(.callout).textSelection(.enabled)
+                        panel("Aktuelle kritische Warnungen") {
+                            if security.isCheckingFindings || security.currentFindings == nil { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
+                            else if criticalMessages.isEmpty {
+                                Label("Keine kritischen Warnungen.", systemImage: "checkmark.circle")
                             }
-                        }
+                            ForEach(criticalMessages, id: \.self) { message in
+                                Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                            }
+                            Button("Zum Virenscan") { navigation.diskTab = "Virenscan" }
                         }
                     }
                     else if let result = store.result {
@@ -146,6 +143,9 @@ struct DiskDashboardView: View {
             .task(id:needsInventory) {
                 if needsInventory { await store.beginInventoryAccess(inventoryConsumer) }
                 else { store.endInventoryAccess(inventoryConsumer) }
+            }
+            .task(id: tab) {
+                if ["Virenscan", "Warnungen"].contains(tab) { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths) }
             }
             .onDisappear { selectedCopies = [:]; pendingTrash = []; store.endInventoryAccess(inventoryConsumer) }
             .onReceive(actions.removals) { _ in selectedCopies = selectedCopies.filter { !store.isRemoved($0.key) } }
@@ -205,7 +205,7 @@ struct DiskDashboardView: View {
         case "Dateien & Ordner": return "Entdecke große Dateien und finde heraus, welche Ordner den meisten Platz belegen."
         case "Duplikate": return "Vergleiche identische Dateien und bereinige die Kopien, die du nicht mehr brauchst."
         case "Virenscan": return "Prüfe deine Dateien auf bekannte Bedrohungen und sieh, ob etwas deine Aufmerksamkeit braucht."
-        case "Warnungen": return "Kritische Meldungen zu Speicher und Sicherheit."
+        case "Warnungen": return "Aktuelle kritische Probleme, die deine Aufmerksamkeit benötigen."
         default: return "Sieh, was deinen Speicher belegt, und behalte die Sicherheit deiner Dateien im Blick."
         }
     }
@@ -598,11 +598,14 @@ struct DiskDashboardView: View {
     }
 
     private var securityPanel: some View {
-        SecurityScanPanel(store: store, security: security) { files in
+        SecurityScanPanel(store: store, security: security, knownFindingPaths: knownFindingPaths) { files in
             pendingTrash = files
             confirmTrash = true
         }
     }
+
+    private var knownFindingPaths: [String] { usesAutomaticPipeline ? automatic.warnings.flatMap(\.findingPaths) : [] }
+    private var criticalMessages: [String] { security.criticalMessages(root: store.root) }
 
     private func coverage(_ result: DiskScanResult) -> some View {
         Group {

@@ -74,4 +74,5 @@ with tempfile.TemporaryDirectory(prefix='mactools-reopen-') as directory:
         second.request('turn/interrupt', dict(threadId=thread, turnId=recovered['id']))
     finally:
         second.close()
+    subprocess.run(['build/codex-checks','--standalone-home',str(home),thread],check=True,timeout=60)
     print('PASS: real installed CLI reproduces thread-not-found after process restart; canonical history remains readable; resume restores the same ID and accepts one follow-up; isolated CODEX_HOME and no external provider')

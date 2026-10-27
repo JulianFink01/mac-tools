@@ -9,6 +9,8 @@ struct CodexMenuStatsView: View {
     var openLimits: () -> Void = {}
     var newChat: (() -> Void)? = nil
     @State private var minutes = 10
+    @AppStorage("codexUsagePeriod") private var periodRaw = CodexUsagePeriod.week.rawValue
+    private var period: CodexUsagePeriod { CodexUsagePeriod(rawValue: periodRaw) ?? .week }
     private var history: [CodexActivityPoint] { store.activityHistory.filter { $0.date > Date().addingTimeInterval(Double(-minutes * 60)) } }
     private var running: [CodexChat] { store.liveChats.filter { $0.status == "active" } }
     var body: some View {
@@ -16,7 +18,7 @@ struct CodexMenuStatsView: View {
             HStack {
                 Label("Codex", systemImage: "bubble.left.and.bubble.right").font(.headline).foregroundStyle(.mint)
                 Spacer()
-                Button { Task { await store.loadUsage(force: true); await store.loadLocalStats(force: true) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Limits und Nutzungsstatistik aktualisieren").accessibilityLabel("Codex-Statistik aktualisieren")
+                Button { Task { await store.loadUsage(force: true); await store.loadLocalStats(force: true); await store.loadLocalUsageHistory(force: true) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Limits und Nutzungsstatistik aktualisieren").accessibilityLabel("Codex-Statistik aktualisieren")
                 if let newChat { Button(action: newChat) { Image(systemName: "square.and.pencil") }.buttonStyle(.plain).help("Neuer Chat in eigenem Fenster").accessibilityLabel("Neuen Chat in eigenem Fenster starten") }
                 Button(action: openSettings) { Image(systemName: "gearshape") }.buttonStyle(.plain).help("Menüleisten-Favoriten einstellen").accessibilityLabel("Menüleisten-Favoriten einstellen")
                 Button(action: openChats) { Image(systemName: "arrow.up.right.square") }.buttonStyle(.plain).help("Alle Codex-Chats öffnen").accessibilityLabel("Alle Codex-Chats öffnen")
@@ -62,6 +64,7 @@ struct CodexMenuStatsView: View {
             store.start()
             while !Task.isCancelled {
                 await store.loadLocalStats()
+                await store.loadLocalUsageHistory()
                 do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
             }
         }
@@ -74,7 +77,33 @@ struct CodexMenuStatsView: View {
                 if store.readingLocalStats { ProgressView().controlSize(.mini) }
                 else if let date = store.localStats?.updatedAt { Text(date, style: .time).font(.caption2).foregroundStyle(.secondary) }
             }
-            if let stats = store.localStats {
+            Picker("Nutzungszeitraum", selection: $periodRaw) {
+                ForEach(CodexUsagePeriod.allCases) { value in Text(value.label).tag(value.rawValue) }
+            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Nutzungszeitraum")
+            if period != .all {
+                if let history = store.localUsageHistory {
+                    let summary = history.summary(start: period.start(now: Date(), calendar: history.calendar))
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label("Erfasste Tokens", systemImage: "number").font(.caption).foregroundStyle(.secondary)
+                            Text(CodexUsageFormat.tokens(summary.totals.total)).font(.title2.weight(.semibold)).monospacedDigit().help(summary.totals.total.formatted() + " Tokens")
+                        }
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label("Chats mit Tokens", systemImage: "bubble.left.and.bubble.right").font(.caption).foregroundStyle(.secondary)
+                            Text(summary.chats.formatted()).font(.title3.weight(.semibold)).monospacedDigit()
+                        }
+                    }
+                    Text("MODELLE · TOKENS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(Array(summary.models.prefix(5))) { model in
+                        HStack { Text(model.name).lineLimit(1); Spacer(); Text(CodexUsageFormat.tokens(model.tokens)).monospacedDigit().foregroundStyle(.secondary) }.font(.caption)
+                    }
+                    if summary.chats == 0 { Text("Keine Tokenereignisse in diesem Zeitraum erfasst.").font(.caption).foregroundStyle(.secondary) }
+                    Text(history.coverageText).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    HStack { if store.readingUsageHistory { ProgressView().controlSize(.small) }; Text(store.localUsageHistoryError ?? "Tokenverlauf wird einmalig erfasst …").font(.caption).foregroundStyle(.secondary) }
+                }
+            } else if let stats = store.localStats {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 5) {
                         Label("Tokens gesamt", systemImage: "number").font(.caption).foregroundStyle(.secondary)
@@ -100,6 +129,9 @@ struct CodexMenuStatsView: View {
                 }
                 Text("Gesamter lokaler Verlauf inkl. Archiv und Subagenten. Modell pro Chat: zuletzt gespeichert. Tokenzähler inkl. Cache und wiederholter Eingaben; keine Abrechnungswerte.").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if store.localStatsError == nil { Text("Nutzungsstatistik wird geladen …").font(.caption).foregroundStyle(.secondary) }
+            if store.readingUsageHistory && store.localUsageHistory != nil { HStack { ProgressView().controlSize(.mini); Text("Verlauf wird aktualisiert …").font(.caption2).foregroundStyle(.secondary) } }
+            if let error = store.localUsageHistoryError, store.localUsageHistory != nil { Text("Letzter Stand · " + error).font(.caption).foregroundStyle(.orange) }
+            Button(action: openLimits) { Label("Details & Monatsvergleich", systemImage: "chart.bar.xaxis") }.buttonStyle(.plain).font(.caption).foregroundStyle(.mint).accessibilityLabel("Nutzungsdetails und Monatsvergleich öffnen")
             if let error = store.localStatsError { Text((store.localStats == nil ? "" : "Letzter Stand · ") + error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
         }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
     }

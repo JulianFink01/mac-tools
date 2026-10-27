@@ -92,6 +92,7 @@ struct CodexChatsView: View {
     @State private var activityExpansion = CodexActivityExpansionState()
     @State private var loadingOlder = false
     @State private var visibleMessageID: String?
+    @State private var pendingScroll: DispatchWorkItem?
     @StateObject private var transcriptScroll = CodexTranscriptScrollState()
     @State private var showScheduled = false
     @State private var showGoal = false
@@ -315,7 +316,9 @@ struct CodexChatsView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
+                // Message heights include images and rich content. Lazy estimates
+                // changed the document height during scrolling and moved the reader.
+                VStack(alignment: .leading, spacing: 22) {
                     if store.hasOlderNativeHistory || store.olderCursor != nil { Button(loadingOlder ? "Ältere Nachrichten werden geladen …" : "Ältere Nachrichten laden") { loadOlderHistory(proxy) }.disabled(loadingOlder).font(.caption).buttonStyle(.plain).foregroundStyle(.secondary) }
                     if store.loadingHistory && store.messages.isEmpty { ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 40) }
                     if store.messages.isEmpty && !store.loadingHistory {
@@ -333,7 +336,13 @@ struct CodexChatsView: View {
                                 if message.role == "Du" { Spacer(minLength: 40) }
                                 VStack(alignment: .leading, spacing: 10) {
                                     ForEach(message.images) { image in CodexChatImage(source: image.source) }
-                                    if !message.text.isEmpty { CodexMessageBody(text: message.text).equatable() }
+                                    if message.kind == "context" {
+                                        DisclosureGroup {
+                                            CodexRichContent(source:message.text).padding(.top,10)
+                                        } label: {
+                                            Label(message.role,systemImage:"text.alignleft").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                                        }.padding(14).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:12))
+                                    } else if !message.text.isEmpty { CodexMessageBody(text: message.text).equatable() }
                                 }
                                     .padding(message.role == "Du" ? 14 : 0)
                                     .background(message.role == "Du" ? Color.primary.opacity(0.065) : Color.clear)
@@ -349,7 +358,7 @@ struct CodexChatsView: View {
                     .background(CodexTranscriptScrollObserver(state:transcriptScroll,
                         canLoadOlder: !loadingOlder && !store.loadingHistory && (store.hasOlderNativeHistory || store.olderCursor != nil),
                         historyRevision: "\(store.selectedID ?? "new"):\(store.messages.first?.id ?? "empty"):\(store.olderCursor ?? "")",
-                        scrolled:{ atBottom in followLive = atBottom },reachedTop:{ loadOlderHistory(proxy) }))
+                        scrolled:{ atBottom in if followLive != atBottom { followLive = atBottom } },reachedTop:{ loadOlderHistory(proxy) }))
                     .background(GeometryReader { geometry in Color.clear.onChange(of: geometry.size.height) { _ in scrollToLatest(proxy) } })
             }.modifier(CodexInitialScrollAnchor()).modifier(CodexTranscriptPosition(id: $visibleMessageID))
                 .background(GeometryReader { geometry in
@@ -373,11 +382,12 @@ struct CodexChatsView: View {
                 .onChange(of: store.selectedID) { _ in beginTranscript(proxy) }
                 .onChange(of: store.presentationRevision) { _ in beginTranscript(proxy) }
                 .onChange(of: followLive) { value in if value { transcriptScroll.userPaused = false; scrollToLatest(proxy) } }
+                .onDisappear { pendingScroll?.cancel(); pendingScroll = nil }
         }
     }
     @discardableResult private func loadOlderHistory(_ proxy: ScrollViewProxy) -> Bool {
         guard !loadingOlder, !store.loadingHistory, store.hasOlderNativeHistory || store.olderCursor != nil else { return false }
-        let id = store.selectedID, anchor = blocks.first(where: { !$0.activity })?.id ?? blocks.first?.id
+        let id = store.selectedID, anchor = visibleMessageID ?? blocks.first(where: { !$0.activity })?.id ?? blocks.first?.id
         loadingOlder = true; transcriptScroll.userPaused = true; followLive = false
         Task {
             if store.hasOlderNativeHistory { await store.loadOlderNativeHistory() } else { await store.loadHistory(older:true) }
@@ -391,12 +401,21 @@ struct CodexChatsView: View {
         return true
     }
     private func beginTranscript(_ proxy: ScrollViewProxy) {
-        transcriptScroll.userPaused = false; transcriptScroll.automaticUntil = Date().addingTimeInterval(2); followLive = true; scrollToLatest(proxy)
+        pendingScroll?.cancel(); pendingScroll = nil
+        transcriptScroll.userPaused = false; transcriptScroll.automaticUntil = Date().addingTimeInterval(0.35); followLive = true; scrollToLatest(proxy)
     }
     private func scrollToLatest(_ proxy: ScrollViewProxy) {
-        guard followLive, !transcriptScroll.userPaused else { return }
-        transcriptScroll.automaticUntil = max(transcriptScroll.automaticUntil, Date().addingTimeInterval(0.35))
-        DispatchQueue.main.async { if followLive && !transcriptScroll.userPaused { proxy.scrollTo("end", anchor: .bottom) } }
+        guard followLive, !transcriptScroll.userPaused, pendingScroll == nil else { return }
+        let work = DispatchWorkItem {
+            pendingScroll = nil
+            guard followLive, !transcriptScroll.userPaused else { return }
+            transcriptScroll.automaticUntil = Date().addingTimeInterval(0.15)
+            proxy.scrollTo("end", anchor: .bottom)
+        }
+        pendingScroll = work
+        // Text deltas, measured height and viewport updates often arrive together.
+        // One scroll per frame batch avoids repeated full-document layout passes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
     private struct Block: Identifiable { let id: String; let activity: Bool; var messages: [CodexMessage] }
     private var blocks: [Block] {
@@ -474,6 +493,7 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
         private var lastViewportHeight: CGFloat = 0
         private var lastOrigin: CGFloat = 0
         private var lastProgress: Double = 0
+        private var wheelRouting = CodexWheelRouting()
         private var scrollingUp = false
         private var draggingScrollbar = false
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleAttachment() }
@@ -484,27 +504,46 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             guard window != nil, let scroll = enclosingScrollView else { return }
             if monitor == nil {
                 monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown, .leftMouseUp]) { [weak self] event in
-                    guard let self, event.window === self.window, let scroll = self.observedScroll else { return event }
-                    let inside = scroll.bounds.contains(scroll.convert(event.locationInWindow, from:nil))
+                    guard let self, let window = self.window,
+                          event.window === window || (event.window == nil && window.isKeyWindow), let scroll = self.observedScroll else { return event }
+                    let location = event.window == nil ? window.convertPoint(fromScreen: NSEvent.mouseLocation) : event.locationInWindow
+                    let inside = scroll.bounds.contains(scroll.convert(location, from:nil))
                     if event.type == .leftMouseDown {
-                        guard let bar = scroll.verticalScroller, bar.bounds.contains(bar.convert(event.locationInWindow,from:nil)) else { return event }
+                        guard let bar = scroll.verticalScroller, bar.bounds.contains(bar.convert(location,from:nil)) else { return event }
                         self.draggingScrollbar = true; self.scrollingUp = false
-                        self.state?.userPaused = true; self.scrolled?(false)
+                        self.setPaused(true)
                         return event
                     }
                     if event.type == .leftMouseUp {
                         guard self.draggingScrollbar else { return event }
                         self.draggingScrollbar = false
-                    } else if !inside { return event }
+                    } else if !inside && !(event.type == .scrollWheel && self.wheelRouting.isForwarding) { return event }
                     self.scrollEndRead?.cancel()
                     if event.type == .scrollWheel, event.scrollingDeltaY > 0 {
-                        self.scrollingUp = true; self.state?.userPaused = true; self.scrolled?(false)
+                        self.scrollingUp = true; self.setPaused(true)
                     } else if event.type == .leftMouseUp || event.scrollingDeltaY < 0 {
                         self.scrollingUp = false
                     }
                     let work = DispatchWorkItem { [weak self] in self?.readPosition(userInitiated:true) }
                     self.scrollEndRead = work
                     DispatchQueue.main.asyncAfter(deadline:.now()+0.15,execute:work)
+                    if event.type == .scrollWheel {
+                        var overWeb = false
+                        if self.wheelRouting.needsHitTest(precise:event.hasPreciseScrollingDeltas,phase:event.phase,momentum:event.momentumPhase), let root = self.window?.contentView {
+                            let point = root.superview?.convert(location,from:nil) ?? location
+                            var hit = root.hitTest(point), containsWeb = false
+                            while let view = hit, view !== scroll {
+                                containsWeb = containsWeb || view is WKWebView
+                                hit = view.superview
+                            }
+                            overWeb = hit === scroll && containsWeb
+                        }
+                        let route = self.wheelRouting.route(x:event.scrollingDeltaX,y:event.scrollingDeltaY,precise:event.hasPreciseScrollingDeltas,
+                            phase:event.phase,momentum:event.momentumPhase,overWeb:overWeb,
+                            modified:!event.modifierFlags.intersection([.shift,.control,.option,.command]).isEmpty)
+                        if route != .native { scroll.scrollWheel(with:event) }
+                        if route == .outer { return nil }
+                    }
                     return event
                 }
             }
@@ -514,6 +553,11 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             let clip = scroll.contentView; clip.postsBoundsChangedNotifications = true
             lastDocumentHeight = scroll.documentView?.bounds.height ?? 0; lastViewportHeight = clip.bounds.height; lastOrigin = clip.bounds.minY; lastProgress = scroll.verticalScroller?.doubleValue ?? 0
             boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in self?.schedulePositionRead() }
+        }
+        private func setPaused(_ paused: Bool) {
+            guard let state, state.userPaused != paused else { return }
+            state.userPaused = paused
+            scrolled?(!paused)
         }
         private func schedulePositionRead() {
             guard positionRead == nil else { return }
@@ -534,8 +578,7 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             // A real upward viewport movement must still leave live-follow mode.
             if movedUp, let state, Date() > state.automaticUntil {
                 scrollingUp = true
-                state.userPaused = true
-                DispatchQueue.main.async { [weak self] in self?.scrolled?(false) }
+                setPaused(true)
             }
             if !changedGeometry, moved, !movedUp, let state, Date() > state.automaticUntil { scrollingUp = false }
             let distance = progress.map { CGFloat(1 - $0) * max(0, document.bounds.height - visible.height) } ?? (document.isFlipped ? document.bounds.maxY - visible.maxY : visible.minY - document.bounds.minY)
@@ -557,9 +600,10 @@ private struct CodexTranscriptScrollObserver: NSViewRepresentable {
             }
             // Geometry changes from prepending, expanding a command or loading
             // an image are not a user returning to the live end of the chat.
-            guard userInitiated || draggingScrollbar || (state?.userPaused == true && !changedGeometry && moved) else { return }
-            state?.userPaused = !atBottom
-            DispatchQueue.main.async { [weak self] in self?.scrolled?(atBottom) }
+            // Layout corrections can move the clip view even after its height has
+            // settled. Only an actual user gesture may turn live following back on.
+            guard userInitiated || draggingScrollbar else { return }
+            setPaused(!atBottom)
         }
         deinit { positionRead?.cancel(); scrollEndRead?.cancel(); if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
     }

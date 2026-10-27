@@ -17,12 +17,49 @@ struct SecurityChecks {
         let clean = try executable("clean", body: "printf 'Scanned files: 1\\nInfected files: 0\\n'\nexit 0\n")
         let cleanReport = try ClamAVRunner().run(executable: clean, root: root)
         precondition(cleanReport.exitCode == 0 && cleanReport.findings.isEmpty)
+        // Expected scan scope and engine resource budgets are details, not critical warnings.
+        let limitedReport = SecurityReport(exitCode: 1, output: "/fixture/archive: Heuristics.Limits.Exceeded.MaxFiles FOUND\nScanned files: 4\n", cancelled: false, excludedFiles: 12, limitedFiles: 2)
+        precondition(limitedReport.threatCount == 0 && !limitedReport.hasCriticalIssue && limitedReport.hasWarnings)
+        for incomplete in [
+            SecurityReport(exitCode: 0, output: "Scanned files: 4\n", cancelled: false, excludedFiles: 3),
+            SecurityReport(exitCode: 0, output: "WARNING: unreadable file\nScanned files: 4\n", cancelled: false),
+            SecurityReport(exitCode: 0, output: "Scanned files: 0\n", cancelled: false),
+            SecurityReport(exitCode: 0, output: "Scanned files: 4\n", cancelled: true),
+            SecurityReport(exitCode: 1, output: "Scanned files: 4\n", cancelled: false)
+        ] {
+            precondition(!incomplete.hasCriticalIssue)
+        }
+        let removedReport = SecurityReport(exitCode: 1, output: "/fixture/old: Own-Test-Signature FOUND\nScanned files: 4\n", cancelled: false, excludedFiles: 3, removedPaths: ["/fixture/old"])
+        precondition(removedReport.items.isEmpty && !removedReport.hasCriticalIssue)
+        let legacyWarning = try JSONDecoder().decode(ScanWarning.self, from: Data("{\"id\":\"00000000-0000-0000-0000-000000000001\",\"date\":0,\"title\":\"Verdächtige Dateien gefunden\",\"detail\":\"/fixture/old\"}".utf8))
+        precondition(legacyWarning.isSecurityFinding && legacyWarning.findingPaths == ["/fixture/old"])
+        let roundtrip = try PropertyListDecoder().decode(SecurityReport.self, from: PropertyListEncoder().encode(limitedReport))
+        precondition(roundtrip.items.map(\.signature) == limitedReport.items.map(\.signature) && roundtrip.excludedFiles == 12)
+        precondition(!limitedReport.hasCriticalIssue && !cleanReport.hasCriticalIssue)
+        print("PASS: scan details are not critical warnings; legacy paths and saved-report roundtrip")
         let found = try executable("found", body: "printf '/fixture/test: Eicar-Test-Signature FOUND\\n'\nexit 1\n")
         let foundReport = try ClamAVRunner().run(executable: found, root: root)
         precondition(foundReport.findings.count == 1 && foundReport.exitCode == 1)
         let failure = try executable("failure", body: "printf 'ERROR: database unavailable\\n' >&2\nexit 2\n")
         let failureReport = try ClamAVRunner().run(executable: failure, root: root)
         precondition(failureReport.exitCode == 2 && failureReport.hasWarnings)
+        precondition(failureReport.hasCriticalIssue)
+        let suspect = root.appendingPathComponent("suspect.txt"), safe = root.appendingPathComponent("safe.txt")
+        try Data("suspect fixture".utf8).write(to: suspect)
+        try Data("clean fixture".utf8).write(to: safe)
+        let link = root.appendingPathComponent("symlink")
+        try manager.createSymbolicLink(at: link, withDestinationURL: suspect)
+        let recheck = try executable("recheck", body: "for arg in \"$@\"; do case \"$arg\" in --file-list=*) list=${arg#--file-list=};; esac; done\nwhile IFS= read -r path; do case \"$path\" in */suspect.txt) printf '%s: Fixture.Threat FOUND\\n' \"$path\";; esac; done < \"$list\"\nprintf 'Scanned files: 2\\n'\nexit 1\n")
+        let missingPath = root.appendingPathComponent("gone").path
+        let now = try ClamAVRunner().recheckFindings(executable: recheck, paths: [suspect.path, safe.path, missingPath, link.path, suspect.path])
+        precondition(now.items.map(\.path) == [suspect.path] && now.pendingPaths == [link.path] && now.threatCount == 1)
+        let absent = try ClamAVRunner().recheckFindings(executable: nil, paths: [missingPath])
+        precondition(absent.items.isEmpty && absent.pendingPaths.isEmpty, "Missing legacy findings must disappear without requiring an engine")
+        let noEngine = try ClamAVRunner().recheckFindings(executable: nil, paths: [suspect.path])
+        precondition(noEngine.items.isEmpty && noEngine.pendingPaths == [suspect.path], "Present unexamined files must not be declared clean")
+        let recheckFailure = try ClamAVRunner().recheckFindings(executable: failure, paths: [suspect.path])
+        precondition(recheckFailure.items.isEmpty && recheckFailure.pendingPaths == [suspect.path])
+        print("PASS: current findings rechecked; removed/clean paths disappear; symlinks, engine failure and unavailable engine remain pending")
         let verbose = try executable("verbose", body: "dd if=/dev/zero bs=1024 count=1200 2>/dev/null\nprintf 'Scanned files: 1\\n'\n")
         let verboseReport = try ClamAVRunner().run(executable: verbose, root: root)
         precondition(verboseReport.hasWarnings && verboseReport.output.utf8.count < 1_049_000)
@@ -64,6 +101,13 @@ struct SecurityChecks {
         let inventoryReport = try ClamAVRunner().runInventory(executable: args, inventory: inventory, proofURL: cache)
         precondition(inventoryReport.output.contains("--file-list="))
         precondition(!inventoryReport.output.contains("--recursive"))
+        precondition(inventoryReport.output.contains("--max-scansize=4G") && inventoryReport.output.contains("--max-scantime=120000"))
+        precondition(inventoryReport.cloudFiles == 0 && inventoryReport.missingFiles == 0)
+        var disappearedFiles = inventory.files
+        disappearedFiles.append(DiskFile(path: missingPath, bytes: 1, allocatedBytes: 1, modified: nil, identity: "missing"))
+        let staleInventory = DiskScanResult(root: inventory.root, completedAt: inventory.completedAt, files: disappearedFiles, folders: [], categories: [], duplicates: [], skipped: 1234, warningSamples: [], reachedLimit: false, duplicateSearch: false, volumeTotal: 0, volumeFree: 0, bytes: 0, allocatedBytes: 0, redundantBytes: 0, omissions: ScanOmissions(unavailable: 1234, changing: 0, cloudOnly: 0))
+        let classified = try ClamAVRunner().runInventory(executable: args, inventory: staleInventory, proofURL: root.appendingPathComponent("missing.sqlite"))
+        precondition(classified.missingFiles == 1 && classified.excludedFiles == 0, "Duplicate hash failures and disappeared files are not antivirus access failures")
         let batchRoot = root.appendingPathComponent("batches")
         try manager.createDirectory(at: batchRoot, withIntermediateDirectories: true)
         var batchFiles: [DiskFile] = []

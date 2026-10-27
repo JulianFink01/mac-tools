@@ -49,14 +49,14 @@ final class CodexConnection {
         return candidates.compactMap { $0 }.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
     }
 
-    func connect() async throws {
+    func connect(standalone: Bool = false) async throws {
         guard process == nil else { return }
         guard let executable = executableOverride ?? Self.executable() else {
             throw CodexFailure(message: "Codex CLI nicht gefunden. Installiere Codex oder wähle die ausführbare Datei.")
         }
         let proc = Process(), stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()
         let home = environmentOverrides["CODEX_HOME"] ?? ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"
-        sharedServer = executableOverride == nil && FileManager.default.fileExists(atPath: home + "/app-server-control/app-server-control.sock")
+        sharedServer = !standalone && executableOverride == nil && FileManager.default.fileExists(atPath: home + "/app-server-control/app-server-control.sock")
         proc.executableURL = executable
         proc.arguments = sharedServer ? ["app-server", "proxy"] : ["app-server"]
         proc.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
@@ -103,7 +103,12 @@ final class CodexConnection {
         do {
             _ = try await request("initialize", ["clientInfo": ["name": clientName, "title": "MacTools", "version": "0.2.3"], "capabilities": ["experimentalApi": true]])
             try write(["method": "initialized", "params": [:]])
-        } catch { stop(); throw error }
+        } catch {
+            let wasProxy = sharedServer
+            stop()
+            // A leftover control socket must not make the desktop app a requirement.
+            if wasProxy { try await connect(standalone:true) } else { throw error }
+        }
     }
 
     func request(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {

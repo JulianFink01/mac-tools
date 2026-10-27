@@ -5,6 +5,7 @@ import Darwin
 struct SecurityScanPanel: View {
     @ObservedObject var store: DiskScanStore
     @ObservedObject var security: SecurityScanStore
+    var knownFindingPaths: [String] = []
     let requestTrash: ([DiskFile]) -> Void
     @ObservedObject private var actions = FileActions.shared
     @State private var selected: [String: DiskFile] = [:]
@@ -12,15 +13,25 @@ struct SecurityScanPanel: View {
     @State private var page = 0
     @State private var showLimits = false
     private var running: Bool { security.isScanning || security.isUpdating }
-    private var findings: [SecurityFinding] { security.report?.items.filter { !$0.isLimit } ?? [] }
+    private var findings: [SecurityFinding] { security.currentFindings?.items ?? [] }
+    private var threatCount: Int { security.currentFindings?.threatCount ?? 0 }
+    private var checking: Bool { security.isCheckingFindings || security.currentFindings == nil }
+    private var headline: String {
+        if running { return "Deine Dateien werden geprüft" }
+        if checking { return "Fundstellen werden geprüft" }
+        if threatCount > 0 { return "Verdächtige Dateien gefunden" }
+        if security.report?.hasCriticalIssue == true { return "Virenprüfung fehlgeschlagen" }
+        if !(security.currentFindings?.pendingPaths.isEmpty ?? true) { return "Fundstatus noch offen" }
+        return security.report == nil ? "Noch keine Virenprüfung" : "Keine offenen Bedrohungsfunde"
+    }
     private var filtered: [SecurityFinding] {
         findings.filter { query.isEmpty || $0.path.localizedCaseInsensitiveContains(query) || $0.signature.localizedCaseInsensitiveContains(query) }
     }
     private var tint: Color {
         guard let report = security.report else { return .cyan }
-        return report.threatCount > 0 ? .red : report.hasWarnings || report.exitCode > 1 ? .orange : .green
+        return threatCount > 0 ? .red : report.hasCriticalIssue ? .orange : .cyan
     }
-    private var heroIcon: String { (security.report?.threatCount ?? 0) > 0 ? "exclamationmark.shield.fill" : "shield.lefthalf.filled" }
+    private var heroIcon: String { threatCount > 0 ? "exclamationmark.shield.fill" : "shield.lefthalf.filled" }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 16) {
@@ -30,13 +41,16 @@ struct SecurityScanPanel: View {
                         .frame(width: 58, height: 58).background((running ? Color.cyan : tint).opacity(0.12))
                         .clipShape(RoundedRectangle(cornerRadius: 15))
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(running ? "Deine Dateien werden geprüft" : security.report?.title ?? "Virenschutz für deinen Mac")
+                        Text(headline)
                             .font(.title2.bold())
-                        Text(running ? security.status : security.report?.explanation ?? "Prüfe deine Dateien mit lokalen ClamAV-Signaturen.")
+                        Text(running ? security.status : threatCount > 0 ? "Die unten aufgeführten Dateien wurden aktuell erneut geprüft." : "Bekannte Fundstellen werden beim Öffnen erneut geprüft. Nicht mehr vorhandene Dateien werden nicht angezeigt.")
                             .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         if let date = security.completedAt, !running {
-                            Text("Letzte Prüfung · " + date.formatted(date: .abbreviated, time: .shortened))
+                            Text("Letzte Inhaltsprüfung des Scanbereichs · " + date.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let date = security.currentFindings?.checkedAt {
+                            Text("Fundstatus aktualisiert · " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     Spacer(minLength: 12)
@@ -55,6 +69,8 @@ struct SecurityScanPanel: View {
                 HStack {
                     Label(security.executable == nil ? "Engine fehlt" : "Lokal auf deinem Mac", systemImage: "desktopcomputer")
                     Spacer()
+                    Button("Fundstatus aktualisieren") { Task { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths) } }
+                        .disabled(running || security.isCheckingFindings)
                     Button("Schutzdaten aktualisieren") { Task { await security.updateSignatures() } }.disabled(running)
                 }.font(.caption).foregroundStyle(.secondary)
                 Text(security.signatureStatus).font(.caption).foregroundStyle(.secondary)
@@ -63,20 +79,23 @@ struct SecurityScanPanel: View {
 
             if let report = security.report {
                 HStack(spacing: 12) {
-                    metric("Geprüfte Dateien", value: (report.scannedFiles + (report.reusedFiles ?? 0)).formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
-                    metric("Verdächtige Dateien", value: report.threatCount.formatted(), icon: "exclamationmark.shield", color: report.threatCount > 0 ? .red : .green)
+                    metric("Dateien im letzten Scan", value: (report.scannedFiles + (report.reusedFiles ?? 0)).formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
+                    metric("Aktuelle Funde", value: security.isCheckingFindings ? "…" : threatCount.formatted(), icon: "exclamationmark.shield", color: threatCount > 0 ? .red : .cyan)
                     metric("Testdateien", value: findings.filter(\.isTest).count.formatted(), icon: "checkmark.seal", color: .blue)
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("Funde & Testdateien").font(.headline)
+                        Text("Aktuelle Funde & Testdateien").font(.headline)
                         Text("\(findings.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         Spacer()
                         TextField("Name, Pfad oder Erkennung suchen", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 280)
                     }
                     if findings.isEmpty {
-                        Label((report.removedPaths ?? []).isEmpty ? "Keine Funde in den geprüften Dateien." : "Die gemeldeten Dateien wurden entfernt.", systemImage: "checkmark.circle")
-                            .foregroundStyle(.secondary).padding(.vertical, 12)
+                        if checking { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
+                        else {
+                            Label((security.currentFindings?.pendingPaths.isEmpty ?? true) ? "Keine offenen Funde." : "Keine bestätigten Funde. Einzelne Fundstellen sind noch zu prüfen.", systemImage: "checkmark.circle")
+                                .foregroundStyle(.secondary).padding(.vertical, 12)
+                        }
                     } else {
                         HStack {
                             Button("Diese Seite auswählen") {
@@ -101,21 +120,15 @@ struct SecurityScanPanel: View {
                             Button { page += 1 } label: { Image(systemName: "chevron.right") }.disabled((page + 1) * 20 >= filtered.count).help("Nächste Seite")
                         }
                     }
-                    if let removed = report.removedPaths, !removed.isEmpty {
-                        Label("\(removed.count.formatted()) gemeldete Dateien aus der Liste entfernt · kein neuer Scan", systemImage: "trash.circle")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if security.restoredReport {
-                        Text("Gespeichertes Ergebnis. Vor dem Verschieben werden die aktuellen Dateimetadaten kontrolliert; die Virenprüfung wird dafür nicht erneut gestartet.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                 }.padding(18).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 16))
 
-                DisclosureGroup("Nicht vollständig geprüft · Hinweise", isExpanded: $showLimits) {
+                DisclosureGroup("Scan-Details", isExpanded: $showLimits) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Prüflimits sind keine bestätigten Virusfunde.").font(.callout).foregroundStyle(.secondary)
+                        Text("Hier siehst du den Prüfumfang. Cloud-Platzhalter und technische Grenzen sind keine Bedrohungsfunde.").font(.callout).foregroundStyle(.secondary)
                         if let limited = report.limitedFiles, limited > 0 { Text("\(limited.formatted()) Dateien über 2 GiB nicht inhaltlich geprüft.") }
-                        if let excluded = report.excludedFiles, excluded > 0 { Text("\(excluded.formatted()) Cloud-, veränderte oder nicht erreichbare Dateien ausgelassen.") }
+                        if let cloud = report.cloudFiles, cloud > 0 { Text("\(cloud.formatted()) iCloud-Platzhalter ohne lokalen Inhalt · kein automatischer Download.") }
+                        if let missing = report.missingFiles, missing > 0 { Text("\(missing.formatted()) inzwischen entfernte Dateien.") }
+                        if let excluded = report.excludedFiles, excluded > 0 { Text("\(excluded.formatted()) nicht lokal verfügbare oder nicht erreichbare Dateien im letzten Scan.") }
                         if let empty = report.emptyFiles, empty > 0 { Text("\(empty.formatted()) leere Dateien ohne prüfbaren Inhalt.") }
                         ForEach(Array(report.items.filter(\.isLimit).prefix(20))) { findingRow($0) }
                         if report.items.filter(\.isLimit).count > 20 { Text("Weitere Prüflimits stehen im technischen Bericht.").foregroundStyle(.secondary) }
@@ -124,6 +137,14 @@ struct SecurityScanPanel: View {
                 DisclosureGroup("Technischer Bericht") {
                     Text("Engine-Status: \(report.exitCode)\n" + report.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }.font(.caption)
+            }
+            if let current = security.currentFindings, !current.pendingPaths.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    DisclosureGroup("\(current.pendingPaths.count) Fundstellen aktuell nicht prüfbar") {
+                        Text("Diese Dateien konnten jetzt nicht erneut geprüft werden. Sie werden nicht als bestätigte Funde gezählt.").font(.callout).foregroundStyle(.secondary)
+                        ForEach(current.pendingPaths, id: \.self) { path in Text(path).font(.caption).textSelection(.enabled) }
+                    }
+                }.padding(18).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 16))
             }
             if !security.technicalLog.isEmpty {
                 DisclosureGroup("Details zum Prüfproblem") {
