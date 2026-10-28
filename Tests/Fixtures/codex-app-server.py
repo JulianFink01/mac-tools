@@ -80,7 +80,7 @@ for line in sys.stdin:
     elif method == 'initialized':
         initialized = True
     elif 'method' not in m and m['id']==959:
-        assert m['result']=={'action':'accept','content':{}}
+        assert m['result']=={'action':'accept','content':{},'_meta':{'persist':'session'}}
         elicitation_accepted=True
         event('serverRequest/resolved',{'threadId':'test-old','requestId':959})
     elif 'method' not in m:
@@ -91,7 +91,7 @@ for line in sys.stdin:
         emit({'id': m['id'], 'error': {'code': -1, 'message': 'handshake missing'}})
     elif method == 'test/elicitation':
         reply(m,{})
-        emit({'id':959,'method':'mcpServer/elicitation/request','params':{'threadId':'test-old','serverName':'cua_repl','mode':'form','message':'Allow Computer Use to use MacToolsPreview58?','requestedSchema':{'type':'object','properties':{}}}})
+        emit({'id':959,'method':'mcpServer/elicitation/request','params':{'threadId':'test-old','serverName':'cua_repl','mode':'form','message':'Allow Computer Use to use MacToolsPreview58?','_meta':{'persist':['session','always']},'requestedSchema':{'type':'object','properties':{}}}})
     elif method == 'test/elicitation-state':
         reply(m,{'accepted':elicitation_accepted})
     elif method == 'test/async-question':

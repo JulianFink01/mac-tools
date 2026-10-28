@@ -300,7 +300,8 @@ enum CodexChatMenuAppearance {
         button.contentTintColor = nil
         let symbol = waiting ? "exclamationmark.bubble.fill" : active ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Angehefteter Codex-Chat")
-        button.image?.isTemplate = true
+        button.image?.isTemplate = !waiting
+        if waiting { button.image = button.image?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemBlue])) }
     }
 }
 
@@ -384,12 +385,12 @@ final class CodexStatusLabel: NSView {
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
-        let title = NSAttributedString(string: titleText, attributes: [.font: NSFont.systemFont(ofSize: 8, weight: .medium), .foregroundColor: waiting > 0 ? NSColor.systemOrange : NSColor.labelColor])
+        let title = NSAttributedString(string: titleText, attributes: [.font: NSFont.systemFont(ofSize: 8, weight: .medium), .foregroundColor: waiting > 0 ? NSColor.systemBlue : NSColor.labelColor])
         let value = NSAttributedString(string: valueText ?? String(running), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor])
         let top = (bounds.height - title.size().height - value.size().height + 1) / 2
         title.draw(at: NSPoint(x: (bounds.width - title.size().width) / 2, y: top))
         value.draw(at: NSPoint(x: (bounds.width - value.size().width) / 2, y: top + title.size().height - 1))
-        if waiting > 0 { NSColor.systemOrange.setFill(); NSBezierPath(ovalIn: NSRect(x: bounds.width - 7, y: top + title.size().height + 3, width: 4, height: 4)).fill() }
+        if waiting > 0 { NSColor.systemBlue.setFill(); NSBezierPath(ovalIn: NSRect(x: bounds.width - 7, y: top + title.size().height + 3, width: 4, height: 4)).fill() }
     }
 }
 

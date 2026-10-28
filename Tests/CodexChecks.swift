@@ -107,7 +107,21 @@ struct CodexChecks {
         precondition(elicitation(["mode":"url"]).elicitationAcceptance == nil)
         precondition(elicitation(["mode":"openai/userVerification"]).elicitationAcceptance == nil)
         precondition(elicitation(["mode":"form","requestedSchema":["type":"object","properties":["password":["type":"string"]]]]).elicitationAcceptance == nil)
-        print("PASS: unambiguous MCP approval forms accept the exact schema; verification, URL and unsupported input remain native")
+        var scopedForm = emptyForm
+        scopedForm["_meta"] = ["persist":["session","always"], "codex_approval_kind":"mcp_tool_call"]
+        precondition(elicitation(scopedForm).elicitationAcceptance?["_meta"] as? [String:String] == ["persist":"session"])
+        precondition(elicitation(scopedForm).persistentElicitationAcceptance?["_meta"] as? [String:String] == ["persist":"always"])
+        scopedForm["_meta"] = ["persist":["session"]]
+        precondition(elicitation(scopedForm).persistentElicitationAcceptance == nil)
+        precondition(elicitation(emptyForm).elicitationAcceptance?["_meta"] == nil)
+        scopedForm["_meta"] = ["persist":["session"],"codex_approval_kind":"browser_auth"]
+        precondition(elicitation(scopedForm).elicitationAcceptance == nil)
+        for flag in ["waitingOnApproval","waitingOnUserInput","waitingOnElicitation"] {
+            var chat = CodexChat(["id":"waiting", "status":["type":"active", "activeFlags":[flag]]])!
+            precondition(chat.needsInput)
+            chat.flags = []; precondition(!chat.needsInput)
+        }
+        print("PASS: MCP consent preserves offered session scope; permanent scope is explicit and only available when offered; browser auth remains native; all input flags detected")
         let longState: [String:Any] = ["turns":[["id":"history-window", "items":(0..<2000).map { ["id":"window-\($0)","type":"agentMessage","text":"Message \($0)"] }]]]
         let tail = CodexTranscript.window(longState,limit:80)
         precondition(tail.messages.count == 80 && tail.hasMore && tail.messages.first?.id == "window-1920" && tail.messages.last?.id == "window-1999")
@@ -523,10 +537,12 @@ struct CodexChecks {
         precondition(files.first?.path == "/tmp/test.txt")
         print("PASS: all-chat history vs 24h popup, model catalog, installed app/plugin/skill mentions and scoped file search")
         store.newChat(); store.workingDirectory = "/tmp"
-        let accepted = await store.send("Testnachricht")
+        store.drafts["new"] = "  Testnachricht\n"
+        let accepted = await store.send("  Testnachricht\n")
         precondition(accepted)
         for _ in 0..<100 where store.prompts.isEmpty { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(store.selectedID == "test-new")
+        precondition(store.drafts["new"] == "" && store.drafts["test-new"] == "", "Confirmed first send clears the source and migrated drafts before composer restoration")
         precondition(store.messages.map(\.text) == ["Testnachricht", "Hallo äöü!"])
         precondition(defaults.stringArray(forKey: "macToolsCodexThreads") == ["test-new"])
         store.enqueue("Steuerung", in: "test-new")

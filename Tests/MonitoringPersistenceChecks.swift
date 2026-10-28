@@ -81,6 +81,10 @@ struct MonitoringPersistenceChecks {
         firstWindowDefaults.removePersistentDomain(forName: firstWindowDomain); secondWindowDefaults.removePersistentDomain(forName: secondWindowDomain)
         print("PASS: independent native chat windows, selections, drafts, queues, folders and per-window floating levels; main selection unchanged")
         let nativeItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        CodexChatMenuAppearance.apply(to: nativeItem.button!, active: true, waiting: true)
+        precondition(nativeItem.button?.image?.isTemplate == false, "Waiting chat uses a colored blue symbol")
+        CodexChatMenuAppearance.apply(to: nativeItem.button!, active: true, waiting: false)
+        precondition(nativeItem.button?.image?.isTemplate == true, "Working chat restores the native menu template")
         var nativeRemoved = 0
         let visibility = StatusItemVisibility(item: nativeItem, name: "MacTools.QA." + UUID().uuidString, userRemoval: { true }) {
             nativeRemoved += 1; pinSettings.setPinned(.containers, enabled: false)

@@ -227,6 +227,15 @@ struct CodexChatComposer: View {
         if mentionQuery != nil, let first = candidates.first { insert(first); return }
         guard enabled else { return }
         let oldKey = key, sent = text, refs = references
-        Task { if await store.submit(sent, references: refs) { store.drafts[oldKey] = ""; store.references[oldKey] = []; if text == sent { text = ""; references = []; persist() } } }
+        Task {
+            guard await store.submit(sent, references: refs) else { return }
+            if store.drafts[oldKey] == sent, (store.references[oldKey] ?? []) == refs {
+                store.drafts[oldKey] = ""; store.references[oldKey] = []
+            }
+            if (key == oldKey || oldKey == "new" && store.drafts[key] == ""),
+               text.trimmingCharacters(in: .whitespacesAndNewlines) == sent.trimmingCharacters(in: .whitespacesAndNewlines), references == refs {
+                text = ""; references = []; persist()
+            }
+        }
     }
 }

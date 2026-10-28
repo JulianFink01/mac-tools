@@ -50,7 +50,7 @@ struct CodexMenuStatsView: View {
                         HStack {
                         Button { openChats(); Task { await store.select(chat.id) } } label: {
                             HStack(alignment: .top, spacing: 9) {
-                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(store.waitingChatIDs.contains(chat.id) ? Color.orange : .green).lineLimit(2); Text(store.folderName(store.folder(for: chat)) + " · " + (store.waitingChatIDs.contains(chat.id) ? "Wartet auf deine Eingabe" : chat.statusLabel)).font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(store.waitingChatIDs.contains(chat.id) ? Color.blue : .green).lineLimit(2); Text(store.folderName(store.folder(for: chat)) + " · " + (store.waitingChatIDs.contains(chat.id) ? "Wartet auf deine Eingabe" : chat.statusLabel)).font(.caption).foregroundStyle(.secondary) }
                                 Spacer(minLength: 0)
                             }.padding(.vertical, 7).contentShape(Rectangle())
                         }.buttonStyle(.plain)

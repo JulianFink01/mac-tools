@@ -145,7 +145,7 @@ final class WindowPinController: ObservableObject {
         case .external(let pid, let capturedWindow, let requestedID):
             guard hasAccessibilityPermission else { fail("Für die Fensterwahl und Bedienung fehlt der Fensterzugriff. Öffne die Tool-Einstellungen."); return }
             guard hasScreenCapturePermission else {
-                fail("Für die eindeutige Fensterliste fehlt noch die macOS-Bildschirmfreigabe. Für die interaktive Fensteransicht wird Bildschirmaufnahme benötigt."); return
+                fail("Für die eindeutige Fensterzuordnung fehlt noch die macOS-Bildschirmfreigabe."); return
             }
             guard !isStarting else { status = "Das gewählte Fenster wird gerade angeheftet …"; return }
             guard let window = capturedWindow ?? focusedWindow(pid: pid), let frame = Self.frame(window) else {
@@ -186,29 +186,19 @@ final class WindowPinController: ObservableObject {
                         self.fail("Das gewählte Originalfenster ist nicht mehr sichtbar."); return
                     }
                     let id = UUID()
-                    var isLive = false
                     do {
                         try OriginalWindowLevel.set(Int32(CGWindowLevelForKey(.floatingWindow)), window: source.windowID)
-                        self.targets[id] = .original(pid, window, source.windowID, previous)
-                        self.nativeLevelStatus = "Originalfenster: schwebende Ebene bestätigt."
                     } catch {
+                        // Never create a virtual display as a fallback: registering one can
+                        // disrupt the physical desktop and overload WindowServer.
                         self.nativeLevelStatus = error.localizedDescription
-                        let panel = LivePinnedWindow(source: source, axWindow: window)
-                        panel.onClose = { [weak self] in self?.unpin(id: id) }
-                        panel.onInputIssue = { [weak self] issue in self?.fail(issue) }
-                        panel.onError = { [weak self] error in self?.unpin(id: id); self?.fail("Fensteransicht beendet: " + error) }
-                        self.targets[id] = .live(pid, window, panel)
-                        do { try await panel.start()
-                            #if DEBUG
-                            Self.debugEvent("live-started pid=\(pid) window=\(source.windowID)")
-                            #endif
-                        }
-                        catch { self.targets.removeValue(forKey: id); panel.stop(); throw error }
-                        guard self.startGeneration == generation, !Task.isCancelled else { self.targets.removeValue(forKey: id); panel.stop(); return }
-                        isLive = true
+                        self.fail("macOS erlaubt das Anheften dieses Originalfensters nicht. Die virtuelle Live-Ansicht ist wegen Bildschirmstörungen deaktiviert.")
+                        return
                     }
+                    self.targets[id] = .original(pid, window, source.windowID, previous)
+                    self.nativeLevelStatus = "Originalfenster: schwebende Ebene bestätigt."
                     self.pinnedWindows.append(PinnedWindowSummary(id: id, title: title.isEmpty ? "Fenster" : title,
-                        application: source.owningApplication?.applicationName ?? "App", isLive: isLive))
+                        application: source.owningApplication?.applicationName ?? "App", isLive: false))
                     self.refreshPinnedState()
                 } catch is CancellationError { }
                   catch { self.fail("Originalfenster konnte nicht angeheftet werden: " + error.localizedDescription) }
@@ -563,7 +553,7 @@ struct WindowToolView: View {
                         step("2", "Vorn halten", "Wähle im MacTools-Menü „Aktuelles Fenster vorn halten“ oder drücke \(pin.shortcutTitle).")
                         step("3", "Wieder lösen", "Am selben Originalfenster erneut auslösen oder hier in der Liste „Lösen“ wählen.")
                     }
-                    Text("Wenn macOS das Originalfenster nicht schweben lässt, öffnet MacTools eine interaktive Live-Ansicht. Klicks, Mausbewegungen, Scrollen und Tasten werden ausschließlich an das ausgewählte Fenster weitergegeben. Das Original liegt währenddessen auf einer eigenen virtuellen Fensterfläche und erhält native Maus- und Tastatureingaben. Der sichtbare Cursor bleibt in der Live-Ansicht. Mit Escape verlässt du die Bedienung. Schließen, Lösen oder Original öffnen bringt das Original zurück auf deinen Bildschirm.")
+                    Text("MacTools heftet das Originalfenster nur an, wenn macOS die schwebende Fensterebene bestätigt. Verweigert macOS dies, wird eine Fehlermeldung angezeigt. Die virtuelle Live-Ansicht ist wegen möglicher Bildschirmstörungen deaktiviert.")
                         .font(.caption).foregroundStyle(.secondary)
                     if !pin.nativeLevelStatus.isEmpty { DisclosureGroup("Technische Details") { Text(pin.nativeLevelStatus).font(.caption).textSelection(.enabled) } }
                 }

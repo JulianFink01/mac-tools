@@ -26,7 +26,7 @@ struct CodexChatRow: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Button { openChat(chat.id) } label: { Text(chat.title).font(.system(size: cardHeight > 80 ? 14 : 13, weight: .semibold)).lineLimit(cardHeight > 80 ? 3 : 2).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }.buttonStyle(.plain).help(chat.title)
                         HStack(spacing: 0) {
-                            Text(chat.statusLabel).font(.system(size: 10)).foregroundStyle(chat.status == "active" ? Color.blue : .secondary)
+                            Text(chat.statusLabel).font(.system(size: 10)).foregroundStyle(store.waitingChatIDs.contains(chat.id) || chat.needsInput ? Color.blue : chat.status == "active" ? Color.green : .secondary)
                             Spacer(minLength: 0)
                             CodexChatActions(chatID: chat.id, title: chat.title, open: { openChat(chat.id) })
                             if offset == min(rows, chats.count - index * rows) - 1 && pages > 1 { CompactCardPager(index: index, count: pages, item: "Codex-Seite", compact: true, previous: { page = max(0, index - 1); selectedChatID = chats[page * rows].id }, next: { page = min(pages - 1, index + 1); selectedChatID = chats[page * rows].id }) }
@@ -38,7 +38,7 @@ struct CodexChatRow: View {
                     Button { openChat(chat.id) } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(chat.title).font(.callout.weight(.semibold)).lineLimit(1)
-                            Text(chat.statusLabel).font(.caption).foregroundStyle(chat.status == "active" ? Color.blue : .secondary).lineLimit(1)
+                            Text(chat.statusLabel).font(.caption).foregroundStyle(store.waitingChatIDs.contains(chat.id) || chat.needsInput ? Color.blue : chat.status == "active" ? Color.green : .secondary).lineLimit(1)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
                     VStack(spacing: 2) {
@@ -215,7 +215,7 @@ struct CodexChatsView: View {
                                 Button { Task { await store.select(chat.id) } } label: {
                                     HStack(spacing: 8) {
                                         VStack(alignment: .leading, spacing: 5) {
-                                            Text(chat.title).font(.system(size: 12, weight: store.selectedID == chat.id ? .semibold : .regular)).foregroundStyle(chat.status == "active" ? Color.green : Color.secondary).lineLimit(2)
+                                            Text(chat.title).font(.system(size: 12, weight: store.selectedID == chat.id ? .semibold : .regular)).foregroundStyle(store.waitingChatIDs.contains(chat.id) || chat.needsInput ? Color.blue : chat.status == "active" ? Color.green : Color.secondary).lineLimit(2)
                                             Text(URL(fileURLWithPath: chat.cwd).lastPathComponent).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                                         }
                                         Spacer(minLength: 0)
@@ -239,7 +239,7 @@ struct CodexChatsView: View {
                                         HStack(spacing: 7) {
                                             Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).foregroundStyle(.tertiary)
                                             VStack(alignment: .leading, spacing: 3) {
-                                                Text(agent.agentName ?? agent.title).font(.system(size: 11)).foregroundStyle(agent.status == "active" ? Color.green : Color.secondary).lineLimit(1)
+                                                Text(agent.agentName ?? agent.title).font(.system(size: 11)).foregroundStyle(store.waitingChatIDs.contains(agent.id) || agent.needsInput ? Color.blue : agent.status == "active" ? Color.green : Color.secondary).lineLimit(1)
                                                 if let role = agent.agentRole { Text(role).font(.system(size: 9)).foregroundStyle(.secondary) }
                                             }
                                             Spacer(minLength: 0)
@@ -280,7 +280,9 @@ struct CodexChatsView: View {
                         Image(systemName: "folder").font(.system(size: 10))
                         Text(store.selected.flatMap { store.project(for: $0)?.name } ?? URL(fileURLWithPath: store.selected?.cwd ?? store.workingDirectory).lastPathComponent).font(.system(size: 11))
                     }
-                    if store.selected?.status == "active" { Text("· arbeitet").font(.system(size: 11)).foregroundStyle(.green) }
+                    if let id = store.selectedID, store.waitingChatIDs.contains(id) {
+                        Text("· wartet auf dich").font(.system(size: 11)).foregroundStyle(.blue)
+                    } else if store.selected?.status == "active" { Text("· arbeitet").font(.system(size: 11)).foregroundStyle(.green) }
                 }.foregroundStyle(.secondary)
             }
             Spacer()
@@ -809,7 +811,10 @@ private struct CodexPromptView: View {
                     HStack {
                         Button("Ablehnen") { store.answer(prompt, result: ["action": "decline", "content": NSNull()]) }.disabled(!store.canAnswer(prompt))
                         if let acceptance = prompt.elicitationAcceptance {
-                            Button("Annehmen") { store.answer(prompt,result:acceptance) }.buttonStyle(.borderedProminent).tint(.mint).disabled(!store.canAnswer(prompt))
+                            Button(prompt.elicitationPersistence.contains("session") ? "Für diese Sitzung erlauben" : "Annehmen") { store.answer(prompt,result:acceptance) }.buttonStyle(.borderedProminent).tint(.mint).disabled(!store.canAnswer(prompt))
+                        }
+                        if let persistent = prompt.persistentElicitationAcceptance {
+                            Button("Dauerhaft erlauben") { store.answer(prompt, result: persistent) }.disabled(!store.canAnswer(prompt))
                         }
                     }
                 } else if prompt.method == "item/permissions/requestApproval" {

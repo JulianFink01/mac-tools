@@ -159,9 +159,11 @@ struct CodexChat: Identifiable, Equatable {
         let state = json["status"] as? [String: Any] ?? [:]
         status = state["type"] as? String ?? "notLoaded"; flags = state["activeFlags"] as? [String] ?? []
     }
+    var needsInput: Bool { flags.contains { ["waitingOnApproval", "waitingOnUserInput", "waitingOnElicitation"].contains($0) } }
     var statusLabel: String {
         if flags.contains("waitingOnApproval") { return "Freigabe nötig" }
         if flags.contains("waitingOnUserInput") { return "Antwort nötig" }
+        if flags.contains("waitingOnElicitation") { return "Eingabe nötig" }
         switch status {
         case "active": return "Läuft"
         case "idle": return "Bereit"
@@ -376,7 +378,18 @@ struct CodexPrompt: Identifiable {
             content[key] = true
         }
         guard Set(schema["required"] as? [String] ?? []).isSubset(of:Set(properties.keys)) else { return nil }
-        return ["action":"accept","content":content]
+        var response: [String:Any] = ["action":"accept","content":content]
+        if elicitationPersistence.contains("session") { response["_meta"] = ["persist":"session"] }
+        return response
+    }
+    var elicitationPersistence: [String] {
+        let offered = (params["_meta"] as? [String:Any])?["persist"] as? [String] ?? []
+        return offered.filter { ["session", "always"].contains($0) }
+    }
+    var persistentElicitationAcceptance: [String:Any]? {
+        guard elicitationPersistence.contains("always"), var response = elicitationAcceptance else { return nil }
+        response["_meta"] = ["persist":"always"]
+        return response
     }
 }
 
@@ -432,7 +445,7 @@ final class CodexStore: ObservableObject {
     }
     @Published private(set) var activityHistory: [CodexActivityPoint] = []
     var waitingChatIDs: Set<String> {
-        var ids = Set(liveChats.filter { $0.flags.contains(where: { ["waitingOnApproval","waitingOnUserInput","waitingOnElicitation"].contains($0) }) }.map(\.id))
+        var ids = Set(liveChats.filter { $0.needsInput }.map(\.id))
         ids.formUnion(prompts.map(\.threadID))
         if !asyncQuestions.isEmpty,let selectedID { ids.insert(selectedID) }
         return ids
@@ -1158,6 +1171,7 @@ final class CodexStore: ObservableObject {
         }
     }
     func send(_ text: String, references: [CodexReference] = []) async -> Bool {
+        let submittedText = text
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !references.isEmpty), canSend else { return false }
         sending = true; error = nil; defer { sending = false }
@@ -1173,6 +1187,7 @@ final class CodexStore: ObservableObject {
             guard selectedID == sendingThreadID else { throw CodexFailure(message:"Der Chat wurde während der Übergabe gewechselt. Der Entwurf bleibt erhalten.") }
             if let id = selectedID, desktop.hasOwner(id) {
                 try await desktop.send(text, to: id, active: currentTurn != nil || selected?.status == "active", inputs: input, options: turnParameters)
+                clearAcceptedDraft(in: id, submittedText: submittedText, references: references)
                 if options[id] == option { pendingOptionIDs.remove(id) }; activity = "An Codex übergeben"; return true
             }
             let id: String
@@ -1198,6 +1213,10 @@ final class CodexStore: ObservableObject {
                 guard let turn = result["turn"] as? [String: Any], let confirmedID = turn["id"] as? String, !confirmedID.isEmpty else { throw CodexFailure(message: "Codex hat den Start nicht bestätigt. Der Entwurf bleibt erhalten; bitte vor erneutem Senden den Chat prüfen.") }
                 if let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String, !completedTurns.contains(turnID), turn["status"] as? String == "inProgress" { activeTurns[id] = turnID }
             }
+            // Clear both the original draft and its migrated chat copy as soon as
+            // delivery is confirmed, before refresh can recreate the composer.
+            clearAcceptedDraft(in: id, submittedText: submittedText, references: references)
+            if key != id { clearAcceptedDraft(in: key, submittedText: submittedText, references: references) }
             publishManagedChats()
             await assignPendingProject(id)
             if activeTurns[id] != nil { activity = "Codex arbeitet …" }; await refresh()
@@ -1208,6 +1227,13 @@ final class CodexStore: ObservableObject {
             if let echoThread, let echoKey { discardEcho(echoKey,in:echoThread) }
             self.error = error.localizedDescription; return false
         }
+    }
+    private func clearAcceptedDraft(in key: String, submittedText: String, references submittedReferences: [CodexReference]) {
+        let draft = drafts[key] ?? ""
+        guard (draft == submittedText || draft == submittedText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (references[key] ?? []) == submittedReferences else { return }
+        drafts[key] = ""
+        references[key] = []
     }
     func interrupt() async {
         guard let id = selectedID, let turnID = activeTurns[id] else { return }

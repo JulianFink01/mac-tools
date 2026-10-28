@@ -36,6 +36,11 @@ for part in ('programs', 'libraries'):
     source = expanded / f'clamav-{VERSION}.macos.universal-{part}.pkg/Payload/usr/local/clamav'
     for folder in ('bin', 'lib', 'etc/certs'):
         if (source / folder).exists():
+            # copytree cannot replace existing symlinks on repeated local builds.
+            for link in (source / folder).rglob('*'):
+                target = DEST / folder / link.relative_to(source / folder)
+                if link.is_symlink() and target.is_symlink():
+                    target.unlink()
             shutil.copytree(source / folder, DEST / folder, symlinks=True, dirs_exist_ok=True)
 # Only ship the scan, database update, and verification tools.
 for path in (DEST / 'bin').iterdir():
