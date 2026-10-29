@@ -345,7 +345,9 @@ struct CodexChecks {
         let composerSend = Task { await composerStore.submit("Sofort", references: [attachment]) }
         for _ in 0..<100 where !composerStore.sending { try await Task.sleep(nanoseconds: 1_000_000) }
         precondition(composerStore.sending)
+        precondition(composerStore.drafts["test-new"] == "" && composerStore.references["test-new"] == [], "Sending must clear the input before the slow receipt arrives")
         composerStore.drafts["test-new"] = "Neuer Entwurf während der Übergabe"
+        composerStore.references["test-new"] = [attachment]
         let composerAccepted = await composerSend.value
         precondition(composerAccepted && composerStore.drafts["test-new"] == "Neuer Entwurf während der Übergabe" && composerStore.references["test-new"] == [attachment])
         composerStore.drafts["test-new"] = "Sofort"
@@ -357,8 +359,10 @@ struct CodexChecks {
         composerStore.references["test-new"] = [attachment]
         let composerRejected = await composerStore.send("Fehlgeschlagene Nachricht", references: [attachment])
         precondition(!composerRejected && composerStore.drafts["test-new"] == "Fehlgeschlagene Nachricht" && composerStore.references["test-new"] == [attachment])
+        let composerSubmitRejected = await composerStore.submit("Fehlgeschlagene Nachricht", references: [attachment])
+        precondition(!composerSubmitRejected && composerStore.drafts["test-new"] == "Fehlgeschlagene Nachricht" && composerStore.references["test-new"] == [attachment], "A rejected send must restore its draft")
         composerStore.stop()
-        print("PASS: confirmed composer clears persisted text and attachments; edits during delivery and rejected drafts survive")
+        print("PASS: composer clears before receipt; edits during delivery and rejected drafts survive")
         let projectDomain = "MacTools.project-picker." + UUID().uuidString
         let projectDefaults = UserDefaults(suiteName: projectDomain)!
         let projectConnection = CodexConnection(executableURL: fixture)

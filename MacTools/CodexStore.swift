@@ -1059,12 +1059,23 @@ final class CodexStore: ObservableObject {
     }
     func submit(_ text: String, references: [CodexReference] = []) async -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !references.isEmpty else { return false }
+        let sourceKey = selectedID ?? "new"
         if let id = selectedID, currentTurn != nil || selected?.status == "active" || !canSend {
             enqueue(text, references: references, in: id)
             clearAcceptedDraft(in: id, submittedText: text, references: references)
             return true
         }
-        return await send(text, references: references)
+        // The composer must clear on the send action, not after a slow IPC receipt.
+        let cleared = clearAcceptedDraft(in: sourceKey, submittedText: text, references: references)
+        let accepted = await send(text, references: references, clearDraftOnAcceptance: !cleared)
+        if !accepted && cleared {
+            let restoreKey = sourceKey == "new" ? (selectedID ?? sourceKey) : sourceKey
+            if (drafts[restoreKey] ?? "").isEmpty && (self.references[restoreKey] ?? []).isEmpty {
+                drafts[restoreKey] = text
+                self.references[restoreKey] = references
+            }
+        }
+        return accepted
     }
     func enqueue(_ text: String, references: [CodexReference] = [], in id: String) {
         let message = CodexQueuedMessage(id: UUID(), text: text, references: references, options: options[id] ?? CodexTurnOptions(), cwd: selected?.id == id ? selected!.cwd : workingDirectory, modelHint: currentModel ?? models.first?.id ?? "")
@@ -1172,7 +1183,7 @@ final class CodexStore: ObservableObject {
             return try await connection.request("turn/start", parameters)
         }
     }
-    func send(_ text: String, references: [CodexReference] = []) async -> Bool {
+    func send(_ text: String, references: [CodexReference] = [], clearDraftOnAcceptance: Bool = true) async -> Bool {
         let submittedText = text
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !references.isEmpty), canSend else { return false }
@@ -1189,7 +1200,7 @@ final class CodexStore: ObservableObject {
             guard selectedID == sendingThreadID else { throw CodexFailure(message:"Der Chat wurde während der Übergabe gewechselt. Der Entwurf bleibt erhalten.") }
             if let id = selectedID, desktop.hasOwner(id) {
                 try await desktop.send(text, to: id, active: currentTurn != nil || selected?.status == "active", inputs: input, options: turnParameters)
-                clearAcceptedDraft(in: id, submittedText: submittedText, references: references)
+                if clearDraftOnAcceptance { clearAcceptedDraft(in: id, submittedText: submittedText, references: references) }
                 if options[id] == option { pendingOptionIDs.remove(id) }; activity = "An Codex übergeben"; return true
             }
             let id: String
@@ -1202,7 +1213,8 @@ final class CodexStore: ObservableObject {
                 id = chat.id; managedThreads.insert(id); resumedThreads.insert(id); selectedID = id
                 if let project = newChatProjectID, chat.projectID != project { pendingProjects[id] = project }
                 chats.removeAll { $0.id == id }; chats.insert(chat, at: 0)
-                options[id] = option; drafts[id] = text; self.references[id] = references
+                options[id] = option
+                if clearDraftOnAcceptance { drafts[id] = text; self.references[id] = references }
                 echoThread = id; echoKey = beginEcho(id,input:input)
             }
             try await resumeManagedThread(id)
@@ -1217,8 +1229,10 @@ final class CodexStore: ObservableObject {
             }
             // Clear both the original draft and its migrated chat copy as soon as
             // delivery is confirmed, before refresh can recreate the composer.
-            clearAcceptedDraft(in: id, submittedText: submittedText, references: references)
-            if key != id { clearAcceptedDraft(in: key, submittedText: submittedText, references: references) }
+            if clearDraftOnAcceptance {
+                clearAcceptedDraft(in: id, submittedText: submittedText, references: references)
+                if key != id { clearAcceptedDraft(in: key, submittedText: submittedText, references: references) }
+            }
             publishManagedChats()
             await assignPendingProject(id)
             if activeTurns[id] != nil { activity = "Codex arbeitet …" }; await refresh()
@@ -1230,12 +1244,13 @@ final class CodexStore: ObservableObject {
             self.error = error.localizedDescription; return false
         }
     }
-    private func clearAcceptedDraft(in key: String, submittedText: String, references submittedReferences: [CodexReference]) {
+    @discardableResult private func clearAcceptedDraft(in key: String, submittedText: String, references submittedReferences: [CodexReference]) -> Bool {
         let draft = drafts[key] ?? ""
         guard (draft == submittedText || draft == submittedText.trimmingCharacters(in: .whitespacesAndNewlines)),
-              (references[key] ?? []) == submittedReferences else { return }
+              (references[key] ?? []) == submittedReferences else { return false }
         drafts[key] = ""
         references[key] = []
+        return true
     }
     func interrupt() async {
         guard let id = selectedID, let turnID = activeTurns[id] else { return }
