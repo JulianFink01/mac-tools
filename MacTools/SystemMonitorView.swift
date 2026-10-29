@@ -198,7 +198,6 @@ struct SystemMonitorView: View {
                 HStack(alignment: .top, spacing: 16) {
                     memoryCard
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Datenträger").font(.title3.bold())
                         ForEach(reading?.volumes ?? []) { MonitorVolumeCard(volume: $0) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }

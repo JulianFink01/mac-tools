@@ -93,6 +93,30 @@ struct ScannerChecks {
         let resumed = try DiskScanner.scan(root: manyRoot, findDuplicates: true, cacheURL: cache)
         precondition(resumed.duplicates.count == 1024, "Worker/cache state remains usable after cancellation")
         print("PASS: 2,048 files in bounded parallel batches, exact groups, concurrent cache statements, cancellation")
+        let sparseRoot = root.appendingPathComponent("sparse")
+        try manager.createDirectory(at: sparseRoot.appendingPathComponent("vm"), withIntermediateDirectories: true)
+        let sparseURL = sparseRoot.appendingPathComponent("vm/Docker.raw")
+        manager.createFile(atPath: sparseURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: sparseURL)
+        try handle.truncate(atOffset: 512 * 1024 * 1024 * 1024)
+        try handle.seek(toOffset: 0); try handle.write(contentsOf: Data(repeating: 21, count: 4096)); try handle.close()
+        let ordinary = sparseRoot.appendingPathComponent("real.bin")
+        try Data(repeating: 17, count: 1024 * 1024).write(to: ordinary)
+        let sparse = try DiskScanner.scan(root: sparseRoot, findDuplicates: false)
+        let vm = try DiskFile.snapshot(at: sparseURL), actual = try DiskFile.snapshot(at: ordinary)
+        precondition(vm.bytes == 512 * 1024 * 1024 * 1024 && vm.displayedBytes < actual.displayedBytes)
+        precondition(sparse.files.first.map { DiskScanner.canonicalPath($0.path) } == DiskScanner.canonicalPath(actual.path), "Physical ranking must put real content before sparse reservation")
+        precondition(sparse.folders.first?.displayedBytes == vm.allocatedBytes)
+        precondition(sparse.categories.reduce(0) { $0 + $1.displayedBytes } == sparse.allocatedBytes)
+        let removedSparse = sparse.removing(paths: [vm.path])
+        precondition(removedSparse.allocatedBytes == actual.allocatedBytes && removedSparse.folders.first?.displayedBytes == 0)
+        let folderPreview = DiskScanner.largestFolders([
+            DiskBucket(name: "/fixture/reserved", bytes: 512_000_000_000, count: 1, allocatedBytes: 4096),
+            DiskBucket(name: "/fixture/real", bytes: 1_000_000, count: 1, allocatedBytes: 1_000_000),
+            DiskBucket(name: "/fixture/removed", bytes: 0, count: 0, allocatedBytes: 0)
+        ], limit: 1)
+        precondition(folderPreview.map(\.name) == ["/fixture/real"], "Folder overview ranks actual blocks, bounds its preview and excludes removed folders")
+        print("PASS: 512 GiB sparse reservation ranked/accounted by actual blocks; folder/category/removal totals agree")
         print("PASS: byte totals, folder totals, categories, hardlinks, symlinks, SHA-256, empty files, streaming reads")
     }
 }

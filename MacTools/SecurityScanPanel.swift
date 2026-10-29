@@ -15,7 +15,7 @@ struct SecurityScanPanel: View {
     private var running: Bool { security.isScanning || security.isUpdating }
     private var findings: [SecurityFinding] { security.currentFindings?.items ?? [] }
     private var threatCount: Int { security.currentFindings?.threatCount ?? 0 }
-    private var checking: Bool { security.isCheckingFindings || security.currentFindings == nil }
+    private var checking: Bool { security.isCheckingFindings }
     private var headline: String {
         if running { return "Deine Dateien werden geprüft" }
         if checking { return "Fundstellen werden geprüft" }
@@ -77,9 +77,10 @@ struct SecurityScanPanel: View {
                 if let root = security.scannedRoot { Text("Letzter geprüfter Bereich: " + root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 16))
 
+            Text("Folgescans prüfen neue und geänderte Dateien. Nach Änderungen an Engine oder Virensignaturen wird erneut vollständig geprüft.").font(.caption).foregroundStyle(.secondary)
             if let report = security.report {
                 HStack(spacing: 12) {
-                    metric("Dateien im letzten Scan", value: (report.scannedFiles + (report.reusedFiles ?? 0)).formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
+                    metric("Dateien im letzten Scan", value: (report.scannedFiles + (report.reusedFiles ?? 0) + (report.unchangedFiles ?? 0)).formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
                     metric("Aktuelle Funde", value: security.isCheckingFindings ? "…" : threatCount.formatted(), icon: "exclamationmark.shield", color: threatCount > 0 ? .red : .cyan)
                     metric("Testdateien", value: findings.filter(\.isTest).count.formatted(), icon: "checkmark.seal", color: .blue)
                 }
@@ -124,6 +125,7 @@ struct SecurityScanPanel: View {
 
                 DisclosureGroup("Scan-Details", isExpanded: $showLimits) {
                     VStack(alignment: .leading, spacing: 12) {
+                        if let unchanged = report.unchangedFiles, unchanged > 0 { Text("\(unchanged.formatted()) unveränderte Dateien aus dem Prüfstand übernommen · \(report.scannedFiles.formatted()) Dateien neu geprüft.") }
                         Text("Hier siehst du den Prüfumfang. Cloud-Platzhalter und technische Grenzen sind keine Bedrohungsfunde.").font(.callout).foregroundStyle(.secondary)
                         if let limited = report.limitedFiles, limited > 0 { Text("\(limited.formatted()) Dateien über 2 GiB nicht inhaltlich geprüft.") }
                         if let cloud = report.cloudFiles, cloud > 0 { Text("\(cloud.formatted()) iCloud-Platzhalter ohne lokalen Inhalt · kein automatischer Download.") }

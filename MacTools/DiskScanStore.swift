@@ -8,6 +8,7 @@ struct ScanSnapshot: Codable, Identifiable {
     let bytes: Int64
     let files: Int
     let skipped: Int?
+    var allocatedBytes: Int64? = nil
 }
 
 @MainActor
@@ -26,6 +27,7 @@ final class DiskScanStore: ObservableObject {
     private var inventoryConsumers = Set<UUID>()
     private var inventoryRelease: Task<Void,Never>?
     private var restorableDate: Date?
+    private var isMigratingCache = false
     private var restoreTask: Task<Void,Never>?
     private var unloadedRemovalTask: Task<Void,Never>?
     func beginInventoryAccess(_ consumer:UUID) async {
@@ -46,7 +48,7 @@ final class DiskScanStore: ObservableObject {
         }
     }
     func releaseUnusedInventory() {
-        guard !eagerRestore,inventoryConsumers.isEmpty,!isScanning,!isSaving,!isApplyingRemovals,!isRestoring,
+        guard !eagerRestore,inventoryConsumers.isEmpty,!isScanning,!isSaving,!isApplyingRemovals,!isRestoring,!isMigratingCache,
               let result,restorableDate == result.completedAt else { return }
         duplicateIndexTask?.cancel(); duplicateIndexTask = nil
         self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache(root: result.root, date: result.completedAt)
@@ -116,6 +118,15 @@ final class DiskScanStore: ObservableObject {
                   saved.root.resolvingSymlinksInPath() == root.resolvingSymlinksInPath() else { return }
             restoredResult = true; restorableDate = saved.completedAt; result = saved
             status = "Gespeicherter Scan · " + saved.completedAt.formatted(date:.abbreviated,time:.shortened) + (saved.reachedLimit || saved.skipped > 0 ? " · mit Einschränkungen" : "")
+            if DiskScanCache.needsMigration(at: url) {
+                let snapshot = saved
+                isMigratingCache = true
+                let migrated = await Task.detached(priority: .utility) { () -> Bool in
+                    do { try DiskScanCache.save(snapshot, to: url, clearRemovals: false); return true } catch { return false }
+                }.value
+                isMigratingCache = false
+                if !migrated { status += " · Cache-Optimierung wird beim nächsten Scan erneut versucht." }
+            }
             scheduleInventoryRelease()
         }
     }
@@ -161,7 +172,7 @@ final class DiskScanStore: ObservableObject {
     }
 
     func start() {
-        guard !isScanning, !isRestoring, !isSaving, !isApplyingRemovals else { return }
+        guard !isScanning, !isRestoring, !isSaving, !isApplyingRemovals, !isMigratingCache else { return }
         selectionGeneration = UUID()
         isScanning = true
         progress = DiskScanProgress(files: 0, bytes: 0, phase: "Dateien erfassen")
@@ -211,7 +222,7 @@ final class DiskScanStore: ObservableObject {
                 if let saveError { status += " · Speichern fehlgeschlagen: " + saveError }
                 else { restorableDate = value.completedAt; cachedResultAvailable = true }
                 if !value.reachedLimit {
-                    history.append(ScanSnapshot(root: value.root.path, date: value.completedAt, bytes: value.bytes, files: value.files.count, skipped: value.omissions?.unavailable ?? value.skipped))
+                    history.append(ScanSnapshot(root: value.root.path, date: value.completedAt, bytes: value.bytes, files: value.files.count, skipped: value.omissions?.unavailable ?? value.skipped, allocatedBytes: value.allocatedBytes))
                     history = Array(history.suffix(100))
                     do { try JSONEncoder().encode(history).write(to: historyURL, options: .atomic) }
                     catch { status += " Verlauf konnte nicht gespeichert werden: \(error.localizedDescription)" }
@@ -283,6 +294,7 @@ final class DiskScanStore: ObservableObject {
                 let batch = pendingRemovals, folders = pendingDirectories
                 pendingRemovals = []; pendingDirectories = []
                 let index = duplicateIndex
+                let browser = FileBrowserStore.shared.removalSnapshot()
                 let update = await Task.detached(priority: .utility) {
                     // Also handle whole app/data folders removed from Apps.
                     var expanded = batch
@@ -291,14 +303,16 @@ final class DiskScanStore: ObservableObject {
                         for file in current.files where prefixes.contains(where: { DiskScanner.canonicalPath(file.path).hasPrefix($0) }) { expanded.insert(file.path) }
                     }
                     let value = current.removing(paths: expanded)
-                    do { try DiskScanCache.saveRemoved(paths: expanded, scanDate: value.completedAt, to: destination); return (value, expanded, String?.none, index?.removing(paths: expanded)) }
-                    catch { return (value, expanded, Optional(error.localizedDescription), index?.removing(paths: expanded)) }
+                    let browserUpdate = browser.updating(current, to: value, removing: expanded)
+                    do { try DiskScanCache.saveRemoved(paths: expanded, scanDate: value.completedAt, to: destination, summary: DiskScanSummary(value)); return (value, expanded, String?.none, index?.removing(paths: expanded), browserUpdate) }
+                    catch { return (value, expanded, Optional(error.localizedDescription), index?.removing(paths: expanded), browserUpdate) }
                 }.value
                 // A concurrent completed scan owns its own result.
                 guard result?.completedAt == current.completedAt else { continue }
                 let later = pendingRemovals
                 duplicateIndex = later.isEmpty ? update.3 : update.3?.removing(paths: later)
                 suppressDuplicateRebuild = duplicateIndex != nil
+                FileBrowserStore.shared.applyRemoval(update.4, snapshot: browser, fileCount: update.0.files.count, scanDate: current.completedAt)
                 result = update.0
                 suppressDuplicateRebuild = false
                 if let error = update.2 { status = "Bereinigt · Speichern fehlgeschlagen: " + error }

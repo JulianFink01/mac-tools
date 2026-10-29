@@ -140,7 +140,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
         Task {
             if await SecurityScanStore.shared.updateSignaturesIfNeeded() {
                 guard pipelineGeneration == generation else { return }
-                SecurityScanStore.shared.start(root: root, inventory: inventory)
+                SecurityScanStore.shared.start(root: root, inventory: inventory, inventoryIsCurrent: true)
             } else {
                 warn("Virenschutz benötigt Aufmerksamkeit", detail: SecurityScanStore.shared.status)
                 showNextScan()

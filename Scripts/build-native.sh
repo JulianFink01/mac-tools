@@ -46,6 +46,8 @@ ditto Vendor/ChatRenderer "$APP_PATH/Contents/Resources/ChatRenderer"
 ditto Vendor/Mermaid "$APP_PATH/Contents/Resources/Mermaid"
 ditto Vendor/Terminal "$APP_PATH/Contents/Resources/Terminal"
 ditto Vendor/ClamAV "$APP_PATH/Contents/Resources/ClamAV"
+# Static linker archives are build inputs, never runtime resources. Keep source/license material.
+find "$APP_PATH/Contents/Resources/ClamAV" -type f -name '*.a' -delete
 cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/THIRD_PARTY_NOTICES.md"
 python3 - "$APP_PATH" "$SAVER_PATH" <<'PY'
 import plistlib, sys, pathlib, shutil, os

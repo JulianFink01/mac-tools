@@ -14,7 +14,7 @@ struct DiskFile: Identifiable, Codable, Sendable {
         let lower = path.lowercased()
         return lower.hasSuffix("/docker.raw") || lower.contains(".sparsebundle/") || [".qcow", ".qcow2", ".vdi", ".vmdk", ".vhd", ".vhdx", ".sparseimage"].contains(where: lower.hasSuffix)
     }
-    var displayedBytes: Int64 { isManagedVirtualDisk ? allocatedBytes : bytes }
+    var displayedBytes: Int64 { allocatedBytes }
     var url: URL { URL(fileURLWithPath: path, isDirectory: false) }
     static func snapshot(at url: URL) throws -> DiskFile {
         var info = stat()
@@ -29,6 +29,8 @@ struct DiskBucket: Identifiable, Codable, Sendable {
     let name: String
     var bytes: Int64
     var count: Int
+    var allocatedBytes: Int64? = nil
+    var displayedBytes: Int64 { allocatedBytes ?? bytes }
 }
 
 struct DuplicateGroup: Identifiable, Codable, Sendable {
@@ -88,6 +90,7 @@ enum DiskScanner {
     }
 
     static func scan(root: URL, findDuplicates: Bool, cacheURL: URL? = nil,
+                     shouldCancel: @Sendable () -> Bool = { false },
                      inventory: @Sendable (DiskScanResult) -> Void = { _ in },
                      progress: @Sendable (DiskScanProgress) -> Void = { _ in }) throws -> DiskScanResult {
         let manager = FileManager.default
@@ -134,6 +137,7 @@ enum DiskScanner {
             return true
         }) else { throw ScanError.invalidRoot }
         for case let url as URL in enumerator {
+            if shouldCancel() { throw CancellationError() }
             try Task.checkCancellation()
             do {
                 try autoreleasepool {
@@ -158,12 +162,12 @@ enum DiskScanner {
                     total += size
                     let category = category(for: url.pathExtension)
                     var bucket = categories[category] ?? DiskBucket(name: category, bytes: 0, count: 0)
-                    bucket.bytes += size; bucket.count += 1
+                    bucket.bytes += size; bucket.allocatedBytes = (bucket.allocatedBytes ?? 0) + Int64(info.st_blocks) * 512; bucket.count += 1
                     categories[category] = bucket
                     let parent = (url.path as NSString).deletingLastPathComponent
                     if parent != root.path {
                         var folder = folders[parent] ?? DiskBucket(name: parent, bytes: 0, count: 0)
-                        folder.bytes += size; folder.count += 1
+                        folder.bytes += size; folder.allocatedBytes = (folder.allocatedBytes ?? 0) + Int64(info.st_blocks) * 512; folder.count += 1
                         folders[parent] = folder
                     }
                     if Date().timeIntervalSince(lastProgress) > 0.25 {
@@ -179,14 +183,14 @@ enum DiskScanner {
             guard let child = folders[path], child.count > 0 else { continue }
             let parent = (path as NSString).deletingLastPathComponent
             if parent != root.path, var bucket = folders[parent] {
-                bucket.bytes += child.bytes; bucket.count += child.count
+                bucket.bytes += child.bytes; bucket.allocatedBytes = (bucket.allocatedBytes ?? 0) + (child.allocatedBytes ?? 0); bucket.count += child.count
                 folders[parent] = bucket
             }
         }
         try Task.checkCancellation()
-        files.sort { $0.bytes > $1.bytes }
-        let sortedFolders = folders.values.filter { $0.count > 0 }.sorted { $0.bytes > $1.bytes }
-        let sortedCategories = categories.values.sorted { $0.bytes > $1.bytes }
+        files.sort { $0.displayedBytes == $1.displayedBytes ? $0.path < $1.path : $0.displayedBytes > $1.displayedBytes }
+        let sortedFolders = folders.values.filter { $0.count > 0 }.sorted { $0.displayedBytes > $1.displayedBytes }
+        let sortedCategories = categories.values.sorted { $0.displayedBytes > $1.displayedBytes }
         let allocated = files.reduce(0) { $0 + $1.allocatedBytes }
         let volume = try? root.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         func report(_ duplicates: [DuplicateGroup], finished: Bool) -> DiskScanResult {
@@ -371,6 +375,19 @@ enum DiskScanner {
         return hash!
     }
 
+    /// Keep a small overview without sorting/copying the entire directory table on the main actor.
+    static func largestFolders(_ folders: [DiskBucket], limit: Int = 12) -> [DiskBucket] {
+        guard limit > 0 else { return [] }
+        var largest: [DiskBucket] = []
+        for folder in folders where folder.count > 0 && folder.displayedBytes > 0 {
+            if largest.count == limit, folder.displayedBytes <= largest[largest.count - 1].displayedBytes { continue }
+            let offset = largest.firstIndex { folder.displayedBytes > $0.displayedBytes } ?? largest.count
+            largest.insert(folder, at: offset)
+            if largest.count > limit { largest.removeLast() }
+        }
+        return largest
+    }
+
     static func category(for ext: String) -> String {
         switch ext.lowercased() {
         case "mp4", "mov", "m4v", "mkv", "avi", "webm": return "Videos"
@@ -479,20 +496,40 @@ final class ScanFingerprintProof {
 }
 
 extension DiskScanResult {
+    func withPhysicalAccounting() -> DiskScanResult {
+        guard folders.contains(where: { $0.allocatedBytes == nil }) || categories.contains(where: { $0.allocatedBytes == nil }) else { return self }
+        var folderBytes: [String: Int64] = [:], categoryBytes: [String: Int64] = [:]
+        for file in files {
+            let parent = (file.path as NSString).deletingLastPathComponent
+            folderBytes[parent, default: 0] += file.allocatedBytes
+            categoryBytes[DiskScanner.category(for: file.url.pathExtension), default: 0] += file.allocatedBytes
+        }
+        for path in folders.map(\.name).sorted(by: { $0.utf8.count > $1.utf8.count }) {
+            let parent = (path as NSString).deletingLastPathComponent
+            folderBytes[parent, default: 0] += folderBytes[path] ?? 0
+        }
+        let updatedFolders = folders.map { DiskBucket(name: $0.name, bytes: $0.bytes, count: $0.count, allocatedBytes: folderBytes[$0.name] ?? 0) }.sorted { $0.displayedBytes > $1.displayedBytes }
+        let updatedCategories = categories.map { DiskBucket(name: $0.name, bytes: $0.bytes, count: $0.count, allocatedBytes: categoryBytes[$0.name] ?? 0) }.sorted { $0.displayedBytes > $1.displayedBytes }
+        return DiskScanResult(root: root, completedAt: completedAt, files: files.sorted { $0.displayedBytes == $1.displayedBytes ? $0.path < $1.path : $0.displayedBytes > $1.displayedBytes },
+            folders: updatedFolders, categories: updatedCategories, duplicates: duplicates, skipped: skipped, warningSamples: warningSamples,
+            reachedLimit: reachedLimit, duplicateSearch: duplicateSearch, volumeTotal: volumeTotal, volumeFree: volumeFree,
+            bytes: bytes, allocatedBytes: allocatedBytes, redundantBytes: redundantBytes, omissions: omissions)
+    }
+
     func removing(paths: Set<String>) -> DiskScanResult {
         let paths = Set(paths.map(DiskScanner.canonicalPath))
         let removed = files.filter { paths.contains(DiskScanner.canonicalPath($0.path)) }
         let rootPath = DiskScanner.canonicalPath(root.path)
-        var folderChanges: [String: (Int64, Int)] = [:], categoryChanges: [String: (Int64, Int)] = [:]
+        var folderChanges: [String: (Int64, Int, Int64)] = [:], categoryChanges: [String: (Int64, Int, Int64)] = [:]
         for file in removed {
             var directory = (DiskScanner.canonicalPath(file.path) as NSString).deletingLastPathComponent
             while directory == rootPath || directory.hasPrefix(rootPath == "/" ? "/" : rootPath + "/") {
-                let previous = folderChanges[directory] ?? (0, 0)
-                folderChanges[directory] = (previous.0 + file.bytes, previous.1 + 1)
+                let previous = folderChanges[directory] ?? (0, 0, 0)
+                folderChanges[directory] = (previous.0 + file.bytes, previous.1 + 1, previous.2 + file.allocatedBytes)
                 if directory == rootPath { break }; directory = (directory as NSString).deletingLastPathComponent
             }
-            let category = DiskScanner.category(for: file.url.pathExtension), previous = categoryChanges[category] ?? (0, 0)
-            categoryChanges[category] = (previous.0 + file.bytes, previous.1 + 1)
+            let category = DiskScanner.category(for: file.url.pathExtension), previous = categoryChanges[category] ?? (0, 0, 0)
+            categoryChanges[category] = (previous.0 + file.bytes, previous.1 + 1, previous.2 + file.allocatedBytes)
         }
         let duplicates = duplicates.compactMap { group -> DuplicateGroup? in
             guard group.files.contains(where: { paths.contains(DiskScanner.canonicalPath($0.path)) }) else { return group }
@@ -501,8 +538,8 @@ extension DiskScanResult {
         }
         let volumes = try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey])
         return DiskScanResult(root: root, completedAt: completedAt, files: files.filter { !paths.contains(DiskScanner.canonicalPath($0.path)) },
-            folders: folders.map { bucket in let change = folderChanges[DiskScanner.canonicalPath(bucket.name)] ?? (0, 0); return DiskBucket(name: bucket.name, bytes: max(0, bucket.bytes - change.0), count: max(0, bucket.count - change.1)) },
-            categories: categories.map { bucket in let change = categoryChanges[bucket.name] ?? (0, 0); return DiskBucket(name: bucket.name, bytes: max(0, bucket.bytes - change.0), count: max(0, bucket.count - change.1)) },
+            folders: folders.map { bucket in let change = folderChanges[DiskScanner.canonicalPath(bucket.name)] ?? (0, 0, 0); return DiskBucket(name: bucket.name, bytes: max(0, bucket.bytes - change.0), count: max(0, bucket.count - change.1), allocatedBytes: bucket.allocatedBytes.map { max(0, $0 - change.2) }) },
+            categories: categories.map { bucket in let change = categoryChanges[bucket.name] ?? (0, 0, 0); return DiskBucket(name: bucket.name, bytes: max(0, bucket.bytes - change.0), count: max(0, bucket.count - change.1), allocatedBytes: bucket.allocatedBytes.map { max(0, $0 - change.2) }) },
             duplicates: duplicates, skipped: skipped, warningSamples: warningSamples, reachedLimit: reachedLimit, duplicateSearch: duplicateSearch,
             volumeTotal: volumeTotal, volumeFree: volumes?.volumeAvailableCapacity.map(Int64.init) ?? volumeFree,
             bytes: max(0, bytes - removed.reduce(0) { $0 + $1.bytes }), allocatedBytes: max(0, allocatedBytes - removed.reduce(0) { $0 + $1.allocatedBytes }),

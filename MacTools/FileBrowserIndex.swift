@@ -21,7 +21,7 @@ struct FileBrowserIndex: Sendable {
         for (index, file) in result.files.enumerated() {
             if index % 512 == 0 { try Task.checkCancellation() }
             if file.path.hasPrefix(prefix), term.isEmpty || file.path.localizedCaseInsensitiveContains(term) {
-                files.append(index); bytes += file.bytes
+                files.append(index); bytes += file.allocatedBytes
             }
         }
         var folders: [DiskBucket] = []
@@ -31,7 +31,7 @@ struct FileBrowserIndex: Sendable {
                   term.isEmpty || folder.name.localizedCaseInsensitiveContains(term) else { continue }
             folders.append(folder)
         }
-        return FileBrowserIndex(files: files, folders: folders, bytes: bytes)
+        return FileBrowserIndex(files: files, folders: folders.sorted { $0.displayedBytes > $1.displayedBytes }, bytes: bytes)
     }
 }
 
@@ -55,6 +55,35 @@ final class FileBrowserStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error = ""
     private var generation = UUID()
+    struct RemovalSnapshot: Sendable {
+        let generation: UUID
+        let requests: [FileBrowserRequest: FileBrowserIndex]
+        let loaded: FileBrowserRequest?
+        func updating(_ old: DiskScanResult, to result: DiskScanResult, removing paths: Set<String>) -> [FileBrowserRequest: FileBrowserIndex] {
+            guard !requests.isEmpty else { return [:] }
+            let removed = Set(paths.map(DiskScanner.canonicalPath))
+            var offsets = [Int](repeating: -1, count: old.files.count), next = 0
+            for (index, file) in old.files.enumerated() where !removed.contains(DiskScanner.canonicalPath(file.path)) { offsets[index] = next; next += 1 }
+            var values = requests.filter { $0.key.date != old.completedAt }
+            for (request, index) in requests where request.date == old.completedAt {
+                var updated = request; updated.fileCount = result.files.count
+                let files = index.files.compactMap { offset -> Int? in guard offsets.indices.contains(offset), offsets[offset] >= 0 else { return nil }; return offsets[offset] }
+                let folderPaths = Set(index.folders.map(\.name))
+                let folders = result.folders.filter { folderPaths.contains($0.name) }.sorted { $0.displayedBytes > $1.displayedBytes }
+                values[updated] = FileBrowserIndex(files: files, folders: folders, bytes: files.reduce(0) { $0 + result.files[$1].allocatedBytes })
+            }
+            return values
+        }
+    }
+    func removalSnapshot() -> RemovalSnapshot { RemovalSnapshot(generation: generation, requests: cache, loaded: loadedRequest) }
+    func applyRemoval(_ values: [FileBrowserRequest: FileBrowserIndex], snapshot: RemovalSnapshot, fileCount: Int, scanDate: Date) {
+        guard generation == snapshot.generation else { return }
+        cache = values; recentRequests = recentRequests.compactMap { request in var value = request; if value.date == scanDate { value.fileCount = fileCount }; return values[value] == nil ? nil : value }
+        if var request = snapshot.loaded {
+            if request.date == scanDate { request.fileCount = fileCount }
+            if let value = values[request] { loadedRequest = request; index = value; isLoading = false }
+        }
+    }
     private var loadingRequest: FileBrowserRequest?
     func releaseCache(root: URL? = nil, date: Date? = nil) {
         if let root {
@@ -76,7 +105,7 @@ final class FileBrowserStore: ObservableObject {
         if loadedRequest == request, index != nil { return }
         let token = UUID(); generation = token
         if let cached = cache[request] { loadedRequest = request; index = cached; isLoading = false; loadingRequest = nil; error = ""; return }
-        isLoading = true; error = ""; index = nil; loadedRequest = nil; loadingRequest = request
+        isLoading = true; error = ""; loadingRequest = request
         defer { if generation == token { isLoading = false; loadingRequest = nil } }
         do {
             if !request.query.isEmpty { try await Task.sleep(nanoseconds: 180_000_000) }

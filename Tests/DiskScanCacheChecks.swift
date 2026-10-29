@@ -18,6 +18,8 @@ struct DiskScanCacheChecks {
             redundantBytes: 5000 * 128)
         try DiskScanCache.save(value, to: path)
         let summary = try DiskScanCache.summary(from:path)
+        precondition(summary?.largestFolders?.first?.name == "/fixture" && summary?.preview?.folders.count == 1)
+        precondition(summary?.preview?.files.count == 8 && summary?.allocatedBytes == value.allocatedBytes)
         precondition(summary?.fileCount == 8192 && summary?.duplicateCount == 2 && summary?.completedAt == value.completedAt)
         let restored = try DiskScanCache.load(from: path)
         precondition(restored.files.count == 8192 && restored.duplicates[0].files.count == 5000)
@@ -27,6 +29,11 @@ struct DiskScanCacheChecks {
         let journaled = try DiskScanCache.load(from:path)
         precondition(journaled.files.isEmpty && journaled.duplicates.isEmpty)
         try DiskScanCache.save(value,to:path)
+        try DiskScanCache.saveRemoved(paths: [files[0].path], scanDate: value.completedAt, to: path)
+        try DiskScanCache.save(value, to: path, clearRemovals: false)
+        let migratedRemoval = try DiskScanCache.load(from: path)
+        precondition(migratedRemoval.files.count == 8191, "Migration preserves concurrent removal journal")
+        try DiskScanCache.save(value, to: path)
         let previous = try Data(contentsOf: path)
         let cancelled = Task.detached {
             withUnsafeCurrentTask { $0?.cancel() }

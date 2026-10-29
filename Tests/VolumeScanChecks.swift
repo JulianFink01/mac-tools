@@ -82,7 +82,7 @@ private struct SavedVolumeSecurity: Codable { let report: SecurityReport; let ro
         let restored = DiskVolumeStore(primary: restoredPC, security: pcSecurity, defaults: prefs, directory: cache, discover: { mounted }, observeMounts: false)
         let offline = restored.selectedProfile!
         precondition(offline.volume.id == externalID && !offline.volume.isMounted && offline.disk.root.path == driveFiles.path)
-        precondition(offline.disk.summary?.fileCount == 2 && offline.disk.result == nil && offline.disk.cachedResultAvailable)
+        precondition(offline.disk.summary?.fileCount == 1 && offline.disk.result == nil && offline.disk.cachedResultAvailable)
         precondition(offline.disk.root != fm.homeDirectoryForCurrentUser, "Disconnected drives must never silently fall back to scanning the home directory")
         precondition(offline.security.scannedRoot?.path == driveFiles.path && pcSecurity.scannedRoot == nil)
         print("PASS: disconnected volume and selected folder survive restart; summary stays lightweight and scanning is blocked")

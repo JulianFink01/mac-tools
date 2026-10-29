@@ -9,7 +9,7 @@ struct DiskDashboardView: View {
     @ObservedObject private var automatic = AutomaticScans.shared
     @ObservedObject private var fileBrowser = FileBrowserStore.shared
     @State private var inventoryConsumer = UUID()
-    private var needsInventory: Bool { volumeMounted && ["Dateien & Ordner","Duplikate"].contains(tab) }
+    private var needsInventory: Bool { volumeMounted && (["Dateien & Ordner","Duplikate"].contains(tab) || store.result != nil || (tab == "Übersicht" && store.summary != nil && (store.summary?.preview == nil || store.summary?.largestFolders == nil))) }
     @State private var filePage = 0
     @State private var folderPage = 0
     @State private var largestPage = 0
@@ -61,7 +61,7 @@ struct DiskDashboardView: View {
                     Label("Laufwerk nicht verbunden", systemImage: "externaldrive.badge.xmark").font(.title2.bold())
                     Text("Der letzte Scanstand bleibt gespeichert. Verbinde dieses Laufwerk, um es erneut zu prüfen oder seine Dateien zu öffnen.").foregroundStyle(.secondary)
                     if let summary = store.summary {
-                        Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.bytes)) · " + summary.completedAt.formatted(date: .abbreviated, time: .shortened))
+                        Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.allocatedBytes)) · " + summary.completedAt.formatted(date: .abbreviated, time: .shortened))
                     }
                     Spacer()
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.top, 20)
@@ -100,7 +100,7 @@ struct DiskDashboardView: View {
                     if tab == "Virenscan" { securityPanel }
                     else if tab == "Warnungen" {
                         panel("Aktuelle kritische Warnungen") {
-                            if security.isCheckingFindings || security.currentFindings == nil { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
+                            if security.isCheckingFindings { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
                             else if criticalMessages.isEmpty {
                                 Label("Keine kritischen Warnungen.", systemImage: "checkmark.circle")
                             }
@@ -119,11 +119,13 @@ struct DiskDashboardView: View {
                         }
                     } else if store.isRestoring {
                         VStack(spacing:14) { ProgressView(); Text("Gespeicherte Dateiliste wird geladen …").foregroundStyle(.secondary) }.frame(maxWidth:.infinity).padding(.vertical,90)
+                    } else if tab == "Übersicht", let preview = store.summary?.preview {
+                        overview(preview)
                     } else if let summary = store.summary {
                         VStack(alignment:.leading,spacing:14) {
                             Label("Gespeicherter Scan",systemImage:"internaldrive").font(.title2.bold())
                             Text(summary.completedAt.formatted(date:.abbreviated,time:.shortened)).foregroundStyle(.secondary)
-                            Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.bytes)) · \(summary.duplicateCount.formatted()) Duplikatgruppen")
+                            Text("\(summary.fileCount.formatted()) Dateien · \(diskBytes(summary.allocatedBytes)) · \(summary.duplicateCount.formatted()) Duplikatgruppen")
                             Text("Die Dateiliste bleibt auf dem Datenträger und wird beim Öffnen der Dateien oder Duplikate geladen.").font(.callout).foregroundStyle(.secondary)
                             Button("Dateien öffnen") { navigation.diskTab = "Dateien & Ordner" }
                         }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,40)
@@ -149,7 +151,7 @@ struct DiskDashboardView: View {
             }
             .onDisappear { selectedCopies = [:]; pendingTrash = []; store.endInventoryAccess(inventoryConsumer) }
             .onReceive(actions.removals) { _ in selectedCopies = selectedCopies.filter { !store.isRemoved($0.key) } }
-            .onChange(of: store.result?.root) { _ in folder = nil; duplicateFolder = nil; query = ""; backFolders = []; forwardFolders = [] }
+            .onChange(of: store.root) { _ in filePage = 0; folderPage = 0; folder = nil; duplicateFolder = nil; query = ""; backFolders = []; forwardFolders = [] }
             .onChange(of: store.result?.completedAt) { _ in selectedCopies = [:]; duplicatePage = 0; expandedDuplicateID = nil; duplicateFilePage = 0 }
             .sheet(item: $preview) { selection in FileComparisonView(files: selection.files) }
             .alert("Dateien in den Papierkorb verschieben?", isPresented: $confirmTrash) {
@@ -213,18 +215,17 @@ struct DiskDashboardView: View {
     private func overview(_ result: DiskScanResult) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                metric("Dateigrößen", value: diskBytes(result.bytes), detail: "Logische Größe im Scan", icon: "doc")
-                metric("Auf Datenträger", value: diskBytes(result.allocatedBytes), detail: "Gemeldete Dateibelegung", icon: "internaldrive")
-                metric("Dateien", value: result.files.count.formatted(), detail: "Hardlinks einmal gezählt", icon: "doc.on.doc")
+                metric("Effektiv belegt", value: diskBytes(result.allocatedBytes), detail: "Lokale Dateiblöcke · ohne virtuelle Maximalgrößen", icon: "internaldrive")
+                metric("Dateien", value: (store.summary?.fileCount ?? result.files.count).formatted(), detail: "Hardlinks einmal gezählt", icon: "doc.on.doc")
                 metric("Doppelte Inhalte", value: result.duplicateSearch ? diskBytes(result.redundantBytes) : "–",
-                       detail: store.resultIsProvisional ? "Inhaltsprüfung läuft" : result.duplicateSearch ? "\(result.duplicates.count) Gruppen · logische Größe" : "Prüfung deaktiviert", icon: "square.on.square")
+                       detail: store.resultIsProvisional ? "Inhaltsprüfung läuft" : result.duplicateSearch ? "\(store.summary?.duplicateCount ?? result.duplicates.count) Gruppen · logische Größe" : "Prüfung deaktiviert", icon: "square.on.square")
             }
             HStack(alignment: .top, spacing: 16) {
                 panel("Speicher nach Dateityp") {
                     Chart(result.categories) { item in
-                        BarMark(x: .value("Bytes", item.bytes), y: .value("Dateityp", item.name))
+                        BarMark(x: .value("Bytes", item.displayedBytes), y: .value("Dateityp", item.name))
                             .foregroundStyle(by: .value("Dateityp", item.name))
-                            .annotation(position: .trailing) { Text(diskBytes(item.bytes)).font(.caption2) }
+                            .annotation(position: .trailing) { Text(diskBytes(item.displayedBytes)).font(.caption2) }
                     }.chartForegroundStyleScale(domain: result.categories.map(\.name), range: Array(colors.prefix(result.categories.count)))
                     .chartLegend(.hidden).chartXAxis {
                         AxisMarks { value in
@@ -237,7 +238,7 @@ struct DiskDashboardView: View {
                             Circle().fill(colors[index % colors.count]).frame(width: 7, height: 7)
                             Text(bucket.name)
                             Spacer()
-                            Text("\(bucket.count.formatted()) Dateien · \(percent(bucket.bytes, of: result.bytes))")
+                            Text("\(bucket.count.formatted()) Dateien · \(percent(bucket.displayedBytes, of: result.allocatedBytes))")
                                 .foregroundStyle(.secondary)
                         }.font(.caption)
                     }
@@ -255,12 +256,12 @@ struct DiskDashboardView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Divider().padding(.vertical, 8)
-                    let history = store.history.filter { $0.root == result.root.path }
+                    let history = store.history.filter { $0.root == result.root.path && $0.allocatedBytes != nil }
                     Text("Scan-Verlauf · gleicher Ordner").font(.subheadline.bold())
                     if history.count > 1 {
                         Chart(history) { point in
-                            LineMark(x: .value("Zeit", point.date), y: .value("Dateigröße", point.bytes)).foregroundStyle(.cyan)
-                            PointMark(x: .value("Zeit", point.date), y: .value("Dateigröße", point.bytes)).foregroundStyle((point.skipped ?? 0) > 0 ? .orange : .cyan)
+                            LineMark(x: .value("Zeit", point.date), y: .value("Belegter Speicher", point.allocatedBytes ?? 0)).foregroundStyle(.cyan)
+                            PointMark(x: .value("Zeit", point.date), y: .value("Belegter Speicher", point.allocatedBytes ?? 0)).foregroundStyle((point.skipped ?? 0) > 0 ? .orange : .cyan)
                         }.chartYAxis {
                             AxisMarks { value in
                                 AxisGridLine()
@@ -268,16 +269,38 @@ struct DiskDashboardView: View {
                             }
                         }.frame(height: 165)
                     } else {
-                        Text("Ab zwei Gesamtscans zeigt die Zeitreihe, wie sich die erfassten Dateigrößen verändern.")
+                        Text("Ab zwei Scans mit gemessener Belegung zeigt die Zeitreihe, wie sich der effektiv belegte Speicher verändert.")
                             .foregroundStyle(.secondary).font(.callout).frame(height: 130)
                     }
                 }
             }
-            panel("Größte Speicherverursacher") {
+            panel("Größte Ordner") {
+                Text("Inklusive Unterordnern. Übergeordnete Ordner enthalten ihre Unterordner; die Größen nicht addieren.").font(.caption).foregroundStyle(.secondary)
+                let folders = store.summary?.largestFolders ?? []
+                if folders.isEmpty { Text(store.isRestoring ? "Ordnergrößen werden geladen …" : "Keine belegten Unterordner im Scan.").foregroundStyle(.secondary) }
+                ForEach(folders) { item in
+                    Button { openStorageFolder(item.name) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "folder.fill").font(.title3).foregroundStyle(.cyan)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(URL(fileURLWithPath: item.name).lastPathComponent).font(.callout.weight(.semibold))
+                                Text(relativeStoragePath(item.name)).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.leading)
+                                Text("\(item.count.formatted()) Dateien").font(.caption2).foregroundStyle(.secondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(alignment: .trailing, spacing: 5) {
+                                Text(diskBytes(item.displayedBytes)).font(.callout.monospacedDigit().bold())
+                                Text(percent(item.displayedBytes, of: result.allocatedBytes)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }.padding(10).frame(maxWidth: .infinity).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Ordner " + relativeStoragePath(item.name) + " öffnen").help("Diesen Ordner und seine größten Inhalte in MacTools öffnen")
+                }
+            }
+            panel("Größte Dateien") {
                 let pageCount = max(1, (result.files.count + 7) / 8)
                 let page = min(largestPage, pageCount - 1)
                 HStack {
-                    Text("\(result.files.count.formatted()) Dateien · größte zuerst").font(.caption).foregroundStyle(.secondary)
+                    Text(store.result == nil ? "Größte Dateien · effektiv belegter Speicher" : "\(result.files.count.formatted()) Dateien · größte zuerst").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button { largestPage = max(0, page - 1) } label: { Image(systemName: "chevron.left") }
                         .help("Vorherige Speicherverursacher").disabled(page == 0)
@@ -285,9 +308,9 @@ struct DiskDashboardView: View {
                     Button { largestPage = min(pageCount - 1, page + 1) } label: { Image(systemName: "chevron.right") }
                         .help("Weitere Speicherverursacher").disabled(page + 1 >= pageCount)
                 }
-                ForEach(Array(result.files.dropFirst(page * 8).prefix(8))) { file in fileRow(file, total: result.bytes) }
+                ForEach(Array(result.files.dropFirst(page * 8).prefix(8))) { file in fileRow(file, total: result.allocatedBytes) }
             }
-            Text("APFS-Klone, Kompression und Sparse-Dateien können Größen beeinflussen. Die Duplikatgröße ist keine garantierte Speicherersparnis.")
+            Text("Effektive Belegung laut macOS. Sparse-Dateien zählen nur belegte Blöcke. APFS-Klone und Snapshots teilen Blöcke; die Summe ist deshalb keine garantierte Speicherersparnis.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -302,7 +325,7 @@ struct DiskDashboardView: View {
             } else if let index = fileBrowser.index, fileBrowser.loadedRequest == request {
                 HStack(spacing: 12) {
                     metric("Dateien", value: index.files.count.formatted(), detail: "Im aktuellen Bereich", icon: "doc.on.doc")
-                    metric("Größe", value: diskBytes(index.bytes), detail: "Logische Größe der Treffer", icon: "internaldrive")
+                    metric("Größe", value: diskBytes(index.bytes), detail: "Effektiv auf dem Datenträger belegt", icon: "internaldrive")
                     metric("Unterordner", value: index.folders.count.formatted(), detail: "Direkt in diesem Ordner", icon: "folder")
                 }
                 panel("Unterordner") {
@@ -319,8 +342,8 @@ struct DiskDashboardView: View {
                                     }
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 6) {
-                                        Text(diskBytes(item.bytes)).font(.callout.monospacedDigit().weight(.semibold))
-                                        ProgressView(value: Double(item.bytes), total: Double(max(1, result.bytes))).tint(.cyan).frame(width: 160)
+                                        Text(diskBytes(item.displayedBytes)).font(.callout.monospacedDigit().weight(.semibold))
+                                        ProgressView(value: Double(item.displayedBytes), total: Double(max(1, result.allocatedBytes))).tint(.cyan).frame(width: 160)
                                     }
                                     Image(systemName: "chevron.right").foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).contentShape(Rectangle())
@@ -332,14 +355,15 @@ struct DiskDashboardView: View {
                 panel("Dateien · größte zuerst") {
                     browserPager(page: $filePage, count: index.files.count, size: size)
                     if index.files.isEmpty { Text("Keine passenden Dateien.").foregroundStyle(.secondary) }
-                    ForEach(Array(index.files.dropFirst(filePage * size).prefix(size)), id: \.self) { offset in fileRow(result.files[offset], total: result.bytes) }
+                    ForEach(Array(index.files.dropFirst(filePage * size).prefix(size)), id: \.self) { offset in fileRow(result.files[offset], total: result.allocatedBytes) }
                 }
             } else if !fileBrowser.error.isEmpty {
                 Text(fileBrowser.error).foregroundStyle(.orange)
             }
         }.task(id: request) {
-            filePage = 0; folderPage = 0
             await fileBrowser.load(result, request: request)
+            filePage = min(filePage, max(0, ((fileBrowser.index?.files.count ?? 0) - 1) / size))
+            folderPage = min(folderPage, max(0, ((fileBrowser.index?.folders.count ?? 0) - 1) / size))
         }
     }
 
@@ -651,19 +675,22 @@ struct DiskDashboardView: View {
             Image(systemName: "doc").foregroundStyle(.cyan)
             VStack(alignment: .leading, spacing: 3) {
                 Text(file.url.lastPathComponent).font(.callout).lineLimit(1)
-                Text(file.path).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Button { openStorageFolder((file.path as NSString).deletingLastPathComponent) } label: {
+                    Label(relativeStoragePath((file.path as NSString).deletingLastPathComponent), systemImage: "folder")
+                        .font(.caption2).foregroundStyle(.cyan).lineLimit(2).multilineTextAlignment(.leading)
+                }.buttonStyle(.plain).help(file.path + "\nOrdner in MacTools öffnen").accessibilityLabel("Ordner von " + file.url.lastPathComponent + " öffnen")
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
                 Text(diskBytes(file.displayedBytes)).font(.callout.monospacedDigit().bold())
-                    .help(file.isManagedVirtualDisk ? "Tatsächlich belegter Speicher. Virtuelle Maximalgröße: " + diskBytes(file.bytes) : "Logische Dateigröße")
+                    .help("Von macOS gemeldete lokale Dateibelegung. Logische Größe: " + diskBytes(file.bytes))
                 if file.isManagedVirtualDisk {
                     Label("Virtuelle Festplatte · geschützt", systemImage: "lock.fill").font(.caption2).foregroundStyle(.secondary)
                 } else if file.bytes > 1_048_576 {
-                    Text("Belegt: " + diskBytes(file.allocatedBytes)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    Text("Dateigröße: " + diskBytes(file.bytes)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         .help("Von macOS gemeldete Dateibelegung beim Scan. Die logische Dateigröße ist kein Maß dafür, wie viel Speicher das Entfernen freigibt.")
                 }
-                if !file.isManagedVirtualDisk { Text(percent(file.bytes, of: total)).font(.caption2).foregroundStyle(.secondary) }
+                if !file.isManagedVirtualDisk { Text(percent(file.allocatedBytes, of: total)).font(.caption2).foregroundStyle(.secondary) }
             }
             Button { preview = FilePreviewSelection(files: [file]) } label: { Image(systemName: "eye") }
                 .help("Dateivorschau")
@@ -677,6 +704,18 @@ struct DiskDashboardView: View {
                 .help("Im Finder anzeigen")
         }.padding(.vertical, 5)
         }
+    }
+
+    private func relativeStoragePath(_ path: String) -> String {
+        let root = store.root.path
+        let prefix = root == "/" ? "/" : root + "/"
+        let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path == root ? root : path
+        return relative.split(separator: "/").joined(separator: " › ")
+    }
+
+    private func openStorageFolder(_ path: String) {
+        navigateFolder(path, root: store.root.path)
+        navigation.diskTab = "Dateien & Ordner"
     }
 
     private func percent(_ bytes: Int64, of total: Int64) -> String {

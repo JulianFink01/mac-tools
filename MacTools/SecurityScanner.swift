@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import Darwin
+import SQLite3
+import CryptoKit
 
 struct SecurityFinding: Identifiable, Codable, Sendable {
     var id: String { path + signature }
@@ -15,6 +17,7 @@ struct SecurityReport: Codable, Sendable {
     let exitCode: Int32
     let output: String
     let cancelled: Bool
+    var unchangedFiles: Int? = nil
     var reusedFiles: Int? = nil
     var excludedFiles: Int? = nil
     var limitedFiles: Int? = nil
@@ -43,15 +46,15 @@ struct SecurityReport: Codable, Sendable {
         }
     }
     private let parsed: Parsed
-    private enum CodingKeys: String,CodingKey { case exitCode,output,cancelled,reusedFiles,excludedFiles,limitedFiles,emptyFiles,removedPaths,cloudFiles,missingFiles }
-    init(exitCode:Int32,output:String,cancelled:Bool,reusedFiles:Int? = nil,excludedFiles:Int? = nil,limitedFiles:Int? = nil,emptyFiles:Int? = nil,removedPaths:[String]? = nil,cloudFiles:Int? = nil,missingFiles:Int? = nil) {
+    private enum CodingKeys: String,CodingKey { case exitCode,output,cancelled,unchangedFiles,reusedFiles,excludedFiles,limitedFiles,emptyFiles,removedPaths,cloudFiles,missingFiles }
+    init(exitCode:Int32,output:String,cancelled:Bool,reusedFiles:Int? = nil,excludedFiles:Int? = nil,limitedFiles:Int? = nil,emptyFiles:Int? = nil,removedPaths:[String]? = nil,cloudFiles:Int? = nil,missingFiles:Int? = nil,unchangedFiles:Int? = nil) {
         self.exitCode=exitCode;self.output=output;self.cancelled=cancelled;self.reusedFiles=reusedFiles;self.excludedFiles=excludedFiles;self.limitedFiles=limitedFiles;self.emptyFiles=emptyFiles;self.removedPaths=removedPaths
         parsed = Parsed(output)
-        self.cloudFiles = cloudFiles; self.missingFiles = missingFiles
+        self.cloudFiles = cloudFiles; self.missingFiles = missingFiles; self.unchangedFiles = unchangedFiles
     }
     init(from decoder:Decoder) throws {
         let c = try decoder.container(keyedBy:CodingKeys.self)
-        self.init(exitCode:try c.decode(Int32.self,forKey:.exitCode),output:try c.decode(String.self,forKey:.output),cancelled:try c.decode(Bool.self,forKey:.cancelled),reusedFiles:try c.decodeIfPresent(Int.self,forKey:.reusedFiles),excludedFiles:try c.decodeIfPresent(Int.self,forKey:.excludedFiles),limitedFiles:try c.decodeIfPresent(Int.self,forKey:.limitedFiles),emptyFiles:try c.decodeIfPresent(Int.self,forKey:.emptyFiles),removedPaths:try c.decodeIfPresent([String].self,forKey:.removedPaths),cloudFiles:try c.decodeIfPresent(Int.self,forKey:.cloudFiles),missingFiles:try c.decodeIfPresent(Int.self,forKey:.missingFiles))
+        self.init(exitCode:try c.decode(Int32.self,forKey:.exitCode),output:try c.decode(String.self,forKey:.output),cancelled:try c.decode(Bool.self,forKey:.cancelled),reusedFiles:try c.decodeIfPresent(Int.self,forKey:.reusedFiles),excludedFiles:try c.decodeIfPresent(Int.self,forKey:.excludedFiles),limitedFiles:try c.decodeIfPresent(Int.self,forKey:.limitedFiles),emptyFiles:try c.decodeIfPresent(Int.self,forKey:.emptyFiles),removedPaths:try c.decodeIfPresent([String].self,forKey:.removedPaths),cloudFiles:try c.decodeIfPresent(Int.self,forKey:.cloudFiles),missingFiles:try c.decodeIfPresent(Int.self,forKey:.missingFiles),unchangedFiles:try c.decodeIfPresent(Int.self,forKey:.unchangedFiles))
     }
     var findings: [String] { parsed.findings }
     var items: [SecurityFinding] {
@@ -69,7 +72,7 @@ struct SecurityReport: Codable, Sendable {
         if items.contains(where: \.isTest) { return "Testdatei erkannt – Schutzprüfung erfolgreich" }
         if !(removedPaths ?? []).isEmpty && items.isEmpty { return "Gemeldete Dateien entfernt" }
         if exitCode == 1 && !hasWarnings { return "Die Engine meldet einen Fund – Details prüfen" }
-        if scannedFiles == 0 { return "Keine Dateien geprüft" }
+        if scannedFiles == 0 && (unchangedFiles ?? 0) == 0 { return "Keine Dateien geprüft" }
         return "Keine Bedrohung im geprüften Bereich erkannt"
     }
     var explanation: String {
@@ -78,6 +81,7 @@ struct SecurityReport: Codable, Sendable {
         if threatCount > 0 { return "Öffne diese Dateien vorerst nicht. Prüfe ihren Ursprung. Bei Unsicherheit kannst du sie in den Papierkorb verschieben." }
         if items.contains(where: \.isTest) { return "Die harmlose EICAR-Testdatei wurde erkannt. Sie dient zur Prüfung des Virenschutzes und ist kein echter Virus." }
         if !(removedPaths ?? []).isEmpty && items.isEmpty { return "Die ausgewählten Dateien wurden aus dem Scan-Ergebnis entfernt. Die übrigen Dateien benötigen dafür keinen neuen Scan." }
+        if scannedFiles == 0 && (unchangedFiles ?? 0) > 0 { return "Seit der letzten Prüfung unverändert. Die gespeicherten Ergebnisse gelten für dieselbe Engine und dieselben Virensignaturen." }
         if scannedFiles == 0 { return "Im gewählten Bereich wurden keine Dateien geprüft. Wähle einen anderen Ordner oder prüfe die Zugriffsrechte." }
         return "In diesem Scan wurde keine bekannte Bedrohung gefunden. Eine Prüfung kann neue oder unbekannte Schadsoftware übersehen."
     }
@@ -93,6 +97,8 @@ final class ClamAVRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [Process] = []
     private var cancelled = false
+
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
 
     func cancel() {
         lock.lock(); defer { lock.unlock() }
@@ -148,7 +154,8 @@ final class ClamAVRunner: @unchecked Sendable {
     }
 
     func runProcess(executable: URL, arguments: [String], progress: @Sendable (Int) -> Void = { _ in },
-                    activity: @Sendable (String) -> Void = { _ in }) throws -> SecurityReport {
+                    activity: @Sendable (String) -> Void = { _ in },
+                    verdict: @Sendable (String, String) -> Void = { _, _ in }) throws -> SecurityReport {
         let child = Process()
         child.executableURL = executable
         child.arguments = arguments
@@ -189,6 +196,14 @@ final class ClamAVRunner: @unchecked Sendable {
                     activity(URL(fileURLWithPath: String(text.dropFirst("Scanning ".count))).lastPathComponent)
                     lastActivity = Date()
                 }
+                if clean, let separator = text.range(of: ": ", options: .backwards) {
+                    verdict(String(text[..<separator.lowerBound]), "")
+                } else if text.hasSuffix(" FOUND") {
+                    let body = text.dropLast(" FOUND".count)
+                    if let separator = body.range(of: ": ", options: .backwards) {
+                        verdict(String(body[..<separator.lowerBound]), String(body[separator.upperBound...]))
+                    }
+                }
                 if clean || text.hasSuffix(" FOUND") || text.hasSuffix(" ERROR") {
                     completed += 1
                     if Date().timeIntervalSince(lastProgress) > 0.2 { progress(completed); lastProgress = Date() }
@@ -217,10 +232,11 @@ final class ClamAVRunner: @unchecked Sendable {
     /// Currently identical files share one content check, backed by the
     /// disk scan's complete hash proof. No extension-based safety shortcuts.
     func runInventory(executable: URL, inventory: DiskScanResult, proofURL: URL,
-                      extraArguments: [String] = [], maximumWorkers: Int = 4, progress: @escaping @Sendable (String) -> Void = { _ in },
+                      extraArguments: [String] = [], maximumWorkers: Int = 4, verdictURL: URL? = nil, progress: @escaping @Sendable (String) -> Void = { _ in },
                       fileProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) throws -> SecurityReport {
         let list = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-virus-\(UUID()).txt")
         defer { try? FileManager.default.removeItem(at: list) }
+        let verdicts = verdictURL.flatMap { SecurityVerdictCache(url: $0, context: SecurityVerdictCache.context(executable: executable, arguments: extraArguments), reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments)) }
         let proof = ScanFingerprintProof(url: proofURL)
         var reusedPaths: Set<String> = []
         var reusedGroups: [(original: DiskFile, digest: String, copies: [DiskFile])] = []
@@ -230,10 +246,16 @@ final class ClamAVRunner: @unchecked Sendable {
                 guard (group.files.first?.bytes ?? 0) > 0, (group.files.first?.bytes ?? 0) <= 2_147_483_648 else { continue }
                 lock.lock(); let stopped = cancelled; lock.unlock(); if stopped { throw CancellationError() }
                 guard let original = group.files.first(where: { proof.matches($0, digest: group.id) }) else { continue }
+                var originalInfo = stat()
+                if lstat(original.path, &originalInfo) == 0, verdicts?.verdict(path: original.path, info: originalInfo) != nil { continue }
                 var copies: [DiskFile] = []
                 for (index, copy) in group.files.enumerated() where copy.path != original.path {
                     if index % 512 == 0 { lock.lock(); let stopped = cancelled; lock.unlock(); if stopped { throw CancellationError() } }
-                    if proof.matches(copy, digest: group.id) { reusedPaths.insert(copy.path); copies.append(copy) }
+                    if proof.matches(copy, digest: group.id) {
+                        var info = stat()
+                        if lstat(copy.path, &info) == 0 { verdicts?.prepare(path: copy.path, info: info) }
+                        reusedPaths.insert(copy.path); copies.append(copy)
+                    }
                 }
                 if !copies.isEmpty { reusedGroups.append((original, group.id, copies)) }
             }
@@ -242,7 +264,8 @@ final class ClamAVRunner: @unchecked Sendable {
         let handle = try FileHandle(forWritingTo: list)
         // Duplicate-hash failures are not antivirus failures. Classify the current
         // file state once instead of inheriting the unrelated inventory counters.
-        var buffer = Data(), planned = 0, excluded = 0, cloud = 0, missing = 0, limited = 0, empty = 0
+        var buffer = Data(), planned = 0, excluded = 0, cloud = 0, missing = 0, limited = 0, empty = 0, unchanged = 0
+        var cachedFindings = ""
         do {
             for (index, file) in inventory.files.reversed().enumerated() {
                 if index % 4096 == 0 {
@@ -262,6 +285,12 @@ final class ClamAVRunner: @unchecked Sendable {
                 // Mirror the explicit ClamAV per-file limit, reporting these files
                 // as unexamined rather than accepting its assumed-clean shortcut.
                 if info.st_size > 2_147_483_648 { limited += 1; continue }
+                if let signature = verdicts?.verdict(path: file.path, info: info) {
+                    unchanged += 1
+                    if !signature.isEmpty { cachedFindings += "\n\(file.path): \(signature) FOUND" }
+                    continue
+                }
+                verdicts?.prepare(path: file.path, info: info)
                 buffer.append(Data((file.path + "\n").utf8)); planned += 1
                 if buffer.count >= 64 * 1024 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
             }
@@ -269,7 +298,7 @@ final class ClamAVRunner: @unchecked Sendable {
         } catch { try? handle.close(); throw error }
         progress("Virenprüfung · Engine starten · \(planned.formatted()) Dateien")
         fileProgress(0, planned)
-        if planned == 0 { return SecurityReport(exitCode: 0, output: "Scanned files: 0\n", cancelled: false, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing) }
+        if planned == 0 { return SecurityReport(exitCode: cachedFindings.isEmpty ? 0 : 1, output: "Scanned files: 0\n" + cachedFindings, cancelled: false, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing, unchangedFiles: unchanged) }
         // A few long-lived workers load signatures once each. Thousands of
         // short-lived batches would repeatedly pay the engine startup cost.
         let capacity = min(max(1, maximumWorkers), max(1, ProcessInfo.processInfo.activeProcessorCount / 2),
@@ -310,12 +339,12 @@ final class ClamAVRunner: @unchecked Sendable {
             do {
                 let result = try self.runProcess(executable: executable, arguments: ["--verbose", "--file-list=\(lists[index].path)"] + Self.scanArguments + extraArguments,
                     progress: { aggregate.update(worker: index, completed: $0) },
-                    activity: { aggregate.activity(worker: index, name: $0) })
+                    activity: { aggregate.activity(worker: index, name: $0) }, verdict: { verdicts?.record(path: $0, signature: $1) })
                 aggregate.finish(worker: index, report: result)
             } catch { aggregate.fail(error) }
         }
         let report = try aggregate.report()
-        var output = report.output, accepted = 0
+        var output = report.output + cachedFindings, accepted = 0
         let findings = Dictionary(grouping: report.items, by: \.path)
         if !report.cancelled, report.exitCode == 0 || report.exitCode == 1, let proof {
             for (index, group) in reusedGroups.enumerated() {
@@ -330,13 +359,18 @@ final class ClamAVRunner: @unchecked Sendable {
                 // Validate the original around the whole group; repeated copies
                 // do not need millions of redundant metadata/SQLite reads of it.
                 guard proof.matches(group.original, digest: group.digest) else { excluded += group.copies.count; continue }
+                var originalInfo = stat()
+                if lstat(group.original.path, &originalInfo) == 0,
+                   let signature = verdicts?.verdict(path: group.original.path, info: originalInfo) {
+                    for copy in matching { verdicts?.record(path: copy.path, signature: signature) }
+                }
                 accepted += matching.count; excluded += group.copies.count - matching.count
                 for copy in matching {
                     for finding in findings[group.original.path] ?? [] { output += "\n\(copy.path): \(finding.signature) FOUND" }
                 }
             }
         }
-        return SecurityReport(exitCode: report.exitCode, output: output, cancelled: report.cancelled, reusedFiles: accepted, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing)
+        return SecurityReport(exitCode: report.exitCode == 0 && !cachedFindings.isEmpty ? 1 : report.exitCode, output: output, cancelled: report.cancelled, reusedFiles: accepted, excludedFiles: excluded, limitedFiles: limited, emptyFiles: empty, cloudFiles: cloud, missingFiles: missing, unchangedFiles: unchanged)
     }
 
     static func executable() -> URL? {
@@ -427,6 +461,7 @@ final class SecurityScanStore: ObservableObject {
     private var removalSubscription: AnyCancellable?
     var acceptsFileChanges = true
     private let reportURL: URL
+    private let verdictURL: URL
     @Published private(set) var completedAt: Date?
     @Published private(set) var restoredReport = false
     @Published private(set) var currentFindings: CurrentSecurityFindings?
@@ -446,12 +481,13 @@ final class SecurityScanStore: ObservableObject {
     }
 
     func refreshCurrentFindings(legacyPaths: [String] = []) async {
+        let paths = (report?.items.filter { !$0.isLimit }.map(\.path) ?? []) + legacyPaths
+        if paths.isEmpty { currentFindings = CurrentSecurityFindings(items: [], pendingPaths: [], checkedAt: Date()); return }
         guard !isScanning, !isUpdating, !isCheckingFindings else { return }
         isCheckingFindings = true
         let generation = findingGeneration
         let worker = ClamAVRunner(); findingRunner = worker
         defer { isCheckingFindings = false; findingRunner = nil }
-        let paths = (report?.items.filter { !$0.isLimit }.map(\.path) ?? []) + legacyPaths
         let executable = self.executable
         do {
             let result = try await Task.detached(priority: .utility) {
@@ -469,6 +505,7 @@ final class SecurityScanStore: ObservableObject {
 
     init(directory: URL = VideoLibraryStore.appSupportDirectory) {
         reportURL = directory.appendingPathComponent("last-virus-scan.plist")
+        verdictURL = directory.appendingPathComponent("virus-verdicts.sqlite")
         removalSubscription = FileActions.shared.removals.sink { [weak self] change in
             guard let self, self.acceptsFileChanges else { return }
             self.applyRemoved(paths: change.paths)
@@ -477,6 +514,7 @@ final class SecurityScanStore: ObservableObject {
         if let data = try? Data(contentsOf: reportURL), let saved = try? PropertyListDecoder().decode(SavedScan.self, from: data) {
             report = saved.report; scannedRoot = saved.root; completedAt = saved.date
             restoredReport = true; status = saved.report.title
+            currentFindings = CurrentSecurityFindings(items: [], pendingPaths: saved.report.items.filter { !$0.isLimit }.map(\.path), checkedAt: saved.date)
         }
     }
 
@@ -577,7 +615,7 @@ final class SecurityScanStore: ObservableObject {
         }
     }
 
-    func start(root: URL, inventory: DiskScanResult? = nil) {
+    func start(root: URL, inventory: DiskScanResult? = nil, inventoryIsCurrent: Bool = false) {
         refresh()
         guard !isScanning, !isUpdating, let executable else {
             status = "Die ClamAV-Engine fehlt im App-Paket."
@@ -591,18 +629,23 @@ final class SecurityScanStore: ObservableObject {
         progressFraction = nil
         status = "Deine Dateien werden geprüft …"
         let worker = ClamAVRunner()
+        let verdictURL = self.verdictURL
         runner = worker
         Task {
             do {
                 let value = try await Task.detached(priority: .utility) {
                     let arguments = ["--database=\(Self.databaseDirectory.path)", "--cvdcertsdir=\(executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("etc/certs").path)"]
-                    if let inventory {
-                        return try worker.runInventory(executable: executable, inventory: inventory,
-                            proofURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LiveWallpaper/file-hashes.sqlite"),
-                            extraArguments: arguments, progress: { update in Task { @MainActor [weak self] in if self?.isScanning == true { self?.status = update } } }, fileProgress: { current, total in
-                                Task { @MainActor [weak self] in if self?.isScanning == true { self?.progressFraction = total > 0 ? min(1, Double(current) / Double(total)) : nil } } })
+                    let currentInventory: DiskScanResult
+                    if inventoryIsCurrent, let inventory { currentInventory = inventory }
+                    else {
+                        currentInventory = try DiskScanner.scan(root: root, findDuplicates: false, shouldCancel: { worker.isCancelled }, progress: { update in
+                            Task { @MainActor [weak self] in if self?.isScanning == true { self?.status = "Änderungen erfassen · \(update.files.formatted()) Dateien" } }
+                        })
                     }
-                    return try worker.run(executable: executable, root: root, extraArguments: arguments)
+                    return try worker.runInventory(executable: executable, inventory: currentInventory,
+                        proofURL: verdictURL.deletingLastPathComponent().appendingPathComponent("file-hashes.sqlite"),
+                        extraArguments: arguments, verdictURL: verdictURL, progress: { update in Task { @MainActor [weak self] in if self?.isScanning == true { self?.status = update } } }, fileProgress: { current, total in
+                            Task { @MainActor [weak self] in if self?.isScanning == true { self?.progressFraction = total > 0 ? min(1, Double(current) / Double(total)) : nil } } })
                 }.value
                 if !value.cancelled {
                     report = value; scannedRoot = root; completedAt = Date(); restoredReport = false
@@ -633,4 +676,101 @@ final class SecurityScanStore: ObservableObject {
     }
 
     func cancel() { runner?.cancel(); findingRunner?.cancel(); findingGeneration = UUID(); status = isUpdating ? "Signaturupdate wird abgebrochen …" : "Virenscan wird abgebrochen …" }
+}
+
+/// Persist only completed verdicts for the exact file generation and scanner policy.
+/// SQLite keeps the multi-million-file inventory off a second in-memory path map.
+final class SecurityVerdictCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var db: OpaquePointer?
+    private var lookup: OpaquePointer?, stage: OpaquePointer?, staged: OpaquePointer?, insert: OpaquePointer?
+    private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    private var pending = 0
+    private let context: String
+    private let reusable: Bool
+
+    static func stamp(_ info: stat) -> String {
+        "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec):\(info.st_flags)"
+    }
+    static func context(executable: URL, arguments: [String]) -> String {
+        var parts = ["verdict-v1"] + ClamAVRunner.scanArguments + arguments
+        var urls = [executable]
+        for argument in arguments where argument.hasPrefix("--database=") {
+            let url = URL(fileURLWithPath: String(argument.dropFirst("--database=".count)))
+            var directory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue {
+                urls += ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
+                    .filter { ["cvd", "cld", "cud", "hdb", "ndb", "ldb", "ign", "ign2", "cbc", "yar", "yara"].contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
+            } else { urls.append(url) }
+        }
+        for url in urls {
+            var info = stat()
+            parts.append(url.path + ":" + (lstat(url.path, &info) == 0 ? stamp(info) : "missing"))
+        }
+        return SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    static func signaturesAreFresh(arguments: [String]) -> Bool {
+        var newest: Double?
+        for argument in arguments where argument.hasPrefix("--database=") {
+            let url = URL(fileURLWithPath: String(argument.dropFirst("--database=".count)))
+            let files = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [url]
+            for file in files where ["cvd", "cld"].contains(file.pathExtension) {
+                guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+                let data = try? handle.read(upToCount: 512); try? handle.close()
+                guard let data, let header = String(data: data, encoding: .utf8),
+                      let epoch = header.split(separator: ":").dropFirst(8).first.flatMap({ Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) else { return false }
+                newest = max(newest ?? epoch, epoch)
+            }
+        }
+        // ClamAV applies database age to the latest update; main.cvd is intentionally older.
+        return newest.map { Date().timeIntervalSince1970 - $0 <= 7 * 86400 } ?? true
+    }
+    init?(url: URL, context: String, reusable: Bool = true) {
+        self.context = context; self.reusable = reusable
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { if let db { sqlite3_close(db) }; return nil }
+        sqlite3_busy_timeout(db, 3000)
+        let setup = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS verdicts(path TEXT PRIMARY KEY, stamp TEXT NOT NULL, context TEXT NOT NULL, signature TEXT NOT NULL); CREATE TEMP TABLE attempts(path TEXT PRIMARY KEY, stamp TEXT NOT NULL); BEGIN;"
+        guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(db, "SELECT signature FROM verdicts WHERE path=? AND stamp=? AND context=?", -1, &lookup, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO attempts VALUES (?,?)", -1, &stage, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(db, "SELECT stamp FROM attempts WHERE path=?", -1, &staged, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO verdicts VALUES (?,?,?,?)", -1, &insert, nil) == SQLITE_OK else {
+            for statement in [lookup, stage, staged, insert] { sqlite3_finalize(statement) }; sqlite3_close(db); return nil
+        }
+    }
+    private func bind(_ values: [String], to statement: OpaquePointer?) {
+        sqlite3_reset(statement); sqlite3_clear_bindings(statement)
+        for (index, value) in values.enumerated() { sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient) }
+    }
+    func verdict(path: String, info: stat) -> String? {
+        guard reusable else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        bind([path, Self.stamp(info), context], to: lookup)
+        defer { sqlite3_reset(lookup) }
+        guard sqlite3_step(lookup) == SQLITE_ROW, let value = sqlite3_column_text(lookup, 0) else { return nil }
+        return String(cString: value)
+    }
+    func prepare(path: String, info: stat) {
+        lock.lock(); defer { lock.unlock() }
+        bind([path, Self.stamp(info)], to: stage); sqlite3_step(stage); sqlite3_reset(stage)
+    }
+    func record(path: String, signature: String) {
+        guard !signature.contains("Heuristics.Limits.Exceeded") else { return }
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_flags & UInt32(SF_DATALESS) == 0 else { return }
+        let stamp = Self.stamp(info)
+        lock.lock(); defer { lock.unlock() }
+        bind([path], to: staged)
+        let matches = sqlite3_step(staged) == SQLITE_ROW && sqlite3_column_text(staged, 0).map { String(cString: $0) == stamp } == true
+        sqlite3_reset(staged)
+        guard matches else { return } // Mutation while the engine was reading is never cached.
+        bind([path, stamp, context, signature], to: insert); sqlite3_step(insert); sqlite3_reset(insert)
+        pending += 1
+        if pending >= 2000 { sqlite3_exec(db, "COMMIT; BEGIN;", nil, nil, nil); pending = 0 }
+    }
+    deinit {
+        sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        for statement in [lookup, stage, staged, insert] { sqlite3_finalize(statement) }; sqlite3_close(db)
+    }
 }
