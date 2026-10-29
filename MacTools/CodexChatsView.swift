@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UniformTypeIdentifiers
 import WebKit
 import ImageIO
@@ -676,7 +677,8 @@ struct MarkdownContent: View {
 }
 
 struct CodexComposer: NSViewRepresentable {
-    @Binding var text: String
+    @ObservedObject var store: CodexStore
+    let draftKey: String
     @Binding var height: CGFloat
     let send: () -> Void
     var attach: ([URL]) -> Void = { _ in }
@@ -690,6 +692,7 @@ struct CodexComposer: NSViewRepresentable {
         editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.setAccessibilityLabel("Nachricht an Codex")
         editor.attach = attach
         scroll.documentView = editor
+        context.coordinator.observeDraft(in: editor)
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -697,7 +700,8 @@ struct CodexComposer: NSViewRepresentable {
         if let editor = scroll.documentView as? Editor {
             editor.attach = attach
             if scroll.contentSize.width > 0, editor.frame.width != scroll.contentSize.width { editor.setFrameSize(NSSize(width: scroll.contentSize.width, height: editor.frame.height)) }
-            if editor.string != text { editor.string = text }
+            context.coordinator.observeDraft(in: editor)
+            context.coordinator.synchronize(store.drafts[draftKey] ?? "", in: editor)
             context.coordinator.resize(editor)
         }
     }
@@ -747,10 +751,36 @@ struct CodexComposer: NSViewRepresentable {
             }
         }
     }
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodexComposer
+        private weak var observedStore: CodexStore?
+        private var observedKey: String?
+        private var draftSubscription: AnyCancellable?
         init(_ parent: CodexComposer) { self.parent = parent }
-        func textDidChange(_ notification: Notification) { if let view = notification.object as? NSTextView { parent.text = view.string; resize(view) } }
+        func observeDraft(in editor: NSTextView) {
+            guard observedStore !== parent.store || observedKey != parent.draftKey else { return }
+            draftSubscription?.cancel()
+            observedStore = parent.store; observedKey = parent.draftKey
+            let key = parent.draftKey
+            // A retained popover may not update its hosting view immediately.
+            // Consume the published value directly, including while hidden.
+            draftSubscription = parent.store.$drafts.sink { [weak self, weak editor] drafts in
+                guard let self, let editor else { return }
+                self.synchronize(drafts[key] ?? "", in: editor)
+            }
+        }
+        func synchronize(_ text: String, in editor: NSTextView) {
+            guard editor.string != text else { return }
+            editor.string = text
+            editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            resize(editor)
+        }
+        func textDidChange(_ notification: Notification) {
+            if let view = notification.object as? NSTextView {
+                if parent.store.drafts[parent.draftKey] != view.string { parent.store.drafts[parent.draftKey] = view.string }
+                resize(view)
+            }
+        }
         func resize(_ view: NSTextView) {
             guard let container = view.textContainer, let layout = view.layoutManager else { return }
             layout.ensureLayout(for: container)

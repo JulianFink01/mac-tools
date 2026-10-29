@@ -370,7 +370,15 @@ enum CodexChatMenuAppearance {
     }
     // Keep the follower and transcript warm while this chat remains pinned.
     func stop() { warming?.cancel(); warming = nil; positioning.close(); store.stop() }
-    var diagnostics: [String: Any] { ["chatId": id, "popoverShown": popover.isShown, "selectedChatId": store.selectedID as Any? ?? NSNull(), "messageCount": store.messages.count, "imageCount": store.messages.reduce(0) { $0 + $1.images.count }, "connected": store.connected, "queuedCount": (store.queuedMessages[id] ?? []).count + (store.nativeQueuedMessages[id] ?? []).count].merging(positioning.diagnostics) {_,new in new} }
+    var diagnostics: [String: Any] {
+        func editor(in view: NSView) -> CodexComposer.Editor? {
+            if let editor = view as? CodexComposer.Editor { return editor }
+            return view.subviews.lazy.compactMap { editor(in: $0) }.first
+        }
+        let draft = store.drafts[store.selectedID ?? "new"] ?? ""
+        let native = popover.contentViewController.flatMap { editor(in: $0.view) }?.string
+        return ["chatId": id, "popoverShown": popover.isShown, "selectedChatId": store.selectedID as Any? ?? NSNull(), "messageCount": store.messages.count, "imageCount": store.messages.reduce(0) { $0 + $1.images.count }, "connected": store.connected, "queuedCount": (store.queuedMessages[id] ?? []).count + (store.nativeQueuedMessages[id] ?? []).count, "draftCharacters": draft.count, "nativeDraftCharacters": native.map { $0.count } as Any? ?? NSNull(), "nativeDraftMatches": native.map { $0 == draft } as Any? ?? NSNull(), "sending": store.sending, "hasError": store.error != nil].merging(positioning.diagnostics) {_,new in new}
+    }
 }
 
 /// A single measured text block avoids NSButtonCell's different baselines for two fonts.

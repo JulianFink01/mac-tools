@@ -97,7 +97,7 @@ struct CodexChatComposer: View {
                 }
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty { Text("Nachricht an Codex …  @ für Dateien, Skills und Plugins").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 3).padding(.top, 6).allowsHitTesting(false) }
-                    CodexComposer(text: Binding(get: { text }, set: { text = $0 }), height: $editorHeight, send: submit, attach: attach).frame(height: editorHeight)
+                    CodexComposer(store: store, draftKey: key, height: $editorHeight, send: submit, attach: attach).frame(height: editorHeight)
                 }
                 HStack(spacing: 12) {
                     popupButton("add", title: "+", icon: nil) {
