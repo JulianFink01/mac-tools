@@ -2,13 +2,19 @@ import SwiftUI
 
 struct CodexChatComposer: View {
     @ObservedObject var store: CodexStore
-    @State private var text = ""
     @State private var editorHeight: CGFloat = 44
-    @State private var references: [CodexReference] = []
     @State private var files: [CodexReference] = []
     @State private var showAllReferences = false
     @State private var showFullAccess = false
-    @State private var key = "new"
+    private var key: String { store.selectedID ?? "new" }
+    private var text: String {
+        get { store.drafts[key] ?? "" }
+        nonmutating set { if store.drafts[key] != newValue { store.drafts[key] = newValue } }
+    }
+    private var references: [CodexReference] {
+        get { store.references[key] ?? [] }
+        nonmutating set { if store.references[key] != newValue { store.references[key] = newValue } }
+    }
     @State private var popup: String?
     @State private var showGoal = false
     private var options: CodexTurnOptions { store.options[key] ?? CodexTurnOptions() }
@@ -83,7 +89,7 @@ struct CodexChatComposer: View {
                             ForEach(references) { ref in
                                 HStack(spacing: 5) {
                                     Image(systemName: ref.icon); Text(ref.displayName).lineLimit(1)
-                                    Button { references.removeAll { $0.id == ref.id }; persist() } label: { Image(systemName: "xmark").font(.system(size: 8)) }.buttonStyle(.plain).accessibilityLabel(ref.name + " entfernen")
+                                    Button { references.removeAll { $0.id == ref.id } } label: { Image(systemName: "xmark").font(.system(size: 8)) }.buttonStyle(.plain).accessibilityLabel(ref.name + " entfernen")
                                 }.font(.system(size: 10)).padding(7).background(Color.primary.opacity(0.05)).clipShape(Capsule())
                             }
                         }
@@ -91,7 +97,7 @@ struct CodexChatComposer: View {
                 }
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty { Text("Nachricht an Codex …  @ für Dateien, Skills und Plugins").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 3).padding(.top, 6).allowsHitTesting(false) }
-                    CodexComposer(text: $text, height: $editorHeight, send: submit, attach: attach).frame(height: editorHeight)
+                    CodexComposer(text: Binding(get: { text }, set: { text = $0 }), height: $editorHeight, send: submit, attach: attach).frame(height: editorHeight)
                 }
                 HStack(spacing: 12) {
                     popupButton("add", title: "+", icon: nil) {
@@ -149,9 +155,7 @@ struct CodexChatComposer: View {
             }.padding(12).background(Color(nsColor: .controlBackgroundColor).opacity(0.65)).clipShape(RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.primary.opacity(0.08), lineWidth: 1))
         }.frame(maxWidth: 760).frame(maxWidth: .infinity)
             .task(id: store.connected) { if store.connected { await store.loadComposerContext() } }
-            .onReceive(NotificationCenter.default.publisher(for: .codexAttachmentsChanged)) { notice in if notice.object as? String == key { references = store.references[key] ?? [] } }
             .onAppear(perform: restore).onChange(of: store.selectedID) { _ in restore() }
-            .onChange(of: text) { _ in persist() }
             .task(id: mentionQuery) {
                 if mentionQuery != nil { await store.loadComposerContext() }
                 guard let query = mentionQuery, !query.isEmpty else { files = []; return }
@@ -183,12 +187,11 @@ struct CodexChatComposer: View {
     }
     private func effortLabel(_ effort: String) -> String { ["none": "Ohne", "minimal": "Minimal", "low": "Niedrig", "medium": "Mittel", "high": "Hoch", "xhigh": "Sehr hoch", "max": "Maximum", "ultra": "Ultra"][effort] ?? effort }
     private func setOption(_ change: (inout CodexTurnOptions) -> Void) { var value = options; change(&value); store.setTurnOptions(value, for: key) }
-    private func restore() { key = store.selectedID ?? "new"; text = store.drafts[key] ?? ""; references = store.references[key] ?? []; showAllReferences = false; Task { await store.loadComposerContext() } }
-    private func persist() { if store.drafts[key] != text { store.drafts[key] = text }; if store.references[key] != references { store.references[key] = references } }
+    private func restore() { showAllReferences = false; Task { await store.loadComposerContext() } }
     private func insert(_ ref: CodexReference) {
         if !references.contains(where: { $0.id == ref.id }) { references.append(ref) }
         if !showAllReferences, let range = text.range(of: #"@[^\s]*$"#, options: .regularExpression) { text.replaceSubrange(range, with: "@" + ref.name + " ") }
-        showAllReferences = false; persist()
+        showAllReferences = false
     }
     private func chooseFiles() {
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
@@ -198,10 +201,9 @@ struct CodexChatComposer: View {
     }
     private func attach(_ urls: [URL]) {
         for ref in urls.filter({ $0.isFileURL }).map(CodexReference.attachment) where !references.contains(where: { $0.id == ref.id }) { references.append(ref) }
-        persist()
     }
     private func runCommand(_ command: String) {
-        text = ""; persist()
+        text = ""
         switch command {
         case "archive": if let id = store.selectedID { Task { await store.archive([id]) } }
         case "pin": if let id = store.selectedID { SettingsStore.shared.setChatPinned(id, enabled: !SettingsStore.shared.pinnedCodexChats.contains(id)) }
@@ -220,22 +222,13 @@ struct CodexChatComposer: View {
     }
     private func insertSkill(_ skill: CodexReference) {
         if !references.contains(where: { $0.id == skill.id }) { references.append(skill) }
-        text = ""; persist()
+        text = ""
     }
     private func submit() {
         if let query = slashQuery { guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; if let command = matchingCommands(query).first { runCommand(command.0); return }; if let skill = skillCandidates.first { insertSkill(skill); return } }
         if mentionQuery != nil, let first = candidates.first { insert(first); return }
         guard enabled else { return }
-        let oldKey = key, sent = text, refs = references
-        Task {
-            guard await store.submit(sent, references: refs) else { return }
-            if store.drafts[oldKey] == sent, (store.references[oldKey] ?? []) == refs {
-                store.drafts[oldKey] = ""; store.references[oldKey] = []
-            }
-            if (key == oldKey || oldKey == "new" && store.drafts[key] == ""),
-               text.trimmingCharacters(in: .whitespacesAndNewlines) == sent.trimmingCharacters(in: .whitespacesAndNewlines), references == refs {
-                text = ""; references = []; persist()
-            }
-        }
+        let sent = text, refs = references
+        Task { _ = await store.submit(sent, references: refs) }
     }
 }

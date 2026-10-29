@@ -331,6 +331,34 @@ struct CodexChecks {
         let restoredDraft = CodexStore(connection: CodexConnection(executableURL: fixture), defaults: defaults)
         precondition(restoredDraft.drafts["test-old"] == "Erhaltener Entwurf äöü")
         print("PASS: chat drafts persist across store recreation")
+
+        let composerDomain = "MacTools.ComposerChecks." + UUID().uuidString
+        let composerPrefs = UserDefaults(suiteName: composerDomain)!
+        defer { composerPrefs.removePersistentDomain(forName: composerDomain) }
+        let composerRPC = CodexConnection(executableURL: fixture, environment: ["MACTOOLS_TEST_SLOW_SEND":"1"])
+        let composerStore = CodexStore(connection: composerRPC, defaults: composerPrefs, followAllChats: false)
+        await composerStore.connect(); composerStore.newChat(inFolder: "/tmp")
+        let composerStarted = await composerStore.send("Sofort")
+        precondition(composerStarted)
+        composerStore.drafts["test-new"] = "Sofort"
+        composerStore.references["test-new"] = [attachment]
+        let composerSend = Task { await composerStore.submit("Sofort", references: [attachment]) }
+        for _ in 0..<100 where !composerStore.sending { try await Task.sleep(nanoseconds: 1_000_000) }
+        precondition(composerStore.sending)
+        composerStore.drafts["test-new"] = "Neuer Entwurf während der Übergabe"
+        let composerAccepted = await composerSend.value
+        precondition(composerAccepted && composerStore.drafts["test-new"] == "Neuer Entwurf während der Übergabe" && composerStore.references["test-new"] == [attachment])
+        composerStore.drafts["test-new"] = "Sofort"
+        let composerConfirmed = await composerStore.send("Sofort", references: [attachment])
+        precondition(composerConfirmed && composerStore.drafts["test-new"] == "" && composerStore.references["test-new"] == [])
+        precondition((composerPrefs.dictionary(forKey: "codexChatDrafts") as? [String:String])?["test-new"] == "")
+        _ = try await composerRPC.request("test/start-error", ["message":"fixture rejection"])
+        composerStore.drafts["test-new"] = "Fehlgeschlagene Nachricht"
+        composerStore.references["test-new"] = [attachment]
+        let composerRejected = await composerStore.send("Fehlgeschlagene Nachricht", references: [attachment])
+        precondition(!composerRejected && composerStore.drafts["test-new"] == "Fehlgeschlagene Nachricht" && composerStore.references["test-new"] == [attachment])
+        composerStore.stop()
+        print("PASS: confirmed composer clears persisted text and attachments; edits during delivery and rejected drafts survive")
         let projectDomain = "MacTools.project-picker." + UUID().uuidString
         let projectDefaults = UserDefaults(suiteName: projectDomain)!
         let projectConnection = CodexConnection(executableURL: fixture)
@@ -549,8 +577,10 @@ struct CodexChecks {
         let steerID = store.queuedMessages["test-new"]!.first!.id
         let steered = await store.deliverQueued(steerID, in: "test-new", steer: true)
         precondition(steered && store.queuedMessages["test-new"]?.isEmpty == true && store.currentTurn != nil)
+        store.drafts["test-new"] = "Sofort"
         let queuedDuringRun = await store.submit("Sofort")
         precondition(queuedDuringRun && store.queuedMessages["test-new"]?.count == 1)
+        precondition(store.drafts["test-new"] == "", "Queue admission must clear the visible composer source immediately")
         let editingID = store.queuedMessages["test-new"]!.first!.id
         store.setQueueEditing(editingID, in: "test-new", editing: true)
         let prompt = store.prompts.first!

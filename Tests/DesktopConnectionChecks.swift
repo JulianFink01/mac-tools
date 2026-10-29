@@ -3,13 +3,17 @@ import Foundation
     @MainActor static func main() async throws {
         if CommandLine.arguments.contains("--live") {
             let desktop = CodexDesktopConnection(); var received = false
-            desktop.selectedID = "01a1699c-6645-7103-b179-66e2ca45673b"
+            desktop.selectedID = CommandLine.arguments.dropFirst().drop(while: { $0 != "--live" }).dropFirst().first ?? "01a1699c-6645-7103-b179-66e2ca45673b"
             desktop.onState = { _, state in received = state["threadRuntimeStatus"] != nil }
             try await desktop.connect()
             let followed = await desktop.follow(desktop.selectedID!); precondition(followed)
             for _ in 0..<100 where !received { try await Task.sleep(nanoseconds: 20_000_000) }
-            precondition(received); desktop.stop()
-            print("PASS: installed desktop owner discovery and live snapshot (read only)")
+            precondition(received)
+            // A deliberately nonexistent ID exercises the local protocol without
+            // granting or declining any actual permission request.
+            try await desktop.answer("mactools-nonexistent-" + UUID().uuidString, method: "mcpServer/elicitation/request", in: desktop.selectedID!, result: ["action":"decline", "content":NSNull()])
+            desktop.stop()
+            print("PASS: installed desktop owner discovery, live snapshot and local approval protocol acknowledged with a nonexistent request ID")
             return
         }
         let path = "/tmp/mactools-ipc-" + UUID().uuidString + ".sock"

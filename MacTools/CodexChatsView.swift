@@ -152,7 +152,6 @@ struct CodexChatsView: View {
                         var refs = store.references[key] ?? []
                         for ref in urls.map(CodexReference.attachment) where !refs.contains(where: { $0.id == ref.id }) { refs.append(ref) }
                         store.references[key] = refs
-                        NotificationCenter.default.post(name: .codexAttachmentsChanged, object: key)
                     }
                     return true
                 }
@@ -835,7 +834,6 @@ private struct CodexPromptView: View {
     }
 }
 
-extension Notification.Name { static let codexAttachmentsChanged = Notification.Name("codexAttachmentsChanged") }
 
 enum ChatAttachments {
     static func save(_ data: Data, extension ext: String) -> URL? {

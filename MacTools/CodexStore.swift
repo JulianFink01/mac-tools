@@ -496,7 +496,7 @@ final class CodexStore: ObservableObject {
     @Published private(set) var olderCursor: String?
     private var historyPagingInitialized = false
     @Published private(set) var listCursor: String?
-    var drafts: [String: String] = [:] { didSet { defaults.set(drafts, forKey: "codexChatDrafts") } }
+    @Published var drafts: [String: String] = [:] { didSet { defaults.set(drafts, forKey: "codexChatDrafts") } }
     @Published private(set) var usageBuckets: [CodexUsageBucket] = []
     @Published private(set) var usageError: String?
     @Published private(set) var usageUpdatedAt: Date?
@@ -535,7 +535,7 @@ final class CodexStore: ObservableObject {
     @Published private(set) var currentModel: String?
     @Published private(set) var currentEffort: String?
     @Published var options: [String: CodexTurnOptions] = [:] { didSet { defaults.set(try? JSONEncoder().encode(options), forKey: "codexTurnOptions") } }
-    var references: [String: [CodexReference]] = [:] { didSet { defaults.set(try? JSONEncoder().encode(references), forKey: "codexDraftReferences") } }
+    @Published var references: [String: [CodexReference]] = [:] { didSet { defaults.set(try? JSONEncoder().encode(references), forKey: "codexDraftReferences") } }
     var queuedMessages: [String: [CodexQueuedMessage]] { queue.messages }
     private let queue: CodexQueueRepository
     private var queueSubscription: AnyCancellable?
@@ -1060,7 +1060,9 @@ final class CodexStore: ObservableObject {
     func submit(_ text: String, references: [CodexReference] = []) async -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !references.isEmpty else { return false }
         if let id = selectedID, currentTurn != nil || selected?.status == "active" || !canSend {
-            enqueue(text, references: references, in: id); return true
+            enqueue(text, references: references, in: id)
+            clearAcceptedDraft(in: id, submittedText: text, references: references)
+            return true
         }
         return await send(text, references: references)
     }

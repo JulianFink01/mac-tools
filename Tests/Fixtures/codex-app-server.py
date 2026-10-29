@@ -74,6 +74,7 @@ for line in sys.stdin:
             emit({'id':m['id'],'error':{'code':-32603,'message':start_error}})
             continue
         last_start_input = p.get('input')
+        if os.environ.get('MACTOOLS_TEST_SLOW_SEND'):time.sleep(0.3)
     if method in ('app/list','skills/list','plugin/list'):catalog_calls[method]=catalog_calls.get(method,0)+1
     if method == 'initialize':
         reply(m, {'userAgent': 'fixture'})

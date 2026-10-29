@@ -51,8 +51,16 @@ with tempfile.TemporaryDirectory(prefix='mactools-reopen-') as directory:
         thread = first.result('thread/start', dict(cwd=directory, ephemeral=False, historyMode='paginated'))['thread']['id']
         started = first.result('turn/start', dict(threadId=thread, input=[dict(type='text', text='Local-only reopen fixture')]))['turn']
         first.request('turn/interrupt', dict(threadId=thread, turnId=started['id']))
+        page = {}
         for _ in range(100):
-            page = first.result('thread/read', dict(threadId=thread, includeTurns=True))
+            reply = first.request('thread/read', dict(threadId=thread, includeTurns=True))
+            # The runtime rejects list_turns until the interrupted first turn is
+            # committed. Retry only that explicit transition, within this poll.
+            if reply.get('error', {}).get('message') == 'list_turns is not supported yet':
+                time.sleep(0.02)
+                continue
+            assert 'error' not in reply, reply.get('error')
+            page = reply['result']
             if page.get('thread', {}).get('turns'):
                 break
             time.sleep(0.02)

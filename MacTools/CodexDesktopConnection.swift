@@ -161,7 +161,7 @@ final class CodexDesktopConnection {
         var params: [String: Any] = ["conversationId": id, "requestId": requestID]
         if method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" { params["decision"] = result["decision"] }
         else { params["response"] = result }
-        let response = try await request(target, params, version: 2, target: owner)
+        let response = try await request(target, params, version: 1, target: owner)
         guard response["ok"] as? Bool == true else { throw CodexFailure(message: "Codex hat die Antwort nicht bestätigt. Die Anfrage bleibt erhalten.") }
     }
     func interrupt(_ id: String, turnID: String) async throws {

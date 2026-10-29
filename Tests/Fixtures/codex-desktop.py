@@ -54,9 +54,9 @@ try:
    assert m['version']==1 and p['conversationId']=='test-thread'
    response(m,dict(revision=3))
   elif method=='thread-follower-command-approval-decision':
-   assert m['version']==2 and p['requestId']=='approval-fixture' and p['decision']=='accept';response(m,dict(ok=True))
+   assert m['version']==1 and 'hostId' not in m and p['requestId']=='approval-fixture' and p['decision']=='accept';response(m,dict(ok=True))
   elif method=='thread-follower-submit-mcp-server-elicitation-response':
-   assert m['version']==2 and p['requestId']=='mcp-consent' and p['response']==dict(action='accept',content={},_meta={'persist':'session'});response(m,dict(ok=True))
+   assert m['version']==1 and 'hostId' not in m and p['requestId']=='mcp-consent' and p['response']==dict(action='accept',content={},_meta={'persist':'session'});response(m,dict(ok=True))
   elif method=='thread-follower-interrupt-turn':
    assert m['version']==4 and p['expectedTurnId']=='turn-test';response(m,dict(ok=True))
 except EOFError:pass
