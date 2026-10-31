@@ -56,6 +56,22 @@ final class WindowPinController: ObservableObject {
     private var hotKey: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private var lastShortcutUptime: TimeInterval = -1
+    private var shortcutRegistrationCode: OSStatus = OSStatus(eventNotHandledErr)
+    private var shortcutReceived = 0
+    private var hoverHandoffs = 0
+    private var lastShortcutAt: Date?
+    private var lastShortcutPID: pid_t?
+    private var lastShortcutWindowID: CGWindowID?
+    var shortcutDiagnostics: [String: Any] {
+        ["registered": shortcutRegistrationCode == noErr,
+         "registrationCode": shortcutRegistrationCode,
+         "received": shortcutReceived,
+         "hoverHandoffs": hoverHandoffs,
+         "lastReceivedAt": lastShortcutAt.map { ISO8601DateFormatter().string(from: $0) } ?? "",
+         "targetPID": lastShortcutPID ?? 0,
+         "targetWindowID": lastShortcutWindowID ?? 0,
+         "status": status]
+    }
 
     func start(onFailure: @escaping () -> Void) {
         guard handler == nil else { return }
@@ -124,12 +140,19 @@ final class WindowPinController: ObservableObject {
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastShortcutUptime > 0.15 else { return }
         lastShortcutUptime = now
-        toggleCurrentWindow()
+        shortcutReceived += 1
+        lastShortcutAt = Date()
+        captureFrontmostApplication()
+        lastShortcutPID = lastExternalPID
+        lastShortcutWindowID = lastExternalWindow.flatMap { NativeWindowIdentity.id($0) }
+        let selection = lastExternalPID.map { Selection.external($0, lastExternalWindow) }
+        pin(selection, revealFailure: false)
     }
 
-    private func pin(_ selection: Selection?) {
+    private func pin(_ selection: Selection?, revealFailure: Bool = true) {
+        func report(_ message: String) { self.fail(message, reveal: revealFailure) }
         refreshAccessibilityPermission()
-        guard let selection else { fail("Aktiviere das gewünschte Fenster und nutze danach das Menü oder Tastenkürzel."); return }
+        guard let selection else { report("Aktiviere das gewünschte Fenster und nutze danach das Menü oder Tastenkürzel."); return }
         switch selection {
         case .pinned(let id): unpin(id: id)
         case .own(let window):
@@ -143,16 +166,16 @@ final class WindowPinController: ObservableObject {
             pinnedWindows.append(PinnedWindowSummary(id: id, title: window.title, application: "MacTools", isLive: false))
             refreshPinnedState()
         case .external(let pid, let capturedWindow, let requestedID):
-            guard hasAccessibilityPermission else { fail("Für die Fensterwahl und Bedienung fehlt der Fensterzugriff. Öffne die Tool-Einstellungen."); return }
+            guard hasAccessibilityPermission else { report("Für die Fensterwahl und Bedienung fehlt der Fensterzugriff. Öffne die Tool-Einstellungen."); return }
             guard hasScreenCapturePermission else {
-                fail("Für die eindeutige Fensterzuordnung fehlt noch die macOS-Bildschirmfreigabe."); return
+                report("Für die eindeutige Fensterzuordnung fehlt noch die macOS-Bildschirmfreigabe."); return
             }
             guard !isStarting else { status = "Das gewählte Fenster wird gerade angeheftet …"; return }
             guard let window = capturedWindow ?? focusedWindow(pid: pid), let frame = Self.frame(window) else {
-                fail("Das ausgewählte Fenster ist nicht erreichbar. Wähle es erneut aus."); return
+                report("Das ausgewählte Fenster ist nicht erreichbar. Wähle es erneut aus."); return
             }
             AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-            // Creating the preview must not activate or raise the original.
+            // Selecting a window must not activate its application.
             var value: CFTypeRef?
             AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &value)
             let title = value as? String ?? ""
@@ -176,32 +199,31 @@ final class WindowPinController: ObservableObject {
                     if let exactID = requestedID ?? NativeWindowIdentity.id(window) { selectedSource = candidates.first { $0.windowID == exactID } }
                     else { selectedSource = titled.count == 1 ? titled.first : matches.count == 1 ? matches.first : nil }
                     guard let source = selectedSource else {
-                        self.fail("Das gewählte Fenster lässt sich nicht eindeutig zuordnen. Aktiviere es erneut und versuche es noch einmal."); return
+                        report("Das gewählte Fenster lässt sich nicht eindeutig zuordnen. Aktiviere es erneut und versuche es noch einmal."); return
                     }
                     if let id = self.targets.first(where: {
                         if case .original(_, _, let windowID, _) = $0.value { return windowID == source.windowID }
-                        if case .live(_, _, let panel) = $0.value { return panel.source.windowID == source.windowID }; return false
+                        if case .live(_, _, let panel) = $0.value { return panel.source.windowID == source.windowID }
+                        return false
                     })?.key { self.unpin(id: id); return }
-                    guard let previous = OriginalWindowLevel.level(of: source.windowID) else {
-                        self.fail("Das gewählte Originalfenster ist nicht mehr sichtbar."); return
-                    }
                     let id = UUID()
-                    do {
-                        try OriginalWindowLevel.set(Int32(CGWindowLevelForKey(.floatingWindow)), window: source.windowID)
-                    } catch {
-                        // Never create a virtual display as a fallback: registering one can
-                        // disrupt the physical desktop and overload WindowServer.
-                        self.nativeLevelStatus = error.localizedDescription
-                        self.fail("macOS erlaubt das Anheften dieses Originalfensters nicht. Die virtuelle Live-Ansicht ist wegen Bildschirmstörungen deaktiviert.")
-                        return
+                    let live = LivePinnedWindow(source: source, axWindow: window)
+                    live.onHover = { [weak self] in self?.hoverHandoffs += 1 }
+                    live.onClose = { [weak self] in self?.unpin(id: id) }
+                    live.onError = { [weak self] message in
+                        self?.unpin(id: id)
+                        self?.fail("Live-Ansicht beendet: " + message, reveal: false)
                     }
-                    self.targets[id] = .original(pid, window, source.windowID, previous)
-                    self.nativeLevelStatus = "Originalfenster: schwebende Ebene bestätigt."
+                    do { try await live.start() }
+                    catch { live.stop(); throw error }
+                    guard !Task.isCancelled, self.startGeneration == generation else { live.stop(); return }
+                    self.targets[id] = .live(pid, window, live)
+                    self.nativeLevelStatus = "Live-Ansicht; Hover öffnet das deckungsgleiche Original."
                     self.pinnedWindows.append(PinnedWindowSummary(id: id, title: title.isEmpty ? "Fenster" : title,
-                        application: source.owningApplication?.applicationName ?? "App", isLive: false))
+                        application: source.owningApplication?.applicationName ?? "App", isLive: true))
                     self.refreshPinnedState()
                 } catch is CancellationError { }
-                  catch { self.fail("Originalfenster konnte nicht angeheftet werden: " + error.localizedDescription) }
+                  catch { report("Originalfenster konnte nicht angeheftet werden: " + error.localizedDescription) }
             }
         }
     }
@@ -315,9 +337,9 @@ final class WindowPinController: ObservableObject {
         return CGRect(origin: point, size: dimensions)
     }
 
-    private func fail(_ message: String) {
+    private func fail(_ message: String, reveal: Bool = true) {
         status = message
-        onFailure?()
+        if reveal { onFailure?() }
     }
 
     private var currentMacToolsWindow: NSWindow? {
@@ -349,9 +371,12 @@ final class WindowPinController: ObservableObject {
 
     private func captureFrontmostApplication() {
         guard let application = NSWorkspace.shared.frontmostApplication,
-              application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              application.activationPolicy == .regular,
+              let window = focusedWindow(pid: application.processIdentifier),
+              Self.frame(window) != nil else { return }
         lastExternalPID = application.processIdentifier
-        lastExternalWindow = focusedWindow(pid: application.processIdentifier)
+        lastExternalWindow = window
     }
 
     private func monitorPinnedWindows() {
@@ -361,7 +386,6 @@ final class WindowPinController: ObservableObject {
             case .own(let window, _):
                 if !window.isVisible || window.isMiniaturized { unpin(id: id) }
             case .live(let pid, let window, let panel):
-                panel.ensureSourcePlacement()
                 var minimized: CFTypeRef?
                 let error = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
                 if NSRunningApplication(processIdentifier: pid)?.isTerminated != false || error == .invalidUIElement
@@ -415,6 +439,7 @@ final class WindowPinController: ObservableObject {
         let key = UInt32(UserDefaults.standard.object(forKey: "pinShortcutKeyCode") as? Int ?? 35)
         let modifiers = UInt32(UserDefaults.standard.object(forKey: "pinShortcutModifiers") as? Int ?? (cmdKey | optionKey))
         let result = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: 0x4D544F50, id: 1), GetApplicationEventTarget(), 0, &hotKey)
+        shortcutRegistrationCode = result
         if result != noErr { status = "Das Tastenkürzel konnte nicht registriert werden (\(result)). Bitte eine andere Kombination wählen." }
     }
 
@@ -531,7 +556,7 @@ struct WindowToolView: View {
                                 Text(item.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer()
-                            Text(item.isLive ? "Interaktiv" : "Schwebend").font(.caption).foregroundStyle(.green)
+                            Text(item.isLive ? "Live-Ansicht" : "Originalfenster").font(.caption).foregroundStyle(.green)
                             if item.isLive { Button("Ansicht öffnen") { pin.showPinnedView(id: item.id) } }
                             Button("Original öffnen") { pin.openOriginal(id: item.id) }
                             Button("Lösen") { pin.unpin(id: item.id) }
@@ -553,7 +578,7 @@ struct WindowToolView: View {
                         step("2", "Vorn halten", "Wähle im MacTools-Menü „Aktuelles Fenster vorn halten“ oder drücke \(pin.shortcutTitle).")
                         step("3", "Wieder lösen", "Am selben Originalfenster erneut auslösen oder hier in der Liste „Lösen“ wählen.")
                     }
-                    Text("MacTools heftet das Originalfenster nur an, wenn macOS die schwebende Fensterebene bestätigt. Verweigert macOS dies, wird eine Fehlermeldung angezeigt. Die virtuelle Live-Ansicht ist wegen möglicher Bildschirmstörungen deaktiviert.")
+                    Text("Die Live-Ansicht bleibt über anderen Apps sichtbar. Bewege die Maus darüber, um das Original an derselben Position direkt zu bedienen. Wechselst du zu einer anderen App, erscheint die Live-Ansicht wieder. Verschieben und Größe ändern erfolgen am Original. Beim Ziehen und bei stillstehender Maus wird der Fokus nicht automatisch gewechselt.")
                         .font(.caption).foregroundStyle(.secondary)
                     if !pin.nativeLevelStatus.isEmpty { DisclosureGroup("Technische Details") { Text(pin.nativeLevelStatus).font(.caption).textSelection(.enabled) } }
                 }

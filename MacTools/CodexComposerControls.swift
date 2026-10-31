@@ -96,7 +96,7 @@ struct CodexChatComposer: View {
                     }
                 }
                 ZStack(alignment: .topLeading) {
-                    if text.isEmpty { Text("Nachricht an Codex …  @ für Dateien, Skills und Plugins").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 3).padding(.top, 6).allowsHitTesting(false) }
+                    if text.isEmpty { Text("Nachricht an Codex …").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 3).padding(.top, 6).allowsHitTesting(false) }
                     CodexComposer(store: store, draftKey: key, height: $editorHeight, send: submit, attach: attach).frame(height: editorHeight)
                 }
                 HStack(spacing: 12) {
@@ -152,10 +152,10 @@ struct CodexChatComposer: View {
                         .buttonStyle(.plain).disabled(!enabled).keyboardShortcut(.return, modifiers: .command).help(store.currentTurn != nil || store.selected?.status == "active" ? "In Warteschlange stellen" : "An Codex senden").accessibilityLabel(store.currentTurn != nil || store.selected?.status == "active" ? "In Warteschlange stellen" : "An Codex senden")
                 }
                 if options.mode == "plan" { Text("Planmodus").font(.system(size: 10)).foregroundStyle(.mint) }
-            }.padding(12).background(Color(nsColor: .controlBackgroundColor).opacity(0.65)).clipShape(RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+            }.padding(16).background(Color(nsColor: .controlBackgroundColor).opacity(0.85)).clipShape(RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.primary.opacity(0.08), lineWidth: 1))
         }.frame(maxWidth: 760).frame(maxWidth: .infinity)
             .task(id: store.connected) { if store.connected { await store.loadComposerContext() } }
-            .onAppear(perform: restore).onChange(of: store.selectedID) { _ in restore() }
+            .onAppear(perform: restore).onChange(of: store.selectedID) { _ in popup = nil; showAllReferences = false; files = []; showGoal = false; showFullAccess = false; restore() }
             .task(id: mentionQuery) {
                 if mentionQuery != nil { await store.loadComposerContext() }
                 guard let query = mentionQuery, !query.isEmpty else { files = []; return }

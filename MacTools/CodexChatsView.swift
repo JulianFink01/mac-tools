@@ -94,14 +94,21 @@ struct CodexChatsView: View {
     @State private var loadingOlder = false
     @State private var visibleMessageID: String?
     @State private var pendingScroll: DispatchWorkItem?
+    @State private var transcriptGeneration = UUID()
     @StateObject private var transcriptScroll = CodexTranscriptScrollState()
     @State private var showScheduled = false
     @State private var showGoal = false
     @AppStorage("codexChatSidebarWidth") private var chatSidebarWidth = 260.0
     @State private var droppingFiles = false
     @AppStorage("codexChatSidebarVisible") private var chatSidebarVisible = true
-    private var roots: [CodexChat] { store.listedChats.filter { filter.isEmpty || $0.title.localizedCaseInsensitiveContains(filter) } }
+    private var roots: [CodexChat] { store.listedChats.filter { filter.isEmpty || $0.title.localizedCaseInsensitiveContains(filter) || store.folderName(store.folder(for: $0)).localizedCaseInsensitiveContains(filter) } }
     private var folders: [String] { store.orderedFolders(roots) }
+    private func folderLabel(_ folder: String) -> String {
+        let name = store.folderName(folder)
+        guard store.orderedFolders(store.listedChats).contains(where: { $0 != folder && store.folderName($0) == name }) else { return name }
+        let parent = URL(fileURLWithPath: folder).deletingLastPathComponent().lastPathComponent
+        return "\(name) · \(parent)"
+    }
     private var sidebarVisible: Bool { menuMode ? false : popupMode ? popupSidebarVisible : chatSidebarVisible }
     var body: some View {
         Group {
@@ -130,7 +137,7 @@ struct CodexChatsView: View {
                         Button { store.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Hinweis schließen")
                     }.padding(12).background(Color.orange.opacity(0.07))
                 }
-                transcript
+                transcript.id(store.selectedID ?? "new")
                 if let goal = store.selectedGoal {
                     CodexGoalStrip(store: store, goal: goal, edit: { showGoal = true }).id(store.selectedID)
                         .frame(maxWidth: 760).frame(maxWidth: .infinity).padding(.horizontal, 28).padding(.bottom, 8)
@@ -162,7 +169,7 @@ struct CodexChatsView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Codex").font(.title3.weight(.semibold))
                 Spacer()
@@ -170,12 +177,12 @@ struct CodexChatsView: View {
             }.padding(.top, 20)
             Button { showScheduled = false; store.newChat() } label: {
                 Label("Neuer Chat", systemImage: "square.and.pencil").frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
-            }.buttonStyle(.plain).disabled(store.sending)
+            }.buttonStyle(.plain).padding(.horizontal, 12).background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.16))).disabled(store.sending)
             Button { showScheduled = true } label: { Label("Geplante Chats", systemImage: "calendar.badge.clock").frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain).font(.callout)
-            HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Chats suchen", text: $filter).textFieldStyle(.plain) }
+            HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Chats suchen", text: $filter).textFieldStyle(.plain); if !filter.isEmpty { Button { filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).accessibilityLabel("Suche leeren") } }
                 .padding(9).background(Color.primary.opacity(0.04)).clipShape(RoundedRectangle(cornerRadius: 8))
             Button(store.showingArchived ? "Alle Chats anzeigen" : "Archiv öffnen") { Task { await store.showArchive(!store.showingArchived) } }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-            Text(store.showingArchived ? "ARCHIVIERTE CHATS" : "ALLE CHATS · STUNDENWEISE").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 6)
+            Text(store.showingArchived ? "ARCHIVIERTE CHATS" : "PROJEKTE").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 6)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     if roots.isEmpty { Text(store.connecting ? "Chats werden geladen …" : "Keine Chats gefunden.").font(.caption).foregroundStyle(.secondary).padding(.vertical, 12) }
@@ -187,12 +194,12 @@ struct CodexChatsView: View {
                             } label: {
                                 HStack(spacing: 7) {
                                     Image(systemName: collapsedFolders.contains(folder) ? "folder" : "folder.fill")
-                                    Text(store.folderName(folder)).lineLimit(1).foregroundStyle(.primary)
+                                    Text(folderLabel(folder)).lineLimit(1).foregroundStyle(.primary)
                                     Spacer(minLength: 0)
                                     Text("\(roots.filter { store.folder(for: $0) == folder }.count)").font(.system(size: 10)).foregroundStyle(.tertiary)
                                     Image(systemName: collapsedFolders.contains(folder) ? "chevron.right" : "chevron.down").font(.system(size: 8))
                                 }.font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).padding(.vertical, 9)
-                            }.buttonStyle(.plain).help(folder).accessibilityLabel("Ordner " + store.folderName(folder))
+                            }.buttonStyle(.plain).help(folder).accessibilityLabel("Ordner " + folderLabel(folder))
                             Button { showScheduled = false; store.newChat(inFolder: folder) } label: { Image(systemName: "plus").font(.system(size: 11)).frame(width: 22, height: 28) }.buttonStyle(.plain).foregroundStyle(.secondary).help("Neuer Chat in " + store.folderName(folder)).accessibilityLabel("Neuer Chat in " + store.folderName(folder)).disabled(store.sending)
                             }
                             .onDrag { NSItemProvider(object: (ToolDrop.folderPrefix + folder) as NSString) }
@@ -215,8 +222,11 @@ struct CodexChatsView: View {
                                 Button { Task { await store.select(chat.id) } } label: {
                                     HStack(spacing: 8) {
                                         VStack(alignment: .leading, spacing: 5) {
-                                            Text(chat.title).font(.system(size: 12, weight: store.selectedID == chat.id ? .semibold : .regular)).foregroundStyle(store.waitingChatIDs.contains(chat.id) || chat.needsInput ? Color.blue : chat.status == "active" ? Color.green : Color.secondary).lineLimit(2)
-                                            Text(URL(fileURLWithPath: chat.cwd).lastPathComponent).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                                            Text(chat.title).font(.system(size: 13, weight: store.selectedID == chat.id ? .semibold : .regular)).foregroundStyle(.primary.opacity(store.selectedID == chat.id ? 1 : 0.85)).lineLimit(2)
+                                            HStack(spacing: 5) {
+                                                if chat.status == "active" || chat.needsInput || store.waitingChatIDs.contains(chat.id) { Circle().fill(chat.needsInput || store.waitingChatIDs.contains(chat.id) ? Color.orange : Color.mint).frame(width: 5, height: 5) }
+                                                Text(chat.statusLabel).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                                            }
                                         }
                                         Spacer(minLength: 0)
                                     }.padding(.vertical, 10).padding(.trailing, 7)
@@ -228,8 +238,14 @@ struct CodexChatsView: View {
                                     Button(store.showingArchived ? "Wiederherstellen" : "Archivieren") { Task { await store.archive([chat.id], archived: !store.showingArchived) } }.disabled(chat.status == "active")
                                     Menu("In Projekt verschieben") { ForEach(store.projects) { project in Button(project.name) { Task { await store.move([chat.id], to: project) } } } }
                                 }
-                                CodexChatActions(chatID: chat.id, title: chat.title, open: { CodexPopupController.shared.show(chatID: chat.id) }).padding(.trailing, 5)
-                            }.padding(.leading, 6).background(store.selectedID == chat.id ? Color.primary.opacity(0.07) : .clear).clipShape(RoundedRectangle(cornerRadius: 8))
+                                Menu {
+                                    Button("In eigenem Fenster öffnen") { CodexPopupController.shared.show(chatID: chat.id) }
+                                    Toggle("In Menüleiste anheften", isOn: Binding(get: { settings.pinnedCodexChats.contains(chat.id) }, set: { settings.setChatPinned(chat.id, enabled: $0) }))
+                                    Divider()
+                                    Button(store.showingArchived ? "Wiederherstellen" : "Archivieren") { Task { await store.archive([chat.id], archived: !store.showingArchived) } }.disabled(chat.status == "active")
+                                } label: { Image(systemName: "ellipsis").frame(width: 22, height: 28) }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Aktionen für " + chat.title).padding(.trailing, 6)
+                            }.padding(.leading, 6).background(store.selectedID == chat.id ? Color.mint.opacity(0.10) : .clear).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(alignment: .leading) { if store.selectedID == chat.id { Capsule().fill(Color.mint).frame(width: 3, height: 22) } }
                             if expanded.contains(chat.id) {
                                 let agents = store.subagents[chat.id] ?? []
                                 if let error = store.agentErrors[chat.id] { Text(error).font(.system(size: 10)).foregroundStyle(.orange).padding(.leading, 30).padding(.vertical, 6) }
@@ -324,10 +340,11 @@ struct CodexChatsView: View {
                     if store.hasOlderNativeHistory || store.olderCursor != nil { Button(loadingOlder ? "Ältere Nachrichten werden geladen …" : "Ältere Nachrichten laden") { loadOlderHistory(proxy) }.disabled(loadingOlder).font(.caption).buttonStyle(.plain).foregroundStyle(.secondary) }
                     if store.loadingHistory && store.messages.isEmpty { ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 40) }
                     if store.messages.isEmpty && !store.loadingHistory {
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 26, weight: .light)).foregroundStyle(.mint).padding(14).background(Color.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                             Text(store.selectedID == nil ? "Woran arbeiten wir?" : "Dieser Chat ist bereit.").font(.system(size: 25, weight: .semibold))
-                            Text(store.selectedID == nil ? "Schreibe eine Nachricht, um zu beginnen." : "Der Verlauf erscheint hier.").font(.callout).foregroundStyle(.secondary)
-                        }.padding(.top, 90).padding(.bottom, 50)
+                            Text(store.selectedID == nil ? "Beschreibe deine Idee, stelle eine Frage oder füge Dateien hinzu." : "Der Verlauf erscheint hier.").font(.callout).foregroundStyle(.secondary)
+                        }.frame(maxWidth: 520, alignment: .leading).padding(.top, 65).padding(.bottom, 50)
                     }
                     ForEach(blocks) { block in
                         Group {
@@ -389,10 +406,12 @@ struct CodexChatsView: View {
     }
     @discardableResult private func loadOlderHistory(_ proxy: ScrollViewProxy) -> Bool {
         guard !loadingOlder, !store.loadingHistory, store.hasOlderNativeHistory || store.olderCursor != nil else { return false }
+        let generation = transcriptGeneration
         let id = store.selectedID, anchor = visibleMessageID ?? blocks.first(where: { !$0.activity })?.id ?? blocks.first?.id
         loadingOlder = true; transcriptScroll.userPaused = true; followLive = false
         Task {
             if store.hasOlderNativeHistory { await store.loadOlderNativeHistory() } else { await store.loadHistory(older:true) }
+            guard transcriptGeneration == generation, store.selectedID == id else { return }
             if store.selectedID == id {
                 await Task.yield()
                 if #available(macOS 14, *) { /* SwiftUI preserves the visible message ID across prepends. */ }
@@ -404,11 +423,16 @@ struct CodexChatsView: View {
     }
     private func beginTranscript(_ proxy: ScrollViewProxy) {
         pendingScroll?.cancel(); pendingScroll = nil
+        transcriptGeneration = UUID(); loadingOlder = false
+        visibleMessageID = nil
         transcriptScroll.userPaused = false; transcriptScroll.automaticUntil = Date().addingTimeInterval(0.35); followLive = true; scrollToLatest(proxy)
     }
     private func scrollToLatest(_ proxy: ScrollViewProxy) {
         guard followLive, !transcriptScroll.userPaused, pendingScroll == nil else { return }
+        let generation = transcriptGeneration
+        let threadID = store.selectedID
         let work = DispatchWorkItem {
+            guard generation == transcriptGeneration, threadID == store.selectedID else { return }
             pendingScroll = nil
             guard followLive, !transcriptScroll.userPaused else { return }
             transcriptScroll.automaticUntil = Date().addingTimeInterval(0.15)

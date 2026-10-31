@@ -570,6 +570,7 @@ final class CodexStore: ObservableObject {
     private var refreshing = false
     private var agentsLoadedAt: [String: Date] = [:]
     private var historyToken = UUID()
+    private var selectionToken = UUID()
     private var activeTurns: [String: String] = [:]
     private var completedTurns = Set<String>()
     private var approvalItems: [String: [String: Any]] = [:]
@@ -893,19 +894,20 @@ final class CodexStore: ObservableObject {
     }
     @discardableResult func prepareSelection(_ id: String) -> Bool {
         guard !sending else { return false }
-        historyToken = UUID(); selectedID = id; currentModel = nil; currentEffort = nil; desktop.selectedID = id
+        selectionToken = UUID(); historyToken = UUID(); selectedID = id; currentModel = nil; currentEffort = nil; desktop.selectedID = id
         nativeProjectionEpoch = UUID(); nativeHistoryLimit = 80; latestNativeTranscript = nil; hasOlderNativeHistory = false;asyncQuestions = [];confirmedAsyncAnswers = []
         messages = []; olderCursor = nil; historyPagingInitialized = false; activity = ""; error = nil; loadingHistory = true
         return true
     }
     func finishSelection(_ id: String) async {
         guard selectedID == id else { return }
+        let token = selectionToken
         async let setup = CodexTranscript.storedSetup(path:selected?.rolloutPath,threadID:id)
         if enableDesktop, connection.sharedServer || !resumedThreads.contains(id) { _ = await desktop.follow(id, resnapshot: true); objectWillChange.send() }
-        guard selectedID == id else { return }
+        guard selectedID == id, selectionToken == token else { return }
         if desktop.hasOwner(id) { loadingHistory = false } else { await loadHistory() }
         let initialSetup = await setup
-        guard selectedID == id else { return }
+        guard selectedID == id, selectionToken == token else { return }
         setupMessages[id] = initialSetup
         messages = preservingSubmissions(messages,in:id)
         if let root = selectedRootID { await loadSubagents(root) }
@@ -920,6 +922,8 @@ final class CodexStore: ObservableObject {
         let target = project ?? selected.flatMap { self.project(for: $0) } ?? newChatProject
         workingDirectory = target?.paths.first ?? selected?.cwd ?? workingDirectory
         newChatProjectID = target?.id
+        selectionToken = UUID(); nativeProjectionEpoch = UUID(); nativeHistoryLimit = 80; latestNativeTranscript = nil; hasOlderNativeHistory = false
+        currentModel = nil; currentEffort = nil
         historyToken = UUID(); selectedID = nil; desktop.selectedID = nil; messages = [];asyncQuestions = [];confirmedAsyncAnswers = []; olderCursor = nil; historyPagingInitialized = false; loadingHistory = false; activity = ""; error = nil
     }
     func newChat(inFolder folder: String) {

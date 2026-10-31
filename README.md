@@ -53,7 +53,7 @@ Dateien werden nicht hochgeladen oder automatisch gelöscht. Dies ist kein Echtz
 
 **Live-Hintergrund:** Videos importieren, auswählen, zufällig wechseln, pausieren und fortsetzen. Darstellung einpassen oder füllen. Enthält ein installierbares macOS-Bildschirmschoner-Modul für das ausgewählte Video; Passwortabfrage und Sperrverhalten verwaltet macOS.
 
-**Fenster vorn halten:** Globales konfigurierbares Tastenkürzel (standardmäßig ⌥⌘P), explizite Fensterwahl und mehrere unabhängig vom Popup gehaltene Fenster. Eigene MacTools-Fenster schweben nativ. Für fremde Fenster prüft MacTools die tatsächliche Original-Fensterebene. Verweigert macOS deren Änderung, erscheint eine Fehlermeldung. Der automatische Ausweichpfad über virtuelle Bildschirme ist wegen Bildschirmstörungen und hoher WindowServer-Last deaktiviert. Fenstersteuerungs- und Bildschirmaufnahme-Freigaben sind für die eindeutige Fensterzuordnung getrennt erforderlich. Kein Eingriff in SIP.
+Fenster vorn halten: Fremde Fenster erscheinen als scharfe Live-Ansicht auf schwebender Ebene, deckungsgleich mit dem Original. Bewegen der Maus über die Ansicht öffnet das Original zur nativen Bedienung; beim App-Wechsel erscheint die Live-Ansicht wieder. Verschieben und Größenänderungen erfolgen am Original. Kein periodisches Nach-vorn-Holen, kein virtueller Bildschirm, keine künstliche Eingabeweiterleitung und kein mitaufgenommener Mauszeiger. Während die Quell-App aktiv ist, werden ihre Live-Ansichten ausgeblendet. Eigene MacTools-Fenster unterstützen weiterhin natives Anheften. Der globale Shortcut verwendet das zuletzt gültige externe Fenster; `windows_list` liefert seine Diagnose. Fensterzugriff und Bildschirmaufnahme müssen freigegeben sein. Vollbild-Spaces und geschützte Inhalte sind nicht zugesichert.
 
 ## Installation und Freigaben
 
@@ -147,7 +147,7 @@ Oben in der Schnellansicht schaltet der Reglerknopf die Bearbeitung ein. Sichtba
 
 Große Codex-JSONL-Antworten werden inkrementell und außerhalb des UI-Threads gelesen. Bereits durchsuchte Teilnachrichten werden nicht erneut durchsucht; Desktop-Snapshots werden ebenfalls im Hintergrund dekodiert. Audioabfragen laufen im Hintergrund. App-Inventar und Dateibrowser-Indizes bleiben über die Seitennavigation erhalten; bis zu vier Dateibrowser-Ansichten werden vorgehalten.
 
-Das Anheften erstellt keine virtuellen Bildschirme mehr. Der frühere Live-Ansicht-Ausweichpfad wurde nach gemeldeten Schwarzbildern und starker Systemlast deaktiviert. MacTools-Hintergründe werden ebenfalls nicht auf virtuellen Fensterflächen abgespielt. Die Änderung entfernt den auslösenden Display-Pfad; ein erneuter Test auf dem betroffenen großen Monitor steht aus.
+Die Live-Ansicht verwendet ausschließlich ScreenCaptureKit für das ausgewählte Fenster. Der frühere virtuelle Display-Pfad bleibt unbenutzt; MacTools-Hintergründe werden nicht auf virtuelle Fensterflächen verschoben.
 
 Verwaltete virtuelle Festplatten wie `Docker.raw` zeigen primär ihre tatsächlich belegten Bytes. Die logische Maximalgröße bleibt im Tooltip; direkte Papierkorb-Aktionen sind ausgeblendet und zusätzlich in der zentralen Löschprüfung gesperrt.
 

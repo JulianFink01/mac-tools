@@ -150,7 +150,7 @@ for line in sys.stdin:
         if start_error:
             emit({'id':m['id'],'error':{'code':-32603,'message':start_error}})
             continue
-        assert p['threadId']=='test-old' or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE')
+        assert p['threadId']=='test-old' or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE') or os.environ.get('MACTOOLS_QA_RICH_SCROLL')
         loaded_threads.add(p['threadId']); resume_count += 1
         reply(m,{'thread':chat(p['threadId'])})
     elif method == 'thread/read':
@@ -161,7 +161,7 @@ for line in sys.stdin:
         reply(m, {})
     elif method == 'thread/list':
         if p.get('ancestorThreadId'):
-            assert p['ancestorThreadId'] in ['test-old', 'test-second-root', 'test-third-root'] or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE')
+            assert p['ancestorThreadId'] in ['test-old', 'test-second-root', 'test-third-root'] or os.environ.get('MACTOOLS_TEST_THREAD_LIFECYCLE') or os.environ.get('MACTOOLS_QA_RICH_SCROLL')
             child = chat('test-agent-archived' if p.get('archived') else 'test-agent')
             child.update(parentThreadId='test-old', agentNickname='Prüfagent', agentRole='explorer')
             nested = chat('test-nested'); nested['parentThreadId'] = 'test-agent'
@@ -202,6 +202,7 @@ for line in sys.stdin:
     elif method == 'test/queue-empty':
         native_queue=[];reply(m,{})
     elif method == 'thread/turns/list':
+        if os.environ.get('MACTOOLS_TEST_SLOW_HISTORY'): time.sleep(0.12)
         if os.environ.get('MACTOOLS_QA_MULTI_HISTORY') and p.get('cursor'):
             time.sleep(0.6)
             if p['cursor'] == 'next-turns':
@@ -217,6 +218,8 @@ for line in sys.stdin:
             recent['items']=[{'id':'rich-scroll','type':'agentMessage','text':'\n\n'.join('Abschnitt '+str(i)+r' – Formel \(x_i^2+1\) und langer erklärender Text. '*5 for i in range(1,19))+'\n\nENDE DER FORMATIERTEN ANTWORT'}]
         if os.environ.get('MACTOOLS_QA_RICH_SCROLL'):
             recent['items'].insert(0,{'id':'qa-context','type':'userMessage','content':[{'type':'text','text':'# AGENTS.md instructions\n<INSTRUCTIONS>\n## Arbeitsweise\n\n1. Selbstständig arbeiten.\n2. Änderungen prüfen.\n3. Ergebnisse knapp erklären.\n</INSTRUCTIONS><environment_context><cwd>/tmp/scroll-check</cwd><shell>bash</shell><timezone>Europe/Zurich</timezone></environment_context>'}]})
+            if p.get('threadId') != 'test-old':
+                recent = turn('qa-other-chat', 'ZWEITER PRUEFCHAT – eigener Verlauf ohne Formeln')
         if os.environ.get('MACTOOLS_QA_MULTI_HISTORY'):
             recent['items'][:0]=[{'id':'initial-command-'+str(i),'type':'commandExecution','command':'echo fixture','status':'completed','exitCode':0} for i in range(8)]
         if os.environ.get('MACTOOLS_QA_LONG_HISTORY'):

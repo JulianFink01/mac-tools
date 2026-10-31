@@ -363,6 +363,27 @@ struct CodexChecks {
         precondition(!composerSubmitRejected && composerStore.drafts["test-new"] == "Fehlgeschlagene Nachricht" && composerStore.references["test-new"] == [attachment], "A rejected send must restore its draft")
         composerStore.stop()
         print("PASS: composer clears before receipt; edits during delivery and rejected drafts survive")
+        let switchDomain = "MacTools.selection-race." + UUID().uuidString
+        let switchDefaults = UserDefaults(suiteName: switchDomain)!
+        let switchConnection = CodexConnection(executableURL: fixture, environment: ["MACTOOLS_QA_RICH_SCROLL":"1", "MACTOOLS_TEST_SLOW_HISTORY":"1"])
+        let switchStore = CodexStore(connection: switchConnection, defaults: switchDefaults)
+        await switchStore.connect()
+        let switchA = Task { await switchStore.select("test-old") }
+        try await Task.sleep(nanoseconds: 25_000_000)
+        let switchB = Task { await switchStore.select("test-second-root") }
+        try await Task.sleep(nanoseconds: 25_000_000)
+        let switchAAgain = Task { await switchStore.select("test-old") }
+        await switchA.value; await switchB.value; await switchAAgain.value
+        precondition(switchStore.selectedID == "test-old")
+        precondition(switchStore.messages.contains { $0.text.contains("ENDE DER FORMATIERTEN ANTWORT") })
+        precondition(!switchStore.messages.contains { $0.text.contains("ZWEITER PRUEFCHAT") })
+        await switchStore.select("test-second-root")
+        precondition(switchStore.messages.contains { $0.text.contains("ZWEITER PRUEFCHAT") })
+        precondition(!switchStore.messages.contains { $0.text.contains("ENDE DER FORMATIERTEN ANTWORT") })
+        switchStore.newChat()
+        precondition(switchStore.messages.isEmpty && !switchStore.loadingHistory && switchStore.currentModel == nil)
+        switchStore.stop(); switchDefaults.removePersistentDomain(forName: switchDomain)
+        print("PASS: delayed A-B-A selection keeps the last transcript; next chat and new draft contain no previous messages")
         let projectDomain = "MacTools.project-picker." + UUID().uuidString
         let projectDefaults = UserDefaults(suiteName: projectDomain)!
         let projectConnection = CodexConnection(executableURL: fixture)
@@ -569,6 +590,8 @@ struct CodexChecks {
         precondition(files.first?.path == "/tmp/test.txt")
         print("PASS: all-chat history vs 24h popup, model catalog, installed app/plugin/skill mentions and scoped file search")
         store.newChat(); store.workingDirectory = "/tmp"
+        precondition(store.messages.isEmpty && !store.loadingHistory && !store.hasOlderNativeHistory && store.olderCursor == nil)
+        precondition(store.currentModel == nil && store.currentEffort == nil, "A new chat must not inherit a previous transcript or its resolved model state")
         store.drafts["new"] = "  Testnachricht\n"
         let accepted = await store.send("  Testnachricht\n")
         precondition(accepted)

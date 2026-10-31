@@ -2,163 +2,175 @@ import AppKit
 import ApplicationServices
 import ScreenCaptureKit
 import AVFoundation
-import Darwin
-import Carbon
 
 private final class PinnedInputPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-/// One independently retained live panel per selected source window. No recording or uploads.
+/// A pixel-matched live view while another app is active. Interaction belongs to
+/// the original window: pointer entry hands off without synthesizing input.
 @MainActor
 final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     let source: SCWindow
     let panel: NSPanel
-    private let preview: PinnedPreview
+    private let preview = PinnedPreview(frame: .zero)
     private let axWindow: AXUIElement
     private var stream: SCStream?
     private var stopped = false
     private var ready = false
-    private var sourceSize: CGSize
+    private var sourceFrame: CGRect
     private var frameOutput: PinnedFrameOutput?
     private var configurationTask: Task<Void, Never>?
-    private let windowDisplay: VirtualWindowDisplay
+    private var activationObserver: NSObjectProtocol?
+    private var firstFrame = false
+    var onHover: (() -> Void)?
     var onClose: (() -> Void)?
     var onError: ((String) -> Void)?
-    var onInputIssue: ((String) -> Void)? { didSet { preview.onInputIssue = onInputIssue } }
 
     init(source: SCWindow, axWindow: AXUIElement) {
         self.source = source
         self.axWindow = axWindow
-        windowDisplay = VirtualWindowDisplay(window: axWindow, frame: source.frame, safeMode: source.frame.width > 1536 || source.frame.height > 960)
-        sourceSize = source.frame.size
-        let width = min(680, max(280, source.frame.width))
-        let height = max(160, width * source.frame.height / max(1, source.frame.width))
-        panel = PinnedInputPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        preview = PinnedPreview(pid: source.owningApplication!.processID, window: axWindow, display: windowDisplay, sourceFrame: source.frame)
+        sourceFrame = source.frame
+        panel = PinnedInputPanel(contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.title = "Live · " + (source.owningApplication?.applicationName ?? "Fenster") + " · " + (source.title ?? "")
         panel.level = .floating
         panel.isFloatingPanel = true
-        panel.ignoresMouseEvents = false
         panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.isExcludedFromWindowsMenu = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.sharingType = .readOnly
-        panel.becomesKeyOnlyIfNeeded = false
         panel.acceptsMouseMovedEvents = true
-        panel.contentMinSize = NSSize(width: 240, height: 120)
-        panel.contentAspectRatio = NSSize(width: max(1, source.frame.width), height: max(1, source.frame.height))
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
+        panel.hasShadow = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
         panel.contentView = preview
         panel.delegate = self
-        let original = NSButton(title: "Original öffnen", target: self, action: #selector(openOriginal))
-        original.bezelStyle = .rounded
-        original.frame = NSRect(x: 0, y: 0, width: 128, height: 24)
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.view = original
-        accessory.layoutAttribute = .right
-        panel.addTitlebarAccessoryViewController(accessory)
-        panel.center()
-        // Offset additional panels instead of hiding them underneath the previous one.
-        let offset = CGFloat(WindowPinController.shared.pinnedWindows.count % 6) * 28
-        panel.setFrameOrigin(NSPoint(x: panel.frame.minX + offset, y: panel.frame.minY - offset))
+        preview.onOpen = { [weak self] in self?.openOriginal() }
+        preview.onHover = { [weak self] in
+            self?.onHover?()
+            self?.openOriginal()
+        }
+        syncFrame(source.frame)
+    }
+
+    private func syncFrame(_ frame: CGRect) {
+        // AX/CG coordinates start at the primary display's top-left, AppKit at its bottom-left.
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        panel.setFrame(NSRect(x: frame.minX, y: primaryTop - frame.maxY,
+                              width: frame.width, height: frame.height), display: true)
     }
 
     @objc func openOriginal() {
-        guard let pid = source.owningApplication?.processID else { return }
-        // Opening the original ends pinning and removes its private display.
-        // A native original and its preview must never remain side by side.
-        stop()
-        onClose?()
+        guard !stopped, let pid = source.owningApplication?.processID else { return }
+        // Deliberate one-time user action. Never invoked from a monitor/timer.
+        panel.orderOut(nil)
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
-        AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+        let result = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+        if result != .success { onError?("Das Originalfenster konnte nicht geöffnet werden.") }
     }
 
     func start() async throws {
-        try await windowDisplay.start()
-        preview.sourceFrame = windowDisplay.sourceFrame
-        sourceSize = windowDisplay.sourceFrame.size
-        let config = configuration(size: sourceSize)
-        let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: source), configuration: config, delegate: self)
+        let filter = SCContentFilter(desktopIndependentWindow: source)
+        let stream = SCStream(filter: filter, configuration: configuration(), delegate: self)
         self.stream = stream
         let output = PinnedFrameOutput(layer: preview.displayLayer)
+        output.onFirstFrame = { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.stopped else { return }
+                self.firstFrame = true
+                self.refreshVisibility()
+            }
+        }
         frameOutput = output
         try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: output.queue)
         try await stream.startCapture()
         if stopped { try? await stream.stopCapture(); return }
         ready = true
-        preview.startInput()
-        panel.orderFrontRegardless()
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.refreshVisibility() } }
+        refreshVisibility()
     }
 
-    func show() { if ready && !stopped { panel.makeKeyAndOrderFront(nil) } }
+    func show() {
+        refreshVisibility()
+        if panel.isVisible { panel.makeKeyAndOrderFront(nil) }
+    }
 
-    private func configuration(size: CGSize) -> SCStreamConfiguration {
+    private func refreshVisibility() {
+        guard ready, firstFrame, !stopped else { return }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == source.owningApplication?.processID {
+            panel.orderOut(nil)
+        } else {
+            // Read the current geometry before revealing after a move/resize in the source app.
+            if let frame = currentFrame() { updateSourceFrame(frame) }
+            if !panel.isVisible {
+                preview.armHover()
+                panel.orderFrontRegardless()
+            }
+        }
+    }
+
+    private func currentFrame() -> CGRect? {
+        var position: CFTypeRef?, size: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axWindow, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(axWindow, kAXSizeAttribute as CFString, &size) == .success,
+              let position, let size, CFGetTypeID(position) == AXValueGetTypeID(),
+              CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero, dimensions = CGSize.zero
+        guard AXValueGetValue(unsafeBitCast(position, to: AXValue.self), .cgPoint, &origin),
+              AXValueGetValue(unsafeBitCast(size, to: AXValue.self), .cgSize, &dimensions) else { return nil }
+        return CGRect(origin: origin, size: dimensions)
+    }
+
+    private func configuration() -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
-        // Capture enough pixels for the visible Retina preview, rather than
-        // processing a full 4K original for a 680-point floating window.
-        let visible = preview.bounds.size
-        let factor = min(2, 2560 / max(1, visible.width), 2160 / max(1, visible.height))
-        let width = max(480, visible.width * factor)
-        let ratio = size.height / max(1, size.width)
-        config.width = max(2, Int(min(size.width * 2, width)))
-        config.height = max(2, Int(CGFloat(config.width) * ratio))
+        let scale = panel.screen?.backingScaleFactor ?? 2
+        config.width = max(2, Int(ceil(sourceFrame.width * scale)))
+        config.height = max(2, Int(ceil(sourceFrame.height * scale)))
+        config.pixelFormat = kCVPixelFormatType_32BGRA
         config.scalesToFit = true
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.queueDepth = 3
-        config.showsCursor = true
+        config.showsCursor = false
         config.capturesAudio = false
         if #available(macOS 14.0, *) {
+            config.shouldBeOpaque = false
             config.ignoreShadowsSingleWindow = true
             config.ignoreGlobalClipSingleWindow = true
         }
         return config
     }
 
-    func ensureSourcePlacement() { windowDisplay.ensurePlacement() }
-
     func updateSourceFrame(_ frame: CGRect) {
-        guard ready else { return }
-        preview.sourceFrame = frame
-        #if DEBUG
-        preview.updateInputGeometryLabel()
-        #endif
-        guard frame.size != sourceSize else { return }
-        sourceSize = frame.size
-        let top = panel.frame.maxY
-        let width = panel.contentView?.bounds.width ?? 680
-        panel.contentAspectRatio = NSSize(width: max(1, frame.width), height: max(1, frame.height))
-        panel.setContentSize(NSSize(width: width, height: max(120, width * frame.height / max(1, frame.width))))
-        panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: top - panel.frame.height))
-        scheduleConfiguration()
+        guard !stopped, frame.width > 0, frame.height > 0 else { return }
+        let oldScale = panel.screen?.backingScaleFactor
+        let changedSize = sourceFrame.size != frame.size
+        sourceFrame = frame
+        syncFrame(frame)
+        if changedSize || oldScale != panel.screen?.backingScaleFactor { scheduleConfiguration() }
     }
 
     private func scheduleConfiguration() {
         configurationTask?.cancel()
         guard !stopped, stream != nil else { return }
         configurationTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 150_000_000); try Task.checkCancellation() }
+            do { try await Task.sleep(nanoseconds: 100_000_000); try Task.checkCancellation() }
             catch { return }
             guard let self, !self.stopped else { return }
-            try? await self.stream?.updateConfiguration(self.configuration(size: self.sourceSize))
+            do { try await self.stream?.updateConfiguration(self.configuration()) }
+            catch { self.onError?(error.localizedDescription) }
         }
-    }
-    func windowDidResize(_ notification: Notification) {
-        scheduleConfiguration()
-        #if DEBUG
-        preview.updateInputGeometryLabel()
-        #endif
     }
 
     func stop() {
         guard !stopped else { return }
         stopped = true
         configurationTask?.cancel(); configurationTask = nil
-        preview.stopInput()
-        windowDisplay.stop()
+        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        activationObserver = nil
         panel.orderOut(nil)
         frameOutput?.stop(); frameOutput = nil
         let active = stream; stream = nil
@@ -166,10 +178,6 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     }
 
     func windowWillClose(_ notification: Notification) { onClose?() }
-    #if DEBUG
-    func windowDidMove(_ notification: Notification) { preview.updateInputGeometryLabel() }
-    #endif
-
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
             guard let self, !self.stopped else { return }
@@ -178,84 +186,52 @@ final class LivePinnedWindow: NSObject, NSWindowDelegate, SCStreamDelegate {
     }
 }
 
-/// The original receives native hardware input on its own display, including
-/// its native cursor captured by ScreenCaptureKit.
 private final class PinnedPreview: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
-    let pid: pid_t
-    let sourceWindow: AXUIElement
-    let windowDisplay: VirtualWindowDisplay
-    var sourceFrame: CGRect
-    var onInputIssue: ((String) -> Void)? { didSet { cursor.onIssue = onInputIssue } }
+    var onOpen: (() -> Void)?
+    var onHover: (() -> Void)?
     private var tracking: NSTrackingArea?
-    private var inputStopped = true
-    private lazy var cursor: PinnedWindowCursor = {
-        let value = PinnedWindowCursor(view: self, window: sourceWindow, pid: pid,
-            displayID: { [weak self] in self?.windowDisplay.displayID ?? 0 },
-            sourceFrame: { [weak self] in self?.sourceFrame ?? .zero })
-        return value
-    }()
-    override var acceptsFirstResponder: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override var isFlipped: Bool { true }
-    init(pid: pid_t, window: AXUIElement, display: VirtualWindowDisplay, sourceFrame: CGRect) {
-        self.pid = pid; sourceWindow = window; windowDisplay = display; self.sourceFrame = sourceFrame
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
-        layer?.masksToBounds = true
-        displayLayer.videoGravity = .resizeAspect
-        layer?.addSublayer(displayLayer)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Angeheftetes Live-Fenster. Native Bedienung auf eigener Fensterfläche. Escape kehrt zum normalen Bildschirm zurück.")
-    }
-    required init?(coder: NSCoder) { nil }
-    override func layout() {
-        super.layout(); displayLayer.frame = bounds
-        #if DEBUG
-        updateInputGeometryLabel()
-        #endif
-    }
-    #if DEBUG
-    func updateInputGeometryLabel() {
-        let mode = CGDisplayCopyDisplayMode(windowDisplay.displayID)
-        setAccessibilityLabel("Angeheftetes Live-Fenster. DEBUG source=\(NSStringFromRect(sourceFrame)) display=\(windowDisplay.displayID) modes=\(windowDisplay.debugSummary) mode=\(mode.map { "\($0.width)x\($0.height) pixels=\($0.pixelWidth)x\($0.pixelHeight)" } ?? "none")")
-    }
-    #endif
+    private var revealedAt = NSEvent.mouseLocation
+    private var handedOff = false
+    func armHover() { revealedAt = NSEvent.mouseLocation; handedOff = false }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
         addTrackingArea(area); tracking = area
     }
-    private func enter(_ event: NSEvent) {
-        guard !inputStopped else { return }
-        _ = cursor.enter(at: convert(event.locationInWindow, from: nil))
+    private func handOffOnHover() {
+        // Appearing under a stationary pointer must not undo an intentional app switch.
+        // Dragging across the view must not steal the ongoing drag from another app.
+        guard !handedOff, let window, window.isVisible, NSEvent.pressedMouseButtons == 0,
+              NSEvent.mouseLocation != revealedAt,
+              NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window.windowNumber else { return }
+        handedOff = true
+        onHover?()
     }
-    override func mouseEntered(with event: NSEvent) { enter(event) }
-    override func mouseMoved(with event: NSEvent) { enter(event) }
-    override func mouseExited(with event: NSEvent) { cursor.previewExited() }
-    private func forward(_ event: NSEvent) {
-        guard !inputStopped else { return }
-        cursor.forwardPreviewEvent(event, at: convert(event.locationInWindow, from:nil))
+    override func mouseEntered(with event: NSEvent) { handOffOnHover() }
+    override func mouseMoved(with event: NSEvent) { handOffOnHover() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.isOpaque = false
+        displayLayer.isOpaque = false
+        displayLayer.backgroundColor = NSColor.clear.cgColor
+        displayLayer.videoGravity = .resizeAspect
+        layer?.addSublayer(displayLayer)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Live-Ansicht. Maus darüber bewegen, um das Originalfenster zu bedienen.")
+        toolTip = "Maus darüber bewegen öffnet das Original. Beim App-Wechsel bleibt die Live-Ansicht oben."
     }
-    override func mouseDown(with event: NSEvent) { forward(event) }
-    override func mouseUp(with event: NSEvent) { forward(event) }
-    override func rightMouseDown(with event: NSEvent) { forward(event) }
-    override func rightMouseUp(with event: NSEvent) { forward(event) }
-    override func otherMouseDown(with event: NSEvent) { forward(event) }
-    override func otherMouseUp(with event: NSEvent) { forward(event) }
-    override func mouseDragged(with event: NSEvent) { forward(event) }
-    override func rightMouseDragged(with event: NSEvent) { forward(event) }
-    override func otherMouseDragged(with event: NSEvent) { forward(event) }
-    override func scrollWheel(with event: NSEvent) { forward(event) }
-    // The native mouse-exit caused by entering the private display is expected;
-    // the observer returns it only when the translated cursor leaves the view.
-    func startInput() {
-        inputStopped = false
-    }
-    func stopInput() { inputStopped = true; cursor.stop() }
+    required init?(coder: NSCoder) { nil }
+    override func layout() { super.layout(); displayLayer.frame = bounds }
+    override func mouseDown(with event: NSEvent) { onOpen?() }
+    override func rightMouseDown(with event: NSEvent) { onOpen?() }
+    override func accessibilityPerformPress() -> Bool { onOpen?(); return true }
 }
 
 /// Video delivery is independent of pointer drawing and AX window monitoring.
@@ -264,6 +240,8 @@ private final class PinnedFrameOutput: NSObject, SCStreamOutput, @unchecked Send
     let queue = DispatchQueue(label: "MacTools.pinned.frames", qos: .userInteractive)
     private let render: (CMSampleBuffer) -> Void
     private let clear: () -> Void
+    var onFirstFrame: (() -> Void)?
+    private var deliveredFirstFrame = false
     private var stopped = false // accessed only on queue
     init(layer: AVSampleBufferDisplayLayer) {
         if #available(macOS 14.0, *) {
@@ -290,6 +268,7 @@ private final class PinnedFrameOutput: NSObject, SCStreamOutput, @unchecked Send
             attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
         }
         render(buffer)
+        if !deliveredFirstFrame { deliveredFirstFrame = true; onFirstFrame?() }
     }
     func stop() { queue.async { self.stopped = true; self.clear() } }
 }
