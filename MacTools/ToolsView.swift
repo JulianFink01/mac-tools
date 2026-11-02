@@ -41,7 +41,7 @@ struct ContainersView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ToolPageHeader(title: "Container", description: "Laufende Docker- und Podman-Container mit ihren Ports. Die Liste aktualisiert sich automatisch.", icon: "shippingbox")
+                ToolPageHeader(title: "Container", description: "Laufende Docker- und Podman-Container mit Ports, CPU und RAM. Die Liste aktualisiert sich automatisch.", icon: "shippingbox")
                 HStack {
                     Text("\(store.containers.count) laufen").font(.callout).foregroundStyle(.secondary)
                     Spacer()
@@ -57,6 +57,11 @@ struct ContainersView: View {
                             Text(container.name).font(.headline)
                             Text(container.detail).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                             Text(container.image).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            HStack(spacing: 18) {
+                                Text("CPU " + (store.metrics[container.id]?.cpu ?? "—"))
+                                Text("RAM " + (store.metrics[container.id]?.memory ?? "—"))
+                                Text("GPU —").help("Docker und Podman liefern auf diesem Mac keine GPU-Auslastung pro Container.")
+                            }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         Button { Task { await store.stop(container) } } label: { Label(store.stopping.contains(container.id) ? "Stoppt …" : "Stoppen", systemImage: "stop.fill") }
                             .disabled(store.stopping.contains(container.id)).accessibilityLabel(container.name + " stoppen")

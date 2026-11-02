@@ -111,9 +111,35 @@ final class ClamAVRunner: @unchecked Sendable {
                            + Self.scanArguments + extraArguments + ["--", root.path])
     }
 
-    func recheckFindings(executable: URL?, paths: [String], extraArguments: [String] = []) throws -> CurrentSecurityFindings {
-        var files: [DiskFile] = [], pending: [String] = []
+    /// Page opening checks metadata/cache only. It must never decompress historical archives.
+    func inspectFindings(executable: URL?, paths: [String], verdictURL: URL,
+                         extraArguments: [String] = []) throws -> CurrentSecurityFindings {
+        let cache = executable.flatMap { SecurityVerdictCache(url: verdictURL,
+            context: SecurityVerdictCache.context(executable: $0, arguments: extraArguments),
+            reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments), readOnly: true) }
+        var items: [SecurityFinding] = [], pending: [String] = []
         for path in Set(paths).sorted() {
+            if isCancelled { throw CancellationError() }; try Task.checkCancellation()
+            var before = stat(), after = stat()
+            if lstat(path, &before) != 0 {
+                if errno != ENOENT && errno != ENOTDIR { pending.append(path) }
+                continue
+            }
+            guard (before.st_mode & S_IFMT) == S_IFREG, before.st_flags & UInt32(SF_DATALESS) == 0,
+                  let signature = cache?.verdict(path: path, info: before), lstat(path, &after) == 0,
+                  SecurityVerdictCache.stamp(before) == SecurityVerdictCache.stamp(after) else { pending.append(path); continue }
+            if !signature.isEmpty { items.append(SecurityFinding(path: path, signature: signature)) }
+        }
+        return CurrentSecurityFindings(items: items, pendingPaths: pending, checkedAt: Date())
+    }
+
+    func recheckFindings(executable: URL?, paths: [String], extraArguments: [String] = [], verdictURL: URL? = nil,
+                         timeLimit: TimeInterval = 45,
+                         progress: @Sendable (Int, Int) -> Void = { _, _ in }) throws -> CurrentSecurityFindings {
+        var files: [DiskFile] = [], pending: [String] = []
+        var stamps: [String: String] = [:]
+        for path in Set(paths).sorted() {
+            if isCancelled { throw CancellationError() }; try Task.checkCancellation()
             var info = stat()
             if lstat(path, &info) != 0 {
                 if errno != ENOENT && errno != ENOTDIR { pending.append(path) }
@@ -123,7 +149,7 @@ final class ClamAVRunner: @unchecked Sendable {
                   info.st_size <= 2_147_483_648, let file = try? DiskFile.snapshot(at: URL(fileURLWithPath: path)) else {
                 pending.append(path); continue
             }
-            files.append(file)
+            files.append(file); stamps[path] = SecurityVerdictCache.stamp(info)
         }
         guard !files.isEmpty, let executable else {
             return CurrentSecurityFindings(items: [], pendingPaths: pending + files.map(\.path), checkedAt: Date())
@@ -134,10 +160,18 @@ final class ClamAVRunner: @unchecked Sendable {
         pending += files.filter { $0.path.contains("\n") }.map(\.path)
         guard !safe.isEmpty else { return CurrentSecurityFindings(items: [], pendingPaths: pending, checkedAt: Date()) }
         try Data((safe.map(\.path).joined(separator: "\n") + "\n").utf8).write(to: list)
-        let result = try runProcess(executable: executable, arguments: Self.scanArguments + ["--infected", "--file-list=\(list.path)"] + extraArguments)
+        let cache = verdictURL.flatMap { SecurityVerdictCache(url: $0,
+            context: SecurityVerdictCache.context(executable: executable, arguments: extraArguments),
+            reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments)) }
+        for file in safe { var info = stat(); if lstat(file.path, &info) == 0, SecurityVerdictCache.stamp(info) == stamps[file.path] { cache?.prepare(path: file.path, info: info) } }
+        progress(0, safe.count)
+        let result = try runProcess(executable: executable, arguments: Self.scanArguments + ["--verbose", "--file-list=\(list.path)"] + extraArguments,
+            timeLimit: timeLimit, progress: { progress($0, safe.count) }, verdict: { cache?.record(path: $0, signature: $1) })
         var current: [SecurityFinding] = []
         for file in safe {
-            guard let after = try? DiskFile.snapshot(at: file.url), file.identity == after.identity,
+            var state = stat()
+            guard lstat(file.path, &state) == 0, stamps[file.path] == SecurityVerdictCache.stamp(state),
+                  let after = try? DiskFile.snapshot(at: file.url), file.identity == after.identity,
                   file.bytes == after.bytes, file.modified == after.modified else {
                 var info = stat()
                 if lstat(file.path, &info) == 0 || (errno != ENOENT && errno != ENOTDIR) { pending.append(file.path) }
@@ -153,7 +187,7 @@ final class ClamAVRunner: @unchecked Sendable {
         return CurrentSecurityFindings(items: current, pendingPaths: pending, checkedAt: Date())
     }
 
-    func runProcess(executable: URL, arguments: [String], progress: @Sendable (Int) -> Void = { _ in },
+    func runProcess(executable: URL, arguments: [String], timeLimit: TimeInterval? = nil, progress: @Sendable (Int) -> Void = { _ in },
                     activity: @Sendable (String) -> Void = { _ in },
                     verdict: @Sendable (String, String) -> Void = { _, _ in }) throws -> SecurityReport {
         let child = Process()
@@ -173,7 +207,20 @@ final class ClamAVRunner: @unchecked Sendable {
         processes.append(child)
         do { try child.run() } catch { processes.removeAll { $0 === child }; lock.unlock(); throw error }
         lock.unlock()
-        // Drain continuously so a verbose process cannot fill the pipe and deadlock.
+        let deadline = timeLimit.map { Date().addingTimeInterval(max(0.01, $0)) }
+        var timedOut = false
+        func stopChild() {
+            if child.isRunning { child.terminate() }
+            let grace = Date().addingTimeInterval(0.5)
+            while child.isRunning && Date() < grace { usleep(10_000) }
+            if child.isRunning { Darwin.kill(child.processIdentifier, SIGKILL) }
+        }
+        defer {
+            if child.isRunning { stopChild() }
+            try? pipe.fileHandleForReading.close()
+            lock.lock(); processes.removeAll { $0 === child }; lock.unlock()
+        }
+        // Poll keeps cancellation and the whole-process deadline observable even without output.
         var output = Data()
         var truncated = false
         var pending = Data(), completed = 0
@@ -181,6 +228,12 @@ final class ClamAVRunner: @unchecked Sendable {
         var readBuffer = [UInt8](repeating: 0, count: 8192)
         var lastActivity = Date.distantPast
         while true {
+            if isCancelled || Task.isCancelled { cancel(); stopChild(); break }
+            if let deadline, Date() >= deadline { timedOut = true; stopChild(); break }
+            var descriptor = pollfd(fd: pipe.fileHandleForReading.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+            let ready = Darwin.poll(&descriptor, 1, 100)
+            if ready < 0 { if errno == EINTR { continue }; throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            if ready == 0 { continue }
             // FileHandle.read(upToCount:) may wait to fill the requested buffer
             // on this macOS runtime. POSIX read returns the currently available
             // pipe bytes, keeping file progress live even when the next file is slow.
@@ -220,8 +273,14 @@ final class ClamAVRunner: @unchecked Sendable {
         output.append(pending)
         if output.count > 1_048_576 { output.removeFirst(output.count - 1_048_576); truncated = true }
         progress(completed)
+        while child.isRunning {
+            if isCancelled || Task.isCancelled { cancel(); stopChild(); break }
+            if let deadline, Date() >= deadline { timedOut = true; stopChild(); break }
+            usleep(10_000)
+        }
         child.waitUntilExit()
-        lock.lock(); let wasCancelled = cancelled; processes.removeAll { $0 === child }; lock.unlock()
+        if timedOut { throw SecurityFindingCheckError.timedOut }
+        lock.lock(); let wasCancelled = cancelled; lock.unlock()
         let text = String(decoding: output, as: UTF8.self)
         return SecurityReport(exitCode: child.terminationStatus,
                               output: (truncated ? "WARNING: Protokoll auf die letzten 1 MB begrenzt.\n" : "") + text,
@@ -462,12 +521,18 @@ final class SecurityScanStore: ObservableObject {
     var acceptsFileChanges = true
     private let reportURL: URL
     private let verdictURL: URL
+    private let executableOverride: URL?
+    private let findingTimeLimit: TimeInterval
     @Published private(set) var completedAt: Date?
     @Published private(set) var restoredReport = false
     @Published private(set) var currentFindings: CurrentSecurityFindings?
     @Published private(set) var isCheckingFindings = false
     private var findingGeneration = UUID()
     private var findingRunner: ClamAVRunner?
+    private var findingTask: Task<CurrentSecurityFindings, Error>?
+    private var findingDeadline: Task<Void, Never>?
+    @Published private(set) var findingProgress = "Fundstatus aktualisieren …"
+    @Published private(set) var findingCheckIssue: String?
 
     func criticalMessages(root: URL) -> [String] {
         var messages: [String] = []
@@ -480,30 +545,65 @@ final class SecurityScanStore: ObservableObject {
         return messages
     }
 
-    func refreshCurrentFindings(legacyPaths: [String] = []) async {
-        let paths = (report?.items.filter { !$0.isLimit }.map(\.path) ?? []) + legacyPaths
-        if paths.isEmpty { currentFindings = CurrentSecurityFindings(items: [], pendingPaths: [], checkedAt: Date()); return }
+    func refreshCurrentFindings(legacyPaths: [String] = [], verifyContents: Bool = false) async {
         guard !isScanning, !isUpdating, !isCheckingFindings else { return }
-        isCheckingFindings = true
-        let generation = findingGeneration
+        let limitPaths = Set(report?.items.filter(\.isLimit).map(\.path) ?? [])
+        let paths = Array(Set((report?.items.filter { !$0.isLimit }.map(\.path) ?? []) + legacyPaths.filter { !limitPaths.contains($0) })).sorted()
+        findingCheckIssue = nil
+        if paths.isEmpty { currentFindings = CurrentSecurityFindings(items: [], pendingPaths: [], checkedAt: Date()); return }
+        let previous = currentFindings
+        let confirmed = Set(previous?.items.map(\.path) ?? [])
+        currentFindings = CurrentSecurityFindings(items: previous?.items ?? [],
+            pendingPaths: Array(Set((previous?.pendingPaths ?? []) + paths.filter { !confirmed.contains($0) })).sorted(),
+            checkedAt: previous?.checkedAt ?? Date())
+        let generation = UUID(); findingGeneration = generation
         let worker = ClamAVRunner(); findingRunner = worker
-        defer { isCheckingFindings = false; findingRunner = nil }
-        let executable = self.executable
-        do {
-            let result = try await Task.detached(priority: .utility) {
-                try worker.recheckFindings(executable: executable, paths: paths,
-                    extraArguments: ["--database=\(Self.databaseDirectory.path)"])
-            }.value
-            if findingGeneration == generation { currentFindings = result }
-        } catch {
-            if findingGeneration == generation {
-                currentFindings = CurrentSecurityFindings(items: [], pendingPaths: Array(Set(paths)).sorted(), checkedAt: Date())
-                technicalLog = error.localizedDescription
+        let executable = self.executable, verdictURL = self.verdictURL, timeout = findingTimeLimit
+        let arguments = ["--database=\(Self.databaseDirectory.path)"] + (executable.map {
+            ["--cvdcertsdir=\($0.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("etc/certs").path)"]
+        } ?? [])
+        findingProgress = verifyContents ? "Fundstellen prüfen · 0 / \(paths.count)" : "Fundstatus aktualisieren …"
+        isCheckingFindings = true
+        let task = Task.detached(priority: .utility) {
+            if verifyContents {
+                return try worker.recheckFindings(executable: executable, paths: paths, extraArguments: arguments,
+                    verdictURL: verdictURL, timeLimit: timeout, progress: { count, total in
+                        Task { @MainActor [weak self] in
+                            guard self?.findingGeneration == generation else { return }
+                            self?.findingProgress = "Fundstellen prüfen · \(count) / \(total)"
+                        }
+                    })
             }
+            return try worker.inspectFindings(executable: executable, paths: paths, verdictURL: verdictURL, extraArguments: arguments)
+        }
+        findingTask = task
+        findingDeadline = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: verifyContents ? UInt64((timeout + 2) * 1_000_000_000) : 3_000_000_000) } catch { return }
+            guard let self, self.findingGeneration == generation else { return }
+            self.cancelFindingCheck(message: "Die Fundstellenprüfung hat das Zeitlimit erreicht. Nicht bestätigte Dateien bleiben offen.")
+        }
+        defer {
+            if findingGeneration == generation { isCheckingFindings = false; findingRunner = nil; findingTask = nil; findingDeadline?.cancel(); findingDeadline = nil }
+        }
+        do {
+            let value = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { worker.cancel(); task.cancel() })
+            try Task.checkCancellation()
+            if findingGeneration == generation { currentFindings = value }
+        } catch {
+            guard findingGeneration == generation else { return }
+            currentFindings = CurrentSecurityFindings(items: [], pendingPaths: paths, checkedAt: Date())
+            if !(error is CancellationError) { findingCheckIssue = error.localizedDescription; technicalLog = error.localizedDescription }
         }
     }
 
-    init(directory: URL = VideoLibraryStore.appSupportDirectory) {
+    func cancelFindingCheck(message: String? = "Fundstellenprüfung abgebrochen. Nicht bestätigte Dateien bleiben offen.") {
+        findingGeneration = UUID(); findingRunner?.cancel(); findingTask?.cancel(); findingDeadline?.cancel()
+        findingRunner = nil; findingTask = nil; findingDeadline = nil; isCheckingFindings = false
+        findingCheckIssue = message
+    }
+
+    init(directory: URL = VideoLibraryStore.appSupportDirectory, executableURL: URL? = nil, findingTimeLimit: TimeInterval = 45) {
+        executableOverride = executableURL; self.findingTimeLimit = max(0.01, findingTimeLimit)
         reportURL = directory.appendingPathComponent("last-virus-scan.plist")
         verdictURL = directory.appendingPathComponent("virus-verdicts.sqlite")
         removalSubscription = FileActions.shared.removals.sink { [weak self] change in
@@ -544,7 +644,7 @@ final class SecurityScanStore: ObservableObject {
     }
 
     func refresh() {
-        executable = ClamAVRunner.executable()
+        executable = executableOverride ?? ClamAVRunner.executable()
         signatureStatus = hasSignatures ? "Lokale Virensignaturen verfügbar. Vor automatischen Scans wird täglich aktualisiert."
             : "Erster Start: Virensignaturen werden per Internet geladen."
     }
@@ -582,7 +682,7 @@ final class SecurityScanStore: ObservableObject {
         guard !isScanning, !isUpdating, let executable else { return false }
         isUpdating = true
         issue = nil
-        findingGeneration = UUID(); findingRunner?.cancel()
+        cancelFindingCheck(message: nil)
         technicalLog = ""
         status = "Virensignaturen werden aktualisiert …"
         let worker = ClamAVRunner()
@@ -623,7 +723,7 @@ final class SecurityScanStore: ObservableObject {
         }
         guard hasSignatures else { status = "Die Schutzdaten fehlen. Bitte zuerst aktualisieren."; issue = status; return }
         issue = nil
-        findingGeneration = UUID(); findingRunner?.cancel()
+        cancelFindingCheck(message: nil)
         technicalLog = ""
         isScanning = true
         progressFraction = nil
@@ -675,7 +775,7 @@ final class SecurityScanStore: ObservableObject {
         }
     }
 
-    func cancel() { runner?.cancel(); findingRunner?.cancel(); findingGeneration = UUID(); status = isUpdating ? "Signaturupdate wird abgebrochen …" : "Virenscan wird abgebrochen …" }
+    func cancel() { runner?.cancel(); cancelFindingCheck(); status = isUpdating ? "Signaturupdate wird abgebrochen …" : "Virenscan wird abgebrochen …" }
 }
 
 /// Persist only completed verdicts for the exact file generation and scanner policy.
@@ -725,8 +825,15 @@ final class SecurityVerdictCache: @unchecked Sendable {
         // ClamAV applies database age to the latest update; main.cvd is intentionally older.
         return newest.map { Date().timeIntervalSince1970 - $0 <= 7 * 86400 } ?? true
     }
-    init?(url: URL, context: String, reusable: Bool = true) {
+    init?(url: URL, context: String, reusable: Bool = true, readOnly: Bool = false) {
         self.context = context; self.reusable = reusable
+        if readOnly {
+            guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+                  sqlite3_prepare_v2(db, "SELECT signature FROM verdicts WHERE path=? AND stamp=? AND context=?", -1, &lookup, nil) == SQLITE_OK else {
+                sqlite3_finalize(lookup); if let db { sqlite3_close(db) }; return nil
+            }
+            return
+        }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { if let db { sqlite3_close(db) }; return nil }
         sqlite3_busy_timeout(db, 3000)
@@ -773,4 +880,9 @@ final class SecurityVerdictCache: @unchecked Sendable {
         sqlite3_exec(db, "COMMIT;", nil, nil, nil)
         for statement in [lookup, stage, staged, insert] { sqlite3_finalize(statement) }; sqlite3_close(db)
     }
+}
+
+private enum SecurityFindingCheckError: LocalizedError {
+    case timedOut
+    var errorDescription: String? { "Die Fundstellenprüfung hat das Zeitlimit erreicht. Nicht bestätigte Dateien bleiben offen; du kannst einen vollständigen Virenscan starten." }
 }

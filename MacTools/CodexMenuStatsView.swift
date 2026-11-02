@@ -4,6 +4,7 @@ import Charts
 struct CodexMenuStatsView: View {
     @ObservedObject var settings: SettingsStore = .shared
     @ObservedObject var store: CodexStore = .shared
+    @ObservedObject private var processStore = UserProcessStore.shared
     let openChats: () -> Void
     let openSettings: () -> Void
     var openLimits: () -> Void = {}
@@ -23,6 +24,8 @@ struct CodexMenuStatsView: View {
                 Button(action: openSettings) { Image(systemName: "gearshape") }.buttonStyle(.plain).help("Menüleisten-Favoriten einstellen").accessibilityLabel("Menüleisten-Favoriten einstellen")
                 Button(action: openChats) { Image(systemName: "arrow.up.right.square") }.buttonStyle(.plain).help("Alle Codex-Chats öffnen").accessibilityLabel("Alle Codex-Chats öffnen")
             }
+            chatList
+            processList
             HStack(alignment: .firstTextBaseline) {
                 Text("\(running.count)").font(.system(size: 38, weight: .semibold, design: .rounded)).monospacedDigit()
                 Text("laufende Chats").font(.callout).foregroundStyle(.secondary)
@@ -42,23 +45,6 @@ struct CodexMenuStatsView: View {
             }.chartXScale(domain: Date().addingTimeInterval(Double(-minutes * 60))...Date()).chartYScale(domain: 0...max(1, (history.map(\.running).max() ?? 1) + 1)).chartXAxis(.hidden).chartYAxis(.hidden).frame(height: 90)
                 .accessibilityLabel("Verlauf der laufenden Codex-Chats seit dem App-Start")
             Text("Seit App-Start · Aktualisierung alle 10 Sekunden").font(.system(size: 10)).foregroundStyle(.secondary)
-            Divider()
-            if running.isEmpty { Text("Gerade laufen keine Chats.").foregroundStyle(.secondary) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(store.liveChats.filter { $0.status == "active" || store.waitingChatIDs.contains($0.id) }) { chat in
-                        HStack {
-                        Button { openChats(); Task { await store.select(chat.id) } } label: {
-                            HStack(alignment: .top, spacing: 9) {
-                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(store.waitingChatIDs.contains(chat.id) ? Color.blue : .green).lineLimit(2); Text(store.folderName(store.folder(for: chat)) + " · " + (store.waitingChatIDs.contains(chat.id) ? "Wartet auf deine Eingabe" : chat.statusLabel)).font(.caption).foregroundStyle(.secondary) }
-                                Spacer(minLength: 0)
-                            }.padding(.vertical, 7).contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                        CodexChatActions(settings: settings, chatID: chat.id, title: chat.title, open: { CodexPopupController.shared.show(chatID: chat.id) })
-                        }
-                    }
-                }
-            }.scrollIndicators(.hidden).frame(maxHeight: 190)
             Text("\(store.liveChats.count) geladene Chats · Subagenten im jeweiligen Chat").font(.system(size: 10)).foregroundStyle(.secondary)
         }.padding(18) }.scrollIndicators(.hidden).frame(width: 390).task {
             store.start()
@@ -66,6 +52,60 @@ struct CodexMenuStatsView: View {
                 await store.loadLocalStats()
                 await store.loadLocalUsageHistory()
                 do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            }
+        }
+    }
+    private var chatList: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("CHATS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if store.menuChats.isEmpty {
+                Text("Keine Chats aus der letzten Stunde.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(store.menuChats) { chat in
+                    HStack(spacing: 6) {
+                        Button { CodexPopupController.shared.show(chatID: chat.id) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(chat.title).font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                                Text(store.folderName(store.folder(for: chat)) + " · " + (store.waitingChatIDs.contains(chat.id) ? "Wartet auf deine Eingabe" : chat.statusLabel))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        CodexChatActions(settings: settings, chatID: chat.id, title: chat.title, open: { CodexPopupController.shared.show(chatID: chat.id) })
+                    }.padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
+                }
+            }
+        }
+    }
+    private var processList: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("PROZESSE · \(processStore.scope.title.uppercased())").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("\(processStore.scopedProcesses.count) anzeigen") { UserProcessWindowController.shared.show() }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(.mint)
+            }
+            ForEach(Array(processStore.featured.prefix(3))) { process in
+                Button { UserProcessWindowController.shared.show(processID: process.id) } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Image(systemName: process.isCodex ? "bubble.left.and.bubble.right" : "terminal").foregroundStyle(.mint)
+                            Text(process.displayName).lineLimit(1)
+                            Text("PID \(process.pid)").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                            Spacer(minLength: 0)
+                            if !process.ports.isEmpty { Text("Port " + process.ports.map(String.init).joined(separator: ", ")).font(.caption2).foregroundStyle(.orange).lineLimit(1) }
+                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if !process.command.isEmpty { Text(process.command).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
+                    }.font(.caption).padding(9).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
+                }.buttonStyle(.plain)
+            }
+            if processStore.processes.isEmpty { Text("Benutzerprozesse werden geladen …").font(.caption).foregroundStyle(.secondary) }
+            else if processStore.scopedProcesses.isEmpty { Text("Keine Prozesse im gewählten Bereich.").font(.caption).foregroundStyle(.secondary) }
+        }.task {
+            while !Task.isCancelled {
+                await processStore.refresh()
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
             }
         }
     }

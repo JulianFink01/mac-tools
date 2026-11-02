@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 
 struct ScanSnapshot: Codable, Identifiable {
     var id: UUID = UUID()
@@ -53,7 +54,10 @@ final class DiskScanStore: ObservableObject {
         duplicateIndexTask?.cancel(); duplicateIndexTask = nil
         self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache(root: result.root, date: result.completedAt)
     }
-    @Published private(set) var duplicateIndex: DuplicateViewIndex?
+    @Published private(set) var duplicateRevision: UInt64 = 0
+    @Published private(set) var duplicateIndex: DuplicateViewIndex? { didSet { duplicateRevision &+= 1 } }
+    @Published private(set) var isReconcilingFiles = false
+    private var lastReconciliation: [Bool: (Date, UInt64)] = [:]
     private var duplicateIndexTask: Task<Void, Never>?
     private var duplicateIndexGeneration = UUID()
     @Published private(set) var isScanning = false
@@ -319,6 +323,55 @@ final class DiskScanStore: ObservableObject {
             }
             isApplyingRemovals = false; scheduleInventoryRelease()
         }
+    }
+
+    /// Reconcile existence only, never content or deletion. Keep the current page visible.
+    func reconcileMissingDuplicates(mediaOnly: Bool, force: Bool = false) async {
+        guard acceptsFileChanges, !isScanning, !isApplyingRemovals, !isReconcilingFiles,
+              let result, let index = duplicateIndex else { return }
+        if !force, let (date, revision) = lastReconciliation[mediaOnly], revision == duplicateRevision, Date().timeIntervalSince(date) < 60 { return }
+        let root = result.root, date = result.completedAt
+        let groups = mediaOnly ? index.media : index.all
+        isReconcilingFiles = true
+        defer { isReconcilingFiles = false }
+        let worker = Task.detached(priority: .utility) {
+            var missing = Set<String>(), missingDirectories = Set<String>(), existingDirectories = Set<String>()
+            var checked = 0
+            for group in groups {
+                for file in group.files {
+                    checked += 1
+                    if checked % 256 == 0 { try Task.checkCancellation() }
+                    let path = DiskScanner.canonicalPath(file.path)
+                    var directory = (path as NSString).deletingLastPathComponent
+                    var ancestor = directory, missingAncestor = false
+                    while ancestor != "/" && !ancestor.isEmpty {
+                        if missingDirectories.contains(ancestor) { missingAncestor = true; break }
+                        ancestor = (ancestor as NSString).deletingLastPathComponent
+                    }
+                    if missingAncestor { missing.insert(file.path); continue }
+                    var info = stat()
+                    guard lstat(file.path, &info) != 0, errno == ENOENT || errno == ENOTDIR else { continue }
+                    missing.insert(file.path)
+                    // One removed directory may account for thousands of stale descendants.
+                    while directory != "/" && directory != root.path && !directory.isEmpty {
+                        if existingDirectories.contains(directory) { break }
+                        var parent = stat()
+                        if lstat(directory, &parent) == 0 { existingDirectories.insert(directory); break }
+                        guard errno == ENOENT || errno == ENOTDIR else { break }
+                        missingDirectories.insert(directory)
+                        directory = (directory as NSString).deletingLastPathComponent
+                    }
+                }
+            }
+            return (missing, missingDirectories)
+        }
+        do {
+            let changes = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+            try Task.checkCancellation()
+            guard self.result?.root == root, self.result?.completedAt == date, acceptsFileChanges else { return }
+            if !changes.0.isEmpty { applyRemoved(paths: Array(changes.0), directories: changes.1) }
+            lastReconciliation[mediaOnly] = (Date(), duplicateRevision)
+        } catch { /* Superseded views do not publish stale existence checks. */ }
     }
 
     func checkAccess() {

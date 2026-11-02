@@ -63,7 +63,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
             self?.showNextScan()
             guard !report.cancelled else { return }
             if report.threatCount > 0 || (report.exitCode != 0 && report.exitCode != 1) {
-                self?.warn(report.title, detail: report.explanation + "\n" + report.items.prefix(10).map { $0.path }.joined(separator: "\n"))
+                self?.warn(report.title, detail: report.explanation + "\n" + report.items.filter { !$0.isLimit && !$0.isTest }.prefix(10).map { $0.path }.joined(separator: "\n"))
             }
         }.store(in: &subscriptions)
         SecurityScanStore.shared.$issue.compactMap { $0 }.sink { [weak self] message in

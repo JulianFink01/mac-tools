@@ -37,10 +37,10 @@ final class WallpaperResumeHarness: NSObject, NSApplicationDelegate {
                 settings.setPaused(true); settings.setPaused(false)
                 try await Task.sleep(nanoseconds: 700_000_000)
                 guard let twice = controller.wallpaperPlaybackSnapshot.first, twice.rate > 0, twice.seconds > resumed.seconds + 0.3 else { throw CheckError.notResumed }
-                try "PASS: actual AppDelegate bindings and AVPlayer; playing \(playing.seconds), paused \(paused.seconds), resumed \(resumed.seconds), second resume \(twice.seconds)\n".write(toFile: "/Users/julianfink/Documents/Coding/new-world/LiveWallpaper/build/wallpaper-resume-check.log", atomically: true, encoding: .utf8)
+                try "PASS: actual AppDelegate bindings and AVPlayer; playing \(playing.seconds), paused \(paused.seconds), resumed \(resumed.seconds), second resume \(twice.seconds)\n".write(toFile: "/private/tmp/mactools-wallpaper-resume-check.log", atomically: true, encoding: .utf8)
                 passed = true
             } catch {
-                try? "FAIL: \(error)\n".write(toFile: "/Users/julianfink/Documents/Coding/new-world/LiveWallpaper/build/wallpaper-resume-check.log", atomically: true, encoding: .utf8)
+                try? "FAIL: \(error)\n".write(toFile: "/private/tmp/mactools-wallpaper-resume-check.log", atomically: true, encoding: .utf8)
             }
             NSApp.terminate(nil)
         }

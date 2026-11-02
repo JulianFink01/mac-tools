@@ -26,12 +26,14 @@ final class FileActions: ObservableObject {
     }
     private var statusClearTask: Task<Void, Never>?
     @Published private(set) var isCleaning = false
+    @Published private(set) var failures: [String] = []
     let removals = PassthroughSubject<FileRemoval, Never>()
     func recordRemoval(paths: [String], directories: Set<String> = []) { if !paths.isEmpty { removals.send(FileRemoval(paths: paths, directories: directories)) } }
 
     func trash(_ files: [DiskFile], completion: @escaping ([String]) -> Void) {
         guard !isCleaning, !files.isEmpty else { return }
         isCleaning = true
+        failures = []
         status = nil
         Task {
             let messages = await Task.detached(priority: .utility) {
@@ -40,7 +42,7 @@ final class FileActions: ObservableObject {
                 var missing: [String] = []
                 for file in files {
                     var current = stat()
-                    if lstat(file.path, &current) != 0, errno == ENOENT {
+                    if lstat(file.path, &current) != 0, errno == ENOENT || errno == ENOTDIR {
                         missing.append(file.path)
                         continue
                     }
@@ -52,9 +54,10 @@ final class FileActions: ObservableObject {
                 }
                 return (moved + missing, "\(moved.count) von \(files.count) Dateien in den Papierkorb verschoben."
                     + (missing.isEmpty ? "" : " \(missing.count) bereits fehlende Dateien aus der Anzeige entfernt.")
-                    + (failures.isEmpty ? "" : "\n" + failures.prefix(10).joined(separator: "\n")))
+                    + (failures.isEmpty ? "" : "\n" + failures.prefix(10).joined(separator: "\n")), failures)
             }.value
             status = messages.1
+            failures = messages.2
             recordRemoval(paths: messages.0)
             isCleaning = false
             completion(messages.0)

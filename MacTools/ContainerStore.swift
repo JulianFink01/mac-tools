@@ -48,10 +48,46 @@ struct RunningContainer: Identifiable, Equatable {
     }
 }
 
+struct ContainerMetrics: Equatable {
+    let cpu: String?
+    let memory: String?
+
+    static func parse(_ output: String, runtime: String, containers: [RunningContainer]) -> [String: ContainerMetrics] {
+        guard let data = output.data(using: .utf8) else { return [:] }
+        let records: [[String: Any]]
+        if let array = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] { records = array }
+        else {
+            records = output.split(separator: "\n").compactMap { line in
+                guard let lineData = String(line).data(using: .utf8) else { return nil }
+                return (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any]
+            }
+        }
+        var result: [String: ContainerMetrics] = [:]
+        for record in records {
+            let rawID = (record["ID"] as? String ?? record["id"] as? String ?? "").lowercased()
+            let name = record["Name"] as? String ?? record["name"] as? String ?? record["Container"] as? String ?? ""
+            let matches = containers.filter { item in
+                item.runtime == runtime && ((!rawID.isEmpty && item.containerID.lowercased().hasPrefix(rawID)) || (!name.isEmpty && item.name == name))
+            }
+            guard matches.count == 1, let container = matches.first else { continue }
+            func metric(_ keys: [String]) -> String? {
+                for key in keys {
+                    if let value = record[key] as? String, !value.isEmpty, value != "--" { return value }
+                    if let value = record[key] as? NSNumber { return value.stringValue }
+                }
+                return nil
+            }
+            result[container.id] = ContainerMetrics(cpu: metric(["CPUPerc", "cpu_percent"]), memory: metric(["MemUsage", "mem_usage"]))
+        }
+        return result
+    }
+}
+
 @MainActor
 final class ContainerStore: ObservableObject {
     static let shared = ContainerStore()
     @Published private(set) var containers: [RunningContainer] = []
+    @Published private(set) var metrics: [String: ContainerMetrics] = [:]
     @Published private(set) var stopping = Set<String>()
     @Published var error: String?
     @Published private(set) var refreshError: String?
@@ -78,10 +114,17 @@ final class ContainerStore: ObservableObject {
     func refresh() async {
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         var found: [RunningContainer] = [], failed: [String] = []
+        var measured: [String: ContainerMetrics] = [:]
         let available = runtimes
         for (name, executable) in available {
             let response = await LocalCommand.run(executable, arguments: ["ps", "--no-trunc", "--format", name == "Podman" ? "json" : "{{json .}}"])
-            if response.status == 0, let snapshot = RunningContainer.snapshot(response.output, runtime: name) { found += snapshot }
+            if response.status == 0, let snapshot = RunningContainer.snapshot(response.output, runtime: name) {
+                found += snapshot
+                if !snapshot.isEmpty {
+                    let stats = await LocalCommand.run(executable, arguments: name == "Podman" ? ["stats", "--no-stream", "--format=json"] : ["stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"], timeout: 8)
+                    if stats.status == 0 { measured.merge(ContainerMetrics.parse(stats.output, runtime: name, containers: snapshot)) { _, new in new } }
+                }
+            }
             else {
                 found += containers.filter { $0.runtime == name }
                 failed.append(name)
@@ -93,6 +136,7 @@ final class ContainerStore: ObservableObject {
         failed += Set(unavailable.map(\.runtime)).sorted()
         let ordered = found.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if containers != ordered { containers = ordered }
+        metrics = measured
         refreshError = failed.isEmpty ? nil : failed.joined(separator: ", ") + " vorübergehend nicht erreichbar · letzter bestätigter Stand"
         if failed.isEmpty { refreshedAt = Date() }
     }

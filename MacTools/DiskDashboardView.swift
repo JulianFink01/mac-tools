@@ -80,6 +80,11 @@ struct DiskDashboardView: View {
 
             }
             if let status = actions.status { Text(status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if !actions.failures.isEmpty {
+                DisclosureGroup("\(actions.failures.count) Dateien konnten nicht entfernt werden") {
+                    ForEach(Array(actions.failures.prefix(10).enumerated()), id: \.offset) { _, failure in Text(failure).font(.caption).textSelection(.enabled) }
+                }.font(.callout).foregroundStyle(.orange)
+            }
             if tab == "Übersicht" {
             if let result = store.result {
                 Text(store.resultIsProvisional ? "Dateiliste bereit · Inhaltsprüfung läuft weiter" : "Ergebnis vom " + result.completedAt.formatted(date: .abbreviated, time: .shortened))
@@ -100,13 +105,15 @@ struct DiskDashboardView: View {
                     if tab == "Virenscan" { securityPanel }
                     else if tab == "Warnungen" {
                         panel("Aktuelle kritische Warnungen") {
-                            if security.isCheckingFindings { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
+                            if security.isCheckingFindings { ProgressView(security.findingProgress).controlSize(.small) }
                             else if criticalMessages.isEmpty {
                                 Label("Keine kritischen Warnungen.", systemImage: "checkmark.circle")
                             }
                             ForEach(criticalMessages, id: \.self) { message in
                                 Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
                             }
+                            if let issue = security.findingCheckIssue { Text(issue).font(.callout).foregroundStyle(.orange) }
+                            if let pending = security.currentFindings?.pendingPaths.count, pending > 0 { Text("\(pending) frühere Fundmeldungen sind noch nicht inhaltlich bestätigt. Details im Virenscan.").font(.caption).foregroundStyle(.secondary) }
                             Button("Zum Virenscan") { navigation.diskTab = "Virenscan" }
                         }
                     }
@@ -148,6 +155,12 @@ struct DiskDashboardView: View {
             }
             .task(id: tab) {
                 if ["Virenscan", "Warnungen"].contains(tab) { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths) }
+            }
+            .task(id: "\(tab)-\(mediaOnly)-\(store.duplicateRevision)") {
+                if tab == "Duplikate" { await store.reconcileMissingDuplicates(mediaOnly: mediaOnly) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                if tab == "Duplikate" { Task { await store.reconcileMissingDuplicates(mediaOnly: mediaOnly, force: true) } }
             }
             .onDisappear { selectedCopies = [:]; pendingTrash = []; store.endInventoryAccess(inventoryConsumer) }
             .onReceive(actions.removals) { _ in selectedCopies = selectedCopies.filter { !store.isRemoved($0.key) } }
@@ -461,6 +474,9 @@ struct DiskDashboardView: View {
                     Text("SHA-256 geprüft · Keine automatische Löschung").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if store.isReconcilingFiles { Text("Dateistand wird abgeglichen …").font(.caption).foregroundStyle(.secondary) }
+                Button { Task { await store.reconcileMissingDuplicates(mediaOnly: mediaOnly, force: true) } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Nicht mehr vorhandene Dateien aus dem Scanstand entfernen").accessibilityLabel("Dateistand aktualisieren").disabled(store.isReconcilingFiles || store.isApplyingRemovals)
                 Button("Alle Duplikate auswählen") {
                     selectedCopies = duplicateIndex?.copiesForRemoval(mediaOnly: mediaOnly) ?? [:]
                 }.disabled(visible.isEmpty || store.isScanning || store.isApplyingRemovals)
@@ -513,7 +529,7 @@ struct DiskDashboardView: View {
 
     private var duplicateFolderPicker: some View {
         let directory = duplicateFolder ?? store.root.path
-        let request = "\(showDuplicateFolders)-\(mediaOnly)-\(directory)-\(duplicateIndex.map { String(describing: ObjectIdentifier($0)) } ?? "none")"
+        let request = "\(showDuplicateFolders)-\(mediaOnly)-\(directory)-\(store.duplicateRevision)"
         return DisclosureGroup("Duplikate nach Ordner auswählen", isExpanded: $showDuplicateFolders) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Wähle z. B. Unsorted gesammelt aus. Nur doppelte Dateien werden ausgewählt; eine Kopie bleibt erhalten, bevorzugt außerhalb des Ordners.").font(.caption).foregroundStyle(.secondary)

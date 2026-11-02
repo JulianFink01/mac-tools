@@ -43,7 +43,7 @@ struct SecurityScanPanel: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(headline)
                             .font(.title2.bold())
-                        Text(running ? security.status : threatCount > 0 ? "Die unten aufgeführten Dateien wurden aktuell erneut geprüft." : "Bekannte Fundstellen werden beim Öffnen erneut geprüft. Nicht mehr vorhandene Dateien werden nicht angezeigt.")
+                        Text(running ? security.status : threatCount > 0 ? "Die unten aufgeführten Dateien haben ein weiterhin gültiges Prüfergebnis." : "Beim Öffnen werden vorhandene Fundstellen und gespeicherte Prüfergebnisse abgeglichen. Eine erneute Inhaltsprüfung startest du über „Fundstatus aktualisieren“.")
                             .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         if let date = security.completedAt, !running {
                             Text("Letzte Inhaltsprüfung des Scanbereichs · " + date.formatted(date: .abbreviated, time: .shortened))
@@ -69,7 +69,8 @@ struct SecurityScanPanel: View {
                 HStack {
                     Label(security.executable == nil ? "Engine fehlt" : "Lokal auf deinem Mac", systemImage: "desktopcomputer")
                     Spacer()
-                    Button("Fundstatus aktualisieren") { Task { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths) } }
+                    if checking { Button("Fundprüfung abbrechen") { security.cancelFindingCheck() } }
+                    Button("Fundstatus aktualisieren") { Task { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths, verifyContents: true) } }
                         .disabled(running || security.isCheckingFindings)
                     Button("Schutzdaten aktualisieren") { Task { await security.updateSignatures() } }.disabled(running)
                 }.font(.caption).foregroundStyle(.secondary)
@@ -77,6 +78,7 @@ struct SecurityScanPanel: View {
                 if let root = security.scannedRoot { Text("Letzter geprüfter Bereich: " + root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 16))
 
+            if let issue = security.findingCheckIssue { Label(issue, systemImage: "info.circle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
             Text("Folgescans prüfen neue und geänderte Dateien. Nach Änderungen an Engine oder Virensignaturen wird erneut vollständig geprüft.").font(.caption).foregroundStyle(.secondary)
             if let report = security.report {
                 HStack(spacing: 12) {
@@ -92,12 +94,13 @@ struct SecurityScanPanel: View {
                         TextField("Name, Pfad oder Erkennung suchen", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 280)
                     }
                     if findings.isEmpty {
-                        if checking { ProgressView("Fundstellen werden geprüft …").controlSize(.small) }
+                        if checking { ProgressView(security.findingProgress).controlSize(.small) }
                         else {
                             Label((security.currentFindings?.pendingPaths.isEmpty ?? true) ? "Keine offenen Funde." : "Keine bestätigten Funde. Einzelne Fundstellen sind noch zu prüfen.", systemImage: "checkmark.circle")
                                 .foregroundStyle(.secondary).padding(.vertical, 12)
                         }
                     } else {
+                        if checking { ProgressView(security.findingProgress).controlSize(.small) }
                         HStack {
                             Button("Diese Seite auswählen") {
                                 for item in pageItems {

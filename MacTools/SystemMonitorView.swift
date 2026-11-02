@@ -166,8 +166,10 @@ struct MonitorVolumesWidget: View {
 
 struct SystemMonitorView: View {
     @ObservedObject private var monitor = SystemMonitor.shared
+    @ObservedObject private var userProcesses = UserProcessStore.shared
     @State private var minutes = 10
     @State private var processSort = "RAM"
+    @State private var userProcessSearch = ""
     @State private var selectedMetric: MonitorMetric?
     private var points: [MonitorPoint] { monitor.history.filter { $0.date > Date().addingTimeInterval(Double(-minutes * 60)) } }
     private var reading: SystemReading? { monitor.reading }
@@ -175,6 +177,17 @@ struct SystemMonitorView: View {
         Array((reading?.processes ?? []).sorted {
             processSort == "RAM" ? $0.memory > $1.memory : ($0.cpu ?? -1) > ($1.cpu ?? -1)
         }.prefix(12))
+    }
+    private var shownUserProcesses: [UserProcess] {
+        let featured = userProcesses.featured
+        let featuredIDs = Set(featured.map(\.id))
+        let marked = userProcesses.listedProcesses.filter { userProcesses.isBookmarked($0.id) }
+        return (marked + featured.filter { !userProcesses.isBookmarked($0.id) } + userProcesses.scopedProcesses.filter { !featuredIDs.contains($0.id) && !userProcesses.isBookmarked($0.id) }).filter { process in
+            userProcessSearch.isEmpty || process.displayName.localizedCaseInsensitiveContains(userProcessSearch) ||
+                process.command.localizedCaseInsensitiveContains(userProcessSearch) ||
+                process.workingDirectory.localizedCaseInsensitiveContains(userProcessSearch) ||
+                String(process.pid).contains(userProcessSearch) || process.ports.contains { String($0).contains(userProcessSearch) }
+        }
     }
     var body: some View {
         ScrollView {
@@ -195,6 +208,7 @@ struct SystemMonitorView: View {
                     MonitorMetricCard(title: "Disk · Schreiben", icon: "arrow.up.to.line", value: monitorRate(reading?.point.diskWrite), detail: "Alle erfassten Datenträger", color: .orange, points: points, key: \.diskWrite, percent: false)
                     MonitorMetricCard(title: "Netzwerk · Download", icon: "network", value: monitorRate(reading?.point.download), detail: "Upload " + monitorRate(reading?.point.upload), color: .pink, points: points, key: \.download, percent: false)
                 }
+                userProcessesCard
                 HStack(alignment: .top, spacing: 16) {
                     memoryCard
                     VStack(alignment: .leading, spacing: 12) {
@@ -235,12 +249,53 @@ struct SystemMonitorView: View {
                 }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
             }.padding(28)
         }.onAppear { monitor.start() }
+            .task {
+                while !Task.isCancelled {
+                    await userProcesses.refresh()
+                    do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
+                }
+            }
             .sheet(item: $selectedMetric) { metric in
                 VStack(spacing: 0) {
                     MonitorDetailView(metric: metric)
                     Button("Schließen") { selectedMetric = nil }.keyboardShortcut(.cancelAction).padding(.bottom, 14)
                 }
             }
+    }
+    private var userProcessesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Meine Prozesse", systemImage: "terminal").font(.title3.bold())
+                Text(userProcessSearch.isEmpty ? "\(userProcesses.listedProcesses.count)" : "\(shownUserProcesses.count) von \(userProcesses.listedProcesses.count)")
+                    .foregroundStyle(.secondary).monospacedDigit()
+                Spacer()
+                UserProcessViewModeToggle(mode: $userProcesses.viewMode)
+                if userProcesses.viewMode == .tree { UserProcessTreeActions(store: userProcesses, processes: userProcesses.listedProcesses) }
+                Button { UserProcessWindowController.shared.show() } label: {
+                    Label("Fenster öffnen", systemImage: "macwindow")
+                }.buttonStyle(.bordered).controlSize(.small).tint(.mint)
+            }
+            HStack(spacing: 12) {
+                UserProcessScopeTabs(scope: $userProcesses.scope).frame(width: 250)
+                TextField("Name, PID oder Port suchen", text: $userProcessSearch).textFieldStyle(.roundedBorder)
+            }
+            ScrollView {
+                LazyVStack(spacing: 3) {
+                    if userProcesses.viewMode == .tree {
+                        UserProcessTreeList(store: userProcesses, processes: userProcesses.listedProcesses, search: userProcessSearch, selectedID: nil) { process in
+                            UserProcessWindowController.shared.show(processID: process.id)
+                        }
+                    } else {
+                        ForEach(shownUserProcesses) { process in
+                            UserProcessRow(process: process, selected: false, bookmarked: userProcesses.isBookmarked(process.id), running: userProcesses.isRunning(process.id)) { UserProcessWindowController.shared.show(processID: process.id) }
+                        }
+                    }
+                }
+            }.frame(height: 300).id(userProcessSearch + ":" + userProcesses.scope.rawValue + ":" + userProcesses.viewMode.rawValue)
+            if !userProcesses.listedProcesses.isEmpty && shownUserProcesses.isEmpty {
+                Text("Keine Prozesse im gewählten Bereich oder mit diesem Suchbegriff.").font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
     }
     private var memoryCard: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -264,5 +319,352 @@ struct SystemMonitorView: View {
     }
     private func memoryRow(_ name: String, bytes: UInt64, color: Color) -> some View {
         HStack { Circle().fill(color).frame(width: 7, height: 7); Text(name); Spacer(); Text(diskBytes(Int64(bytes))).monospacedDigit() }.font(.callout)
+    }
+}
+
+@MainActor final class UserProcessWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = UserProcessWindowController()
+    private init() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
+        window.title = "MacTools · Benutzerprozesse"
+        window.minSize = NSSize(width: 760, height: 480)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: UserProcessManagerView())
+        super.init(window: window)
+        window.delegate = self
+    }
+    required init?(coder: NSCoder) { nil }
+    func show(processID: String? = nil) {
+        if let processID { UserProcessStore.shared.selectedID = processID }
+        window?.center()
+        showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        Task { await UserProcessStore.shared.refresh() }
+    }
+}
+
+private struct UserProcessManagerView: View {
+    @ObservedObject private var store = UserProcessStore.shared
+    @ObservedObject private var monitor = SystemMonitor.shared
+    @State private var search = ""
+    @State private var pendingStop: UserProcess?
+    @State private var forceStop = false
+    @State private var actionError: String?
+    @State private var logPath: String?
+    @State private var logText = ""
+    @State private var checkingLog = false
+    private var shown: [UserProcess] {
+        let values = store.listedProcesses.filter { process in
+            search.isEmpty || process.name.localizedCaseInsensitiveContains(search) ||
+                process.executable.localizedCaseInsensitiveContains(search) ||
+                process.command.localizedCaseInsensitiveContains(search) ||
+                process.workingDirectory.localizedCaseInsensitiveContains(search) ||
+                String(process.pid).contains(search) || process.ports.contains { String($0).contains(search) }
+        }
+        return values.sorted { a, b in
+            if store.isBookmarked(a.id) != store.isBookmarked(b.id) { return store.isBookmarked(a.id) }
+            let ac = a.cpu ?? 0, bc = b.cpu ?? 0
+            if ac != bc { return ac > bc }
+            if a.ports.isEmpty != b.ports.isEmpty { return !a.ports.isEmpty }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+    private var selected: UserProcess? { store.listedProcesses.first { $0.id == store.selectedID } }
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("Deine Prozesse", systemImage: "terminal")
+                    Spacer()
+                    Text("\(store.listedProcesses.count)").foregroundStyle(.secondary)
+                    UserProcessViewModeToggle(mode: $store.viewMode)
+                }.font(.headline)
+                UserProcessScopeTabs(scope: $store.scope)
+                if store.viewMode == .tree { UserProcessTreeActions(store: store, processes: store.listedProcesses) }
+                TextField("Name, PID oder Port suchen", text: $search).textFieldStyle(.roundedBorder)
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        if store.viewMode == .tree {
+                            UserProcessTreeList(store: store, processes: store.listedProcesses, search: search, selectedID: store.selectedID) { process in store.selectedID = process.id }
+                        } else {
+                            ForEach(shown) { process in
+                                UserProcessRow(process: process, selected: store.selectedID == process.id, bookmarked: store.isBookmarked(process.id), running: store.isRunning(process.id)) { store.selectedID = process.id }
+                            }
+                        }
+                    }
+                }
+                if let error = store.error { Text(error).font(.caption2).foregroundStyle(.orange) }
+            }.frame(width: 295).padding(16).background(Color.primary.opacity(0.035))
+            Divider()
+            VStack(alignment: .leading, spacing: 14) {
+                if let process = selected {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(process.displayName).font(.title2.weight(.semibold))
+                            Text("PID \(process.pid) · Elternprozess \(process.parentPID) · Start " + Date(timeIntervalSince1970: TimeInterval(process.startedAt)).formatted(date: .abbreviated, time: .standard))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(store.isRunning(process.id) ? "Läuft" : "Beendet · markiert")
+                                .font(.caption.weight(.medium)).foregroundStyle(store.isRunning(process.id) ? Color.mint : Color.secondary)
+                            if !process.executable.isEmpty { Text(process.executable).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
+                            if !process.workingDirectory.isEmpty { Text("Arbeitsordner: " + process.workingDirectory).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2) }
+                            if !process.command.isEmpty { Text(process.command).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(3) }
+                        }
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Button { store.toggleBookmark(process, logPath: logPath) } label: {
+                                Image(systemName: store.isBookmarked(process.id) ? "star.fill" : "star")
+                                    .frame(width: 18, height: 18)
+                            }.help(store.isBookmarked(process.id) ? "Markierung entfernen" : "Prozess markieren")
+                                .accessibilityLabel(store.isBookmarked(process.id) ? "Markierung entfernen" : "Prozess markieren")
+                                .tint(store.isBookmarked(process.id) ? .yellow : .mint)
+                            Button { pendingStop = process; forceStop = false } label: {
+                                Label("Beenden", systemImage: "stop.fill")
+                            }.disabled(process.pid == getpid() || !store.isRunning(process.id))
+                            Button { pendingStop = process; forceStop = true } label: {
+                                Label("Sofort", systemImage: "xmark.circle.fill")
+                            }.disabled(process.pid == getpid() || !store.isRunning(process.id)).tint(.red)
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }
+                    HStack(spacing: 20) {
+                        if !store.isRunning(process.id) { Text("Letzte Messung:") }
+                        Text("CPU " + monitorPercent(process.cpu))
+                        Text("RAM " + (process.memory.map { diskBytes(Int64($0)) } ?? "—"))
+                        if store.isRunning(process.id) {
+                            Text("GPU gesamt " + monitorPercent(monitor.reading?.point.gpu))
+                                .help("Systemweite GPU-Auslastung. macOS liefert hier keine verlässliche Auslastung für diesen einzelnen Prozess.")
+                        }
+                        Spacer()
+                    }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    HStack { Text("TCP-Ports").font(.caption.weight(.semibold)); Text(process.ports.isEmpty ? "Keine Listener erkannt" : process.ports.map(String.init).joined(separator: ", ")).font(.caption).monospacedDigit(); Spacer() }
+                    Divider()
+                    HStack {
+                        Text("LIVE-LOG").font(.caption.weight(.semibold))
+                        Spacer()
+                        if let logPath { Text(logPath).font(.caption2).foregroundStyle(.secondary).lineLimit(1).help(logPath) }
+                    }
+                    if checkingLog { ProgressView().controlSize(.small) }
+                    else if logPath == nil {
+                        Text("Keine lesbare Logdatei an stdout/stderr. Ausgabe eines fremden Terminal-PTYs kann macOS nachträglich nicht an diese Ansicht übergeben.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        ScrollView {
+                            Text(logText.isEmpty ? "Noch keine Ausgabe." : logText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                        }.background(Color(nsColor: .textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                        Text("Letzte 64 KiB · Aktualisierung jede Sekunde").font(.caption2).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(store.selectedID == nil ? "Wähle links einen Prozess." : "Der ausgewählte Prozess ist beendet.")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                Spacer(minLength: 0)
+            }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }.onChange(of: store.scope) { _ in store.selectedID = nil }.task {
+            while !Task.isCancelled {
+                await store.refresh()
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
+            }
+        }.task(id: selected?.id) {
+            logPath = nil; logText = ""; checkingLog = selected != nil
+            guard let process = selected else { return }
+            let path = store.isRunning(process.id) ? await store.logPath(for: process) ?? store.bookmarkedLogPath(process.id) : store.bookmarkedLogPath(process.id)
+            guard !Task.isCancelled else { return }
+            logPath = path; checkingLog = false
+            guard let path else { return }
+            while !Task.isCancelled {
+                let value = await Task.detached(priority: .utility) { UserProcessSampler.tail(path) }.value
+                guard !Task.isCancelled else { return }
+                logText = value ?? "Logdatei ist nicht mehr lesbar."
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            }
+        }.alert("Prozess beenden?", isPresented: Binding(get: { pendingStop != nil }, set: { if !$0 { pendingStop = nil } })) {
+            Button(forceStop ? "Sofort beenden" : "Beenden", role: .destructive) {
+                if let process = pendingStop { actionError = store.stop(process, force: forceStop) }
+                pendingStop = nil
+                Task { await store.refresh() }
+            }
+            Button("Abbrechen", role: .cancel) { pendingStop = nil }
+        } message: {
+            Text(pendingStop.map { "\($0.displayName) (PID \($0.pid))" } ?? "")
+        }.alert("Prozess konnte nicht beendet werden", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK") { actionError = nil }
+        } message: { Text(actionError ?? "") }
+    }
+}
+
+private struct UserProcessScopeTabs: View {
+    @Binding var scope: UserProcessScope
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(UserProcessScope.allCases, id: \.self) { option in
+                Button { scope = option } label: {
+                    Text(option.title).font(.caption.weight(scope == option ? .semibold : .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .foregroundStyle(scope == option ? Color.primary : Color.secondary)
+                        .background(scope == option ? Color.mint.opacity(0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                }.buttonStyle(.plain).accessibilityAddTraits(scope == option ? .isSelected : []).help(option.explanation)
+            }
+        }.padding(3).background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct UserProcessViewModeToggle: View {
+    @Binding var mode: UserProcessViewMode
+    var body: some View {
+        HStack(spacing: 2) {
+            Button { mode = .list } label: {
+                Image(systemName: "list.bullet").frame(width: 18, height: 18)
+            }.help("Liste: Prozesse einzeln anzeigen").accessibilityLabel("Listenansicht")
+                .accessibilityAddTraits(mode == .list ? .isSelected : [])
+                .background(mode == .list ? Color.mint.opacity(0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            Button { mode = .tree } label: {
+                Image(systemName: "list.bullet.indent").frame(width: 18, height: 18)
+            }.help("Prozessbaum: Elternprozesse mit ihren Unterprozessen anzeigen und Zweige aufklappen").accessibilityLabel("Prozessbaum")
+                .accessibilityAddTraits(mode == .tree ? .isSelected : [])
+                .background(mode == .tree ? Color.mint.opacity(0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).font(.caption).padding(3)
+            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct UserProcessTreeEntry: Identifiable {
+    let process: UserProcess
+    let depth: Int
+    let ancestors: [String]
+    let childCount: Int
+    var id: String { process.id }
+
+    static func make(_ processes: [UserProcess]) -> [UserProcessTreeEntry] {
+        let byPID = Dictionary(grouping: processes, by: \.pid)
+        var parentIDs: [String: String] = [:]
+        for process in processes {
+            let older = (byPID[process.parentPID] ?? []).filter { candidate in
+                candidate.id != process.id && (candidate.startedAt < process.startedAt ||
+                    (candidate.startedAt == process.startedAt && candidate.startedAtUsec < process.startedAtUsec))
+            }
+            if let parent = older.max(by: { ($0.startedAt, $0.startedAtUsec) < ($1.startedAt, $1.startedAtUsec) }) {
+                parentIDs[process.id] = parent.id
+            }
+        }
+        var children: [String: [UserProcess]] = [:]
+        for process in processes {
+            if let parentID = parentIDs[process.id] { children[parentID, default: []].append(process) }
+        }
+        var entries: [UserProcessTreeEntry] = []
+        func append(_ process: UserProcess, depth: Int, ancestors: [String]) {
+            let descendants = children[process.id] ?? []
+            entries.append(UserProcessTreeEntry(process: process, depth: depth, ancestors: ancestors, childCount: descendants.count))
+            for child in descendants { append(child, depth: depth + 1, ancestors: ancestors + [process.id]) }
+        }
+        for process in processes where parentIDs[process.id] == nil { append(process, depth: 0, ancestors: []) }
+        return entries
+    }
+}
+
+private struct UserProcessTreeList: View {
+    @ObservedObject var store: UserProcessStore
+    let processes: [UserProcess]
+    let search: String
+    let selectedID: String?
+    let open: (UserProcess) -> Void
+    private var visible: [UserProcessTreeEntry] {
+        let entries = UserProcessTreeEntry.make(processes)
+        if search.isEmpty {
+            return entries.filter { entry in !entry.ancestors.contains(where: store.collapsedProcessIDs.contains) }
+        }
+        let matched = Set(entries.filter { entry in
+            let process = entry.process
+            return process.displayName.localizedCaseInsensitiveContains(search) ||
+                process.executable.localizedCaseInsensitiveContains(search) ||
+                process.command.localizedCaseInsensitiveContains(search) ||
+                process.workingDirectory.localizedCaseInsensitiveContains(search) ||
+                String(process.pid).contains(search) || process.ports.contains { String($0).contains(search) }
+        }.map(\.id))
+        let matchingEntries = entries.filter { matched.contains($0.id) }
+        let forcedOpen = Set(matchingEntries.flatMap(\.ancestors))
+        let included = matched.union(forcedOpen)
+        return entries.filter { entry in
+            let inSearchTree = included.contains(entry.id) || entry.ancestors.contains(where: matched.contains)
+            let hiddenByCollapsed = entry.ancestors.contains { store.collapsedProcessIDs.contains($0) && !forcedOpen.contains($0) }
+            return inSearchTree && !hiddenByCollapsed
+        }
+    }
+    var body: some View {
+        ForEach(visible) { entry in
+            HStack(spacing: 3) {
+                if entry.depth > 0 { Color.clear.frame(width: CGFloat(entry.depth) * 13, height: 1) }
+                if entry.childCount > 0 {
+                    Button { store.toggleCollapsed(entry.id) } label: {
+                        Image(systemName: store.collapsedProcessIDs.contains(entry.id) ? "chevron.right" : "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 25, height: 28)
+                            .background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).help("\(entry.childCount) Unterprozesse \(store.collapsedProcessIDs.contains(entry.id) ? "einblenden" : "ausblenden")")
+                        .accessibilityLabel("Unterprozesse \(store.collapsedProcessIDs.contains(entry.id) ? "einblenden" : "ausblenden")")
+                } else {
+                    Image(systemName: entry.depth > 0 ? "arrow.turn.down.right" : "")
+                        .font(.caption2).foregroundStyle(.secondary).frame(width: 25, height: 28)
+                }
+                UserProcessRow(process: entry.process, selected: selectedID == entry.id,
+                               bookmarked: store.isBookmarked(entry.id), running: store.isRunning(entry.id)) { open(entry.process) }
+            }
+        }
+    }
+}
+
+private struct UserProcessTreeActions: View {
+    @ObservedObject var store: UserProcessStore
+    let processes: [UserProcess]
+    var body: some View {
+        HStack(spacing: 6) {
+            Button { store.collapseAll(Set(UserProcessTreeEntry.make(processes).filter { $0.childCount > 0 }.map(\.id))) } label: {
+                Label("Alle zuklappen", systemImage: "chevron.up.2")
+            }.help("Alle Elternprozesse zuklappen")
+            Button { store.expandAll() } label: {
+                Label("Alle aufklappen", systemImage: "chevron.down.2")
+            }.help("Alle Unterprozesse aufklappen")
+        }.buttonStyle(.bordered).controlSize(.mini).font(.caption2)
+    }
+}
+
+private struct UserProcessRow: View {
+    let process: UserProcess
+    let selected: Bool
+    let bookmarked: Bool
+    let running: Bool
+    let open: () -> Void
+    private var ports: String { process.ports.map(String.init).joined(separator: ", ") }
+    private var accessibilityText: String {
+        let prefix = bookmarked ? "Markiert, " : ""
+        let status = running ? "läuft" : "beendet"
+        let portText = ports.isEmpty ? "kein TCP-Port" : "Ports " + ports
+        return "\(prefix)\(process.displayName), PID \(process.pid), \(status), \(portText)"
+    }
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    if bookmarked { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Markiert") }
+                    Text(process.displayName).fontWeight(.medium).lineLimit(1)
+                    Spacer()
+                    Text("PID \(process.pid)").monospacedDigit().foregroundStyle(.secondary)
+                }
+                HStack(spacing: 7) {
+                    if !running { Text("Beendet") }
+                    if process.isCodex { Text("Codex") }
+                    if process.hasTerminal { Text("Terminal") }
+                    if !process.ports.isEmpty { Text("Port " + ports) }
+                    if running, let cpu = process.cpu, cpu >= 1 { Text(String(format: "%.0f %% CPU", cpu)) }
+                    if running, let memory = process.memory { Text("RAM " + diskBytes(Int64(memory))) }
+                }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                if !process.command.isEmpty { Text(process.command).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1) }
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Color.mint.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        }.buttonStyle(.plain)
+            .accessibilityLabel(accessibilityText)
     }
 }

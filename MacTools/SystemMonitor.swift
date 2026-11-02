@@ -255,3 +255,286 @@ final class SystemMonitor: ObservableObject {
         }
     }
 }
+
+struct UserProcess: Identifiable, Equatable, Sendable, Codable {
+    let pid: Int32
+    let parentPID: Int32
+    let startedAt: UInt64
+    let startedAtUsec: UInt64
+    let name: String
+    let executable: String
+    let workingDirectory: String
+    let hasTerminal: Bool
+    var command = ""
+    var ports: [Int] = []
+    var cpu: Double?
+    var memory: UInt64?
+    var id: String { "\(pid):\(startedAt):\(startedAtUsec)" }
+    var isCodex: Bool { let value = (name + " " + executable).lowercased(); return value.contains("codex") || value.contains("chatgpt") }
+    private var homePaths: [String] {
+        let home = NSHomeDirectory() + "/"
+        let arguments = command.split(whereSeparator: \.isWhitespace).compactMap { argument -> String? in
+            guard let range = argument.range(of: home) else { return nil }
+            return String(argument[range.lowerBound...]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        return [executable, workingDirectory].filter { $0.hasPrefix(home) } + arguments
+    }
+    var isInHome: Bool { !homePaths.isEmpty }
+    var isInWork: Bool {
+        let home = NSHomeDirectory() + "/"
+        let excluded = [home + "Library/", home + ".codex/plugins/cache/", home + ".cache/"]
+        return homePaths.contains { path in !excluded.contains(where: path.hasPrefix) }
+    }
+    var displayName: String {
+        guard let range = command.range(of: "/server/runs/") else { return name }
+        let project = command[..<range.lowerBound].split(separator: "/").last.map(String.init)
+        let run = command[range.upperBound...].split(separator: "/").first.map(String.init)
+        guard let project, let run, !project.isEmpty, !run.isEmpty else { return name }
+        return project + " · " + run
+    }
+}
+
+struct UserProcessBookmark: Identifiable, Codable {
+    var process: UserProcess
+    var logPath: String?
+    let markedAt: Date
+    var lastSeenAt: Date
+    var id: String { process.id }
+}
+
+enum UserProcessScope: String, CaseIterable {
+    case work, home, all
+    var title: String {
+        switch self {
+        case .work: "Arbeit"
+        case .home: "Home"
+        case .all: "Alle"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .work: "Arbeit: eigene Prozesse mit einem Home-Pfad, ohne Library und Laufzeit-Caches."
+        case .home: "Home: eigene Prozesse, deren Programm, Arbeitsordner oder Befehl einen Pfad unter deinem Home enthält."
+        case .all: "Alle: sämtliche Prozesse deines Benutzerkontos, auch außerhalb deines Home."
+        }
+    }
+    func contains(_ process: UserProcess) -> Bool {
+        switch self {
+        case .work: process.isInWork
+        case .home: process.isInHome
+        case .all: true
+        }
+    }
+}
+
+enum UserProcessViewMode: String {
+    case list, tree
+}
+
+enum UserProcessSampler {
+    static func identity(_ pid: Int32) -> (uid: uid_t, startedAt: UInt64, usec: UInt64)? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return (info.pbi_uid, info.pbi_start_tvsec, info.pbi_start_tvusec)
+    }
+    static func list() -> [UserProcess] {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [Int32](repeating: 0, count: Int(count) + 64)
+        let actual = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard actual > 0 else { return [] }
+        let uid = getuid()
+        return pids.prefix(min(Int(actual), pids.count)).compactMap { pid in
+            guard pid > 1 else { return nil }
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
+                  info.pbi_uid == uid, info.pbi_start_tvsec > 0 else { return nil }
+            var nameBuffer = [CChar](repeating: 0, count: 256)
+            let nameSize = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
+            let name = nameSize > 0 ? String(cString: nameBuffer) : "PID \(pid)"
+            var pathBuffer = [CChar](repeating: 0, count: 4096)
+            let pathSize = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+            let path = pathSize > 0 ? String(cString: pathBuffer) : ""
+            var vnode = proc_vnodepathinfo()
+            let vnodeSize = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+            let hasCwd = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vnode, vnodeSize) == vnodeSize
+            let cwd = hasCwd ? withUnsafePointer(to: &vnode.pvi_cdir.vip_path) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+            } : ""
+            return UserProcess(pid: pid, parentPID: Int32(info.pbi_ppid), startedAt: info.pbi_start_tvsec, startedAtUsec: info.pbi_start_tvusec,
+                               name: name, executable: path, workingDirectory: cwd, hasTerminal: info.e_tdev != 0 && info.e_tdev != UInt32.max)
+        }
+    }
+    static func commands(_ output: String) -> [Int32: String] {
+        var values: [Int32: String] = [:]
+        for line in output.split(separator: "\n") {
+            let trimmed = line.drop(while: { $0 == " " })
+            guard let separator = trimmed.firstIndex(of: " "),
+                  let pid = Int32(trimmed[..<separator]) else { continue }
+            let command = trimmed[separator...].trimmingCharacters(in: .whitespaces)
+            if !command.isEmpty { values[pid] = command }
+        }
+        return values
+    }
+    static func listeningPorts(_ output: String) -> [Int32: [Int]] {
+        var result: [Int32: Set<Int>] = [:], pid: Int32?
+        for line in output.split(separator: "\n") {
+            guard let kind = line.first else { continue }
+            let value = line.dropFirst()
+            if kind == "p" { pid = Int32(value) }
+            else if kind == "n", let pid, let suffix = value.split(separator: ":").last,
+                    let port = Int(suffix), (1...65535).contains(port) {
+                result[pid, default: []].insert(port)
+            }
+        }
+        return result.mapValues { $0.sorted() }
+    }
+    static func logFile(_ output: String) -> String? {
+        var regular = false
+        for line in output.split(separator: "\n") {
+            guard let kind = line.first else { continue }
+            let value = String(line.dropFirst())
+            if kind == "f" { regular = false }
+            if kind == "t" { regular = value == "REG" }
+            if kind == "n", regular, value.hasPrefix("/"),
+               let attributes = try? FileManager.default.attributesOfItem(atPath: value),
+               attributes[.type] as? FileAttributeType == .typeRegular,
+               FileManager.default.isReadableFile(atPath: value) { return value }
+        }
+        return nil
+    }
+    static func tail(_ path: String, limit: UInt64 = 65_536) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        do {
+            let end = try handle.seekToEnd()
+            try handle.seek(toOffset: end > limit ? end - limit : 0)
+            let data = try handle.readToEnd() ?? Data()
+            return String(decoding: data, as: UTF8.self)
+        } catch { return nil }
+    }
+}
+
+@MainActor final class UserProcessStore: ObservableObject {
+    static let shared = UserProcessStore()
+    @Published private(set) var processes: [UserProcess] = []
+    @Published private(set) var bookmarks: [UserProcessBookmark] = []
+    @Published private(set) var collapsedProcessIDs = Set<String>()
+    @Published private(set) var error: String?
+    @Published var selectedID: String?
+    @Published var scope: UserProcessScope {
+        didSet { UserDefaults.standard.set(scope.rawValue, forKey: "userProcessScope") }
+    }
+    @Published var viewMode: UserProcessViewMode {
+        didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: "userProcessViewMode") }
+    }
+    private var refreshing = false
+    private var lastBookmarkSaveAt = Date.distantPast
+    private init() {
+        scope = UserProcessScope(rawValue: UserDefaults.standard.string(forKey: "userProcessScope") ?? "") ?? .work
+        viewMode = UserProcessViewMode(rawValue: UserDefaults.standard.string(forKey: "userProcessViewMode") ?? "") ?? .list
+        if let data = UserDefaults.standard.data(forKey: "userProcessBookmarks") {
+            bookmarks = (try? JSONDecoder().decode([UserProcessBookmark].self, from: data)) ?? []
+        }
+    }
+    var scopedProcesses: [UserProcess] { processes.filter(scope.contains) }
+    var listedProcesses: [UserProcess] {
+        let marked = bookmarks.map { bookmark in processes.first(where: { $0.id == bookmark.id }) ?? bookmark.process }
+        return marked + scopedProcesses.filter { process in !bookmarks.contains(where: { $0.id == process.id }) }
+    }
+    func isBookmarked(_ id: String) -> Bool { bookmarks.contains { $0.id == id } }
+    func isRunning(_ id: String) -> Bool { processes.contains { $0.id == id } }
+    func toggleCollapsed(_ id: String) {
+        if !collapsedProcessIDs.insert(id).inserted { collapsedProcessIDs.remove(id) }
+    }
+    func collapseAll(_ ids: Set<String>) { collapsedProcessIDs.formUnion(ids) }
+    func expandAll() { collapsedProcessIDs.removeAll() }
+    func bookmarkedLogPath(_ id: String) -> String? { bookmarks.first { $0.id == id }?.logPath }
+    private func saveBookmarks() {
+        if let data = try? JSONEncoder().encode(bookmarks) { UserDefaults.standard.set(data, forKey: "userProcessBookmarks") }
+        lastBookmarkSaveAt = Date()
+    }
+    func toggleBookmark(_ process: UserProcess, logPath: String? = nil) {
+        if let index = bookmarks.firstIndex(where: { $0.id == process.id }) {
+            bookmarks.remove(at: index)
+            saveBookmarks()
+            return
+        }
+        let now = Date()
+        bookmarks.insert(UserProcessBookmark(process: process, logPath: logPath, markedAt: now, lastSeenAt: now), at: 0)
+        saveBookmarks()
+        guard logPath == nil else { return }
+        Task { [weak self] in
+            guard let self, let path = await self.logPath(for: process),
+                  let index = self.bookmarks.firstIndex(where: { $0.id == process.id }) else { return }
+            self.bookmarks[index].logPath = path
+            self.saveBookmarks()
+        }
+    }
+    var featured: [UserProcess] {
+        scopedProcesses.filter { taskScore($0) > 0 }
+            .sorted { a, b in
+                let ac = a.cpu ?? 0, bc = b.cpu ?? 0
+                if ac >= 10 || bc >= 10, ac != bc { return ac > bc }
+                let ascore = taskScore(a), bscore = taskScore(b)
+                if ascore != bscore { return ascore > bscore }
+                if ac != bc { return ac > bc }
+                return a.pid < b.pid
+            }
+    }
+    private func taskScore(_ process: UserProcess) -> Int {
+        let name = process.name.lowercased()
+        if process.command.contains("/server/runs/") { return 5 }
+        if ["python", "node", "swift", "java", "ruby"].contains(where: name.contains) { return 4 }
+        if process.hasTerminal { return 3 }
+        if process.isCodex { return 2 }
+        return process.ports.isEmpty ? 0 : 1
+    }
+    func refresh() async {
+        guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
+        async let listed = Task.detached(priority: .utility) { UserProcessSampler.list() }.value
+        async let ports = LocalCommand.run(URL(fileURLWithPath: "/usr/sbin/lsof"), arguments: ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"], timeout: 5)
+        async let commands = LocalCommand.run(URL(fileURLWithPath: "/bin/ps"), arguments: ["-axo", "pid=,command="], timeout: 5)
+        let values = await listed, portResult = await ports, commandResult = await commands
+        let byPort = UserProcessSampler.listeningPorts(portResult.output)
+        let byCommand = UserProcessSampler.commands(commandResult.output)
+        let byCPU = Dictionary((SystemMonitor.shared.reading?.processes ?? []).map { ($0.id, $0.cpu) }, uniquingKeysWith: { first, _ in first })
+        let byMemory = Dictionary((SystemMonitor.shared.reading?.processes ?? []).map { ($0.id, $0.memory) }, uniquingKeysWith: { first, _ in first })
+        let previouslyRunning = Set(processes.map(\.id))
+        processes = values.map { value in
+            var item = value; item.ports = byPort[item.pid] ?? []; item.cpu = byCPU[item.pid] ?? nil; item.memory = byMemory[item.pid] ?? nil; item.command = byCommand[item.pid] ?? ""; return item
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let now = Date()
+        for index in bookmarks.indices {
+            if let current = processes.first(where: { $0.id == bookmarks[index].id }) {
+                bookmarks[index].process = current
+                bookmarks[index].lastSeenAt = now
+            }
+        }
+        let currentlyRunning = Set(processes.map(\.id))
+        if !bookmarks.isEmpty && (now.timeIntervalSince(lastBookmarkSaveAt) >= 30 || bookmarks.contains(where: { previouslyRunning.contains($0.id) && !currentlyRunning.contains($0.id) })) {
+            saveBookmarks()
+        }
+        error = portResult.status == -1 ? "Ports konnten nicht gelesen werden: " + portResult.error : nil
+    }
+    func stop(_ process: UserProcess, force: Bool = false) -> String? {
+        guard process.pid > 1, process.pid != getpid(),
+              let current = UserProcessSampler.identity(process.pid),
+              current.uid == getuid(), current.startedAt == process.startedAt, current.usec == process.startedAtUsec else {
+            return "Der Prozess existiert nicht mehr oder seine PID wurde neu vergeben."
+        }
+        guard Darwin.kill(process.pid, force ? SIGKILL : SIGTERM) == 0 else {
+            return "Prozess \(process.pid) konnte nicht beendet werden: " + String(cString: strerror(errno))
+        }
+        return nil
+    }
+    func logPath(for process: UserProcess) async -> String? {
+        guard let identity = UserProcessSampler.identity(process.pid),
+              identity.uid == getuid(), identity.startedAt == process.startedAt, identity.usec == process.startedAtUsec else { return nil }
+        let output = await LocalCommand.run(URL(fileURLWithPath: "/usr/sbin/lsof"),
+                                            arguments: ["-nP", "-a", "-p", String(process.pid), "-d", "1,2", "-Fftn"], timeout: 5)
+        return UserProcessSampler.logFile(output.output)
+    }
+}

@@ -9,8 +9,9 @@ final class WallpaperController {
         let playerView: WallpaperPlayerView
         var player: AVQueuePlayer?
         var looper: AVPlayerLooper?
+        var timeObserver: Any?
         var lastObservedTime: TimeInterval
-        var stalledCheckCount: Int
+        var lastProgressAt: Date
     }
 
     private let settings: SettingsStore
@@ -28,7 +29,7 @@ final class WallpaperController {
     var playbackSnapshot: [(seconds: TimeInterval, rate: Float)] {
         entries.values.compactMap { entry in
             guard let player = entry.player else { return nil }
-            return (player.currentTime().seconds, player.rate)
+            return (entry.lastObservedTime, player.rate)
         }
     }
 
@@ -73,13 +74,19 @@ final class WallpaperController {
             applyCurrentVideo()
         }
 
-        entries.values.forEach { $0.player?.play() }
+        for id in Array(entries.keys) {
+            guard var entry = entries[id] else { continue }
+            entry.player?.play()
+            entry.lastProgressAt = Date()
+            entries[id] = entry
+        }
         refreshWallpaperWindows()
         startHealthCheck()
     }
 
     func closeAllWindows() {
         entries.values.forEach { entry in
+            if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
             entry.player?.pause()
             entry.playerView.setPlayer(nil)
             entry.window.orderOut(nil)
@@ -98,6 +105,7 @@ final class WallpaperController {
         let currentScreenIDs = Set(screens.map(screenID(for:)))
 
         for (id, entry) in entries where !currentScreenIDs.contains(id) {
+            if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
             entry.player?.pause()
             entry.playerView.setPlayer(nil)
             entry.window.close()
@@ -124,8 +132,9 @@ final class WallpaperController {
                 playerView: playerView,
                 player: nil,
                 looper: nil,
+                timeObserver: nil,
                 lastObservedTime: 0,
-                stalledCheckCount: 0
+                lastProgressAt: Date()
             )
         }
     }
@@ -159,6 +168,8 @@ final class WallpaperController {
     }
 
     private func replacePlayer(in entry: inout WallpaperEntry, with videoURL: URL) {
+        if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
+        entry.timeObserver = nil
         entry.player?.pause()
         entry.playerView.setPlayer(nil)
         entry.looper = nil
@@ -179,7 +190,19 @@ final class WallpaperController {
         entry.player = player
         entry.looper = looper
         entry.lastObservedTime = 0
-        entry.stalledCheckCount = 0
+        entry.lastProgressAt = Date()
+        let screenID = entry.screenID
+        entry.timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self, weak player] time in
+            Task { @MainActor in
+                guard let self, let player, var current = self.entries[screenID], current.player === player,
+                      time.seconds.isFinite else { return }
+                if abs(time.seconds - current.lastObservedTime) >= 0.05 {
+                    current.lastProgressAt = Date()
+                }
+                current.lastObservedTime = time.seconds
+                self.entries[screenID] = current
+            }
+        }
 
         if !settings.isPaused {
             player.play()
@@ -226,20 +249,7 @@ final class WallpaperController {
                 player.play()
             }
 
-            let currentTime = player.currentTime().seconds
-            let observedTime = currentTime.isFinite ? currentTime : 0
-
-            if player.rate > 0,
-               abs(observedTime - entry.lastObservedTime) < 0.05 {
-                entry.stalledCheckCount += 1
-            } else {
-                entry.stalledCheckCount = 0
-            }
-
-            entry.lastObservedTime = observedTime
-            entries[id] = entry
-
-            if entry.stalledCheckCount >= 3 {
+            if player.rate > 0, Date().timeIntervalSince(entry.lastProgressAt) >= 15 {
                 shouldRebuildPlayback = true
                 break
             }

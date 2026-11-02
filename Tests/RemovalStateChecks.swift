@@ -61,6 +61,30 @@ import Darwin
         precondition(lazy.result?.files.isEmpty == true)
         lazy.endInventoryAccess(consumer);lazy.releaseUnusedInventory()
         print("PASS: summary-only launch, lazy inventory restore, shared consumers, explicit eviction and unloaded removal journal preserve cached data")
+        let externalFiles = root.appendingPathComponent("External"), externalCache = root.appendingPathComponent("ExternalCache")
+        let removedFolder = externalFiles.appendingPathComponent("DeletedFolder")
+        try FileManager.default.createDirectory(at:removedFolder,withIntermediateDirectories:true)
+        let survivor = externalFiles.appendingPathComponent("keep.jpg"), copy = removedFolder.appendingPathComponent("copy.jpg")
+        for url in [survivor,copy] { try Data("external deletion fixture".utf8).write(to:url) }
+        let external=DiskScanStore(defaults:UserDefaults(suiteName:"MacTools.external.\(UUID())")!,directory:externalCache)
+        external.root=externalFiles;external.start()
+        while external.isScanning || external.duplicateIndex == nil { try await Task.sleep(nanoseconds:10_000_000) }
+        let revision=external.duplicateRevision
+        precondition(external.duplicateIndex?.mediaCopies==1)
+        let changedSnapshot=external.result!.files.first { $0.path==DiskScanner.canonicalPath(survivor.path) }!
+        try FileManager.default.removeItem(at:removedFolder)
+        await external.reconcileMissingDuplicates(mediaOnly:true,force:true)
+        while external.isApplyingRemovals { try await Task.sleep(nanoseconds:10_000_000) }
+        precondition(external.duplicateRevision>revision && external.duplicateIndex?.mediaCopies==0 && external.duplicateIndex?.all.isEmpty==true)
+        precondition(external.result?.files.count==1 && FileManager.default.fileExists(atPath:survivor.path))
+        let externalSummary=try DiskScanCache.summary(from:externalCache.appendingPathComponent("last-disk-scan.plist"))
+        precondition(externalSummary?.fileCount==1 && externalSummary?.preview?.duplicates.isEmpty==true)
+        try Data("changed fixture with different length".utf8).write(to:survivor)
+        var removed:[String]? = nil
+        FileActions.shared.trash([changedSnapshot]) { removed=$0 }
+        while FileActions.shared.isCleaning { try await Task.sleep(nanoseconds:10_000_000) }
+        precondition(removed?.isEmpty==true && FileActions.shared.failures.count==1 && FileManager.default.fileExists(atPath:survivor.path),"Refused deletion must remain visible as a failure without touching Trash")
+        print("PASS: external folder deletion reconciles duplicate folders/counts and persisted summary; monotonic revision; refused changed-file deletion remains visible")
         let groups=(0..<100000).map { i in DuplicateGroup(id:String(i),files:(0..<2).map { j in DiskFile(path:"/tmp/fixture/\(i)-\(j).opus",bytes:1024,allocatedBytes:1024,modified:nil,identity:"\(i)-\(j)") }) }
         let start=Date(); let index=try DuplicateViewIndex.build(groups)
         let loaded=Date(); let after=index.removing(paths:["/tmp/fixture/0-0.opus"])
