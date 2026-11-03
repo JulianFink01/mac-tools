@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon
 import Combine
 import SwiftUI
@@ -27,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     var wallpaperPlaybackSnapshot: [(seconds: TimeInterval, rate: Float)] { wallpaperController.playbackSnapshot }
+    var wallpaperPlaybackAssets: [AVAsset] { wallpaperController.playbackAssets }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if shouldTerminateLoginAgentDuplicate() {

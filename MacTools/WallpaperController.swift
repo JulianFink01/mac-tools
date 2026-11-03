@@ -18,6 +18,7 @@ final class WallpaperController {
     private let library: VideoLibraryStore
     private var entries: [UInt32: WallpaperEntry] = [:]
     private var currentVideoURL: URL?
+    private var configureTask: Task<Void, Never>?
     private var healthCheckTimer: Timer?
 
     init(settings: SettingsStore, library: VideoLibraryStore) {
@@ -31,6 +32,10 @@ final class WallpaperController {
             guard let player = entry.player else { return nil }
             return (entry.lastObservedTime, player.rate)
         }
+    }
+
+    var playbackAssets: [AVAsset] {
+        entries.values.compactMap { $0.player?.currentItem?.asset }
     }
 
     func start() {
@@ -85,6 +90,8 @@ final class WallpaperController {
     }
 
     func closeAllWindows() {
+        configureTask?.cancel()
+        configureTask = nil
         entries.values.forEach { entry in
             if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
             entry.player?.pause()
@@ -156,18 +163,50 @@ final class WallpaperController {
         }
 
         currentVideoURL = standardizedURL
-
-        for id in Array(entries.keys) {
-            guard var entry = entries[id] else { continue }
-            replacePlayer(in: &entry, with: standardizedURL)
-            entries[id] = entry
+        configureTask?.cancel()
+        configureTask = Task { [weak self] in
+            do {
+                let asset = try await Self.videoOnlyAsset(at: standardizedURL)
+                guard let self, !Task.isCancelled, self.currentVideoURL == standardizedURL else { return }
+                for id in Array(self.entries.keys) {
+                    guard var entry = self.entries[id] else { continue }
+                    self.replacePlayer(in: &entry, with: asset)
+                    self.entries[id] = entry
+                }
+                self.refreshWallpaperWindows()
+                self.startHealthCheck()
+            } catch {
+                guard let self, !Task.isCancelled, self.currentVideoURL == standardizedURL else { return }
+                self.library.errorMessage = "Live-Hintergrund konnte nicht gestartet werden: \(error.localizedDescription)"
+            }
         }
-
-        refreshWallpaperWindows()
-        startHealthCheck()
     }
 
-    private func replacePlayer(in entry: inout WallpaperEntry, with videoURL: URL) {
+    private static func videoOnlyAsset(at url: URL) async throws -> AVAsset {
+        let source = AVURLAsset(url: url)
+        guard let track = try await source.loadTracks(withMediaType: .video).first else {
+            throw WallpaperError.noVideoTrack
+        }
+        let range = try await track.load(.timeRange)
+        let transform = try await track.load(.preferredTransform)
+        guard range.duration.seconds.isFinite, range.duration.seconds > 0 else {
+            throw WallpaperError.noVideoTrack
+        }
+        let composition = AVMutableComposition()
+        guard let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw WallpaperError.noVideoTrack
+        }
+        try video.insertTimeRange(range, of: track, at: .zero)
+        video.preferredTransform = transform
+        return composition
+    }
+
+    private enum WallpaperError: LocalizedError {
+        case noVideoTrack
+        var errorDescription: String? { "Das gewählte Video enthält keine abspielbare Videospur." }
+    }
+
+    private func replacePlayer(in entry: inout WallpaperEntry, with asset: AVAsset) {
         if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
         entry.timeObserver = nil
         entry.player?.pause()
@@ -175,7 +214,7 @@ final class WallpaperController {
         entry.looper = nil
         entry.player = nil
 
-        let item = AVPlayerItem(url: videoURL)
+        let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 1
 
         let player = AVQueuePlayer()

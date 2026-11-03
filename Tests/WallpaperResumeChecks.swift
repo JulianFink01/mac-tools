@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -20,12 +21,16 @@ final class WallpaperResumeHarness: NSObject, NSApplicationDelegate {
                 guard let video = library.video(with: SettingsStore.shared.currentVideoID) ?? library.videos.first else { throw CheckError.noVideo }
                 let settings = SettingsStore(defaults: defaults)
                 settings.setAspectMode(SettingsStore.shared.aspectMode)
+                let source = AVURLAsset(url: video.fileURL)
+                let sourceAudioTracks = try await source.loadTracks(withMediaType: .audio)
                 let controller = AppDelegate(settings: settings, library: library)
                 self.controller = controller
                 controller.bindState()
                 settings.setCurrentVideo(video.id)
                 try await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let playing = controller.wallpaperPlaybackSnapshot.first, playing.rate > 0, playing.seconds > 0.3 else { throw CheckError.notPlaying }
+                guard let asset = controller.wallpaperPlaybackAssets.first,
+                      try await asset.loadTracks(withMediaType: .audio).isEmpty else { throw CheckError.audioTrackActive }
                 settings.setPaused(true)
                 try await Task.sleep(nanoseconds: 400_000_000)
                 guard let paused = controller.wallpaperPlaybackSnapshot.first, paused.rate == 0 else { throw CheckError.notPaused }
@@ -37,7 +42,7 @@ final class WallpaperResumeHarness: NSObject, NSApplicationDelegate {
                 settings.setPaused(true); settings.setPaused(false)
                 try await Task.sleep(nanoseconds: 700_000_000)
                 guard let twice = controller.wallpaperPlaybackSnapshot.first, twice.rate > 0, twice.seconds > resumed.seconds + 0.3 else { throw CheckError.notResumed }
-                try "PASS: actual AppDelegate bindings and AVPlayer; playing \(playing.seconds), paused \(paused.seconds), resumed \(resumed.seconds), second resume \(twice.seconds)\n".write(toFile: "/private/tmp/mactools-wallpaper-resume-check.log", atomically: true, encoding: .utf8)
+                try "PASS: actual AppDelegate bindings and video-only AVPlayer; source audio tracks \(sourceAudioTracks.count), playing \(playing.seconds), paused \(paused.seconds), resumed \(resumed.seconds), second resume \(twice.seconds)\n".write(toFile: "/private/tmp/mactools-wallpaper-resume-check.log", atomically: true, encoding: .utf8)
                 passed = true
             } catch {
                 try? "FAIL: \(error)\n".write(toFile: "/private/tmp/mactools-wallpaper-resume-check.log", atomically: true, encoding: .utf8)
@@ -45,7 +50,7 @@ final class WallpaperResumeHarness: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
     }
-    enum CheckError: Error { case noVideo, notPlaying, notPaused, notResumed }
+    enum CheckError: Error { case noVideo, notPlaying, notPaused, notResumed, audioTrackActive }
 }
 
 @main
