@@ -570,6 +570,7 @@ struct QuickPanelView: View {
     @ObservedObject private var audio = NowPlayingStore.shared
     @ObservedObject private var containers = ContainerStore.shared
     @ObservedObject private var codex = CodexStore.shared
+    @ObservedObject private var userProcesses = UserProcessStore.shared
     @ObservedObject var privateMCP: PrivateMCPStore = .shared
     @State private var contentHeight: CGFloat = 500
     let openSection: (ToolNavigation.Section) -> Void
@@ -584,6 +585,8 @@ struct QuickPanelView: View {
     @State private var selectedEvent = 0
     @State private var eventTab = "Alle"
     @State private var selectedEventID: String?
+    @State private var selectedProcessID: String?
+    @State private var selectedProcessPage = 0
     @State private var showControlError = false
     @State private var featuredHealth = false
     @State private var interactingWithEvents = false
@@ -672,7 +675,7 @@ struct QuickPanelView: View {
     private var availableHeight: CGFloat { min(900, max(520, (NSScreen.main?.visibleFrame.height ?? 680) - 40)) }
     private var panelHeight: CGFloat { startsEditing ? 620 : min(availableHeight, max(340, contentHeight + 94)) }
     private var visibleWidgets: [QuickPanelWidget] { settings.quickPanelWidgets.filter { editingWidgets || ($0 != .codex || !menuChats.isEmpty) && ($0 != .liveFeed || !events.isEmpty) } }
-    private var cardCounts: (codex: Int, events: Int) { editingWidgets ? (1, 1) : QuickPanelCardLayout.counts(widgets: visibleWidgets, height: availableHeight - 94, multipleRunningChats: multipleRunningChats, eventCount: events.count, compactVolume: settings.quickPanelCompactVolume, eventTabs: settings.quickPanelEventTabs, usagePlacement: effectiveLimitPlacement, volumeCount: monitor.reading?.volumes.count ?? 1) }
+    private var cardCounts: (codex: Int, events: Int, processes: Int) { editingWidgets ? (1, 1, 1) : QuickPanelCardLayout.counts(widgets: visibleWidgets, height: availableHeight - 94, multipleRunningChats: multipleRunningChats, eventCount: events.count, compactVolume: settings.quickPanelCompactVolume, eventTabs: settings.quickPanelEventTabs, usagePlacement: effectiveLimitPlacement, volumeCount: monitor.reading?.volumes.count ?? 1, processCount: processValues.count) }
     @ViewBuilder private func editableWidget(_ widget: QuickPanelWidget) -> some View {
         if editingWidgets {
             VStack(spacing: 5) {
@@ -693,6 +696,7 @@ struct QuickPanelView: View {
     @ViewBuilder private func quickWidget(_ widget: QuickPanelWidget) -> some View {
         switch widget {
         case .liveFeed: liveEvents
+        case .processes: processCards
         case .codex: CodexChatRow(chats: menuChats, visibleCount: cardCounts.codex, compact: effectiveLimitPlacement == "chats" && visibleWidgets.contains(.codexLimit)) { id in closePanel?(); CodexPopupController.shared.show(chatID: id) }
         case .codexLimit: CodexUsageWidget(compact: effectiveLimitPlacement != "separate", height: effectiveLimitPlacement == "separate" ? 64 : effectiveLimitPlacement == "metrics" ? 86 : 64) { openSection(.codexLimit) }
         case .cpu: metricButton(.cpu, title: "CPU", value: monitorPercent(monitor.reading?.point.cpu), color: .cyan, key: \.cpu, detail: "Gesamte CPU-Auslastung")
@@ -713,6 +717,79 @@ struct QuickPanelView: View {
         case .monitor: quickButton("Systemmonitor", icon: "waveform.path.ecg", color: .mint) { openSection(.monitoring) }
         case .wallpaper: quickButton(settings.isPaused ? "Hintergrund starten" : "Hintergrund pausieren", icon: settings.isPaused ? "play.fill" : "pause.fill", color: .purple) { settings.setPaused(!settings.isPaused) }.disabled(library.videos.isEmpty)
         }
+    }
+    private var processValues: [UserProcess] {
+        var seen = Set<String>()
+        let recentMarked = userProcesses.listedProcesses.first { userProcesses.isBookmarked($0.id) }
+        return ([recentMarked].compactMap { $0 } + userProcesses.featured + userProcesses.listedProcesses)
+            .filter { seen.insert($0.id).inserted }
+    }
+    private var processCards: some View {
+        let values = processValues
+        let rows = max(1, cardCounts.processes)
+        let pages = max(1, (values.count + rows - 1) / rows)
+        let page = QuickPanelCardLayout.page(selectedID: selectedProcessID, fallback: selectedProcessPage, ids: values.map(\.id), rows: rows)
+        let shown = Array(values.dropFirst(page * rows).prefix(rows))
+        return VStack(spacing: 6) {
+            HStack {
+                Text("PROZESSE · \(userProcesses.scope.title.uppercased())").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Alle anzeigen") { openSection(.processes) }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.mint)
+            }.frame(height: 22)
+            if shown.isEmpty {
+                Text(userProcesses.processes.isEmpty ? "Prozesse werden geladen …" : "Keine Prozesse in diesem Bereich")
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).frame(height: 64).background(Color.mint.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                ForEach(shown) { process in
+                    Button {
+                        closePanel?()
+                        UserProcessWindowController.shared.show(processID: process.id)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: userProcesses.isBookmarked(process.id) ? "star.fill" : "terminal")
+                                .foregroundStyle(userProcesses.isBookmarked(process.id) ? .yellow : .mint)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(process.displayName).font(.callout.weight(.semibold)).lineLimit(1)
+                                    Spacer(minLength: 3)
+                                    Text("PID \(process.pid)").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                                }
+                                HStack(spacing: 7) {
+                                    if !userProcesses.isRunning(process.id) { Text("Beendet") }
+                                    if !process.ports.isEmpty { Text("Port " + process.ports.map(String.init).joined(separator: ", ")).foregroundStyle(.orange) }
+                                    if let memory = process.memory, userProcesses.isRunning(process.id) { Text("RAM " + diskBytes(Int64(memory))) }
+                                }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                Text(process.workingDirectory.isEmpty ? process.command : process.workingDirectory)
+                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                        }.padding(.horizontal, 12).frame(height: 64)
+                            .background(Color.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(.plain).accessibilityLabel("\(process.displayName), PID \(process.pid), \(userProcesses.isRunning(process.id) ? "läuft" : "beendet")")
+                        .help(process.command)
+                }
+            }
+            if pages > 1 {
+                HStack {
+                    Text("\(values.count) Prozesse").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Spacer()
+                    CompactCardPager(index: page, count: pages, item: "Prozesse · Seite",
+                                     previous: { selectProcessPage(page - 1, values: values, rows: rows) },
+                                     next: { selectProcessPage(page + 1, values: values, rows: rows) })
+                }.frame(height: 22)
+            }
+        }.task {
+            while !Task.isCancelled {
+                await userProcesses.refresh()
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
+            }
+        }
+    }
+    private func selectProcessPage(_ page: Int, values: [UserProcess], rows: Int) {
+        let index = max(0, min(page * rows, values.count - 1))
+        selectedProcessPage = page
+        selectedProcessID = values.isEmpty ? nil : values[index].id
     }
     private struct LiveEvent: Identifiable {
         let id: String

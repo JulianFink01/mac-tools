@@ -41,11 +41,12 @@ private struct CardPagerButtonStyle: ButtonStyle {
 }
 
 enum QuickPanelWidget: String, CaseIterable, Identifiable, Codable {
-    case liveFeed, codex, codexLimit, cpu, ram, gpu, disk, volume, pin, scan, monitor, wallpaper
+    case liveFeed, processes, codex, codexLimit, cpu, ram, gpu, disk, volume, pin, scan, monitor, wallpaper
     var id: String { rawValue }
     var title: String {
         switch self {
         case .liveFeed: return "Live-Ereignisse"
+        case .processes: return "Prozesse"
         case .codex: return "Codex-Chats"
         case .codexLimit: return "Codex-Limit"
         case .cpu: return "CPU"
@@ -142,22 +143,23 @@ enum QuickPanelCardLayout {
     static func volumeHeight(count: Int, compact: Bool) -> CGFloat {
         CGFloat(max(0, count)) * (compact ? 58 : 120) + CGFloat(max(0, count - 1)) * 8
     }
-    static func counts(widgets: [QuickPanelWidget], height: CGFloat, multipleRunningChats: Bool, eventCount: Int, compactVolume: Bool, eventTabs: Bool, usagePlacement: String = "separate", volumeCount: Int = 1) -> (codex: Int, events: Int) {
+    static func counts(widgets: [QuickPanelWidget], height: CGFloat, multipleRunningChats: Bool, eventCount: Int, compactVolume: Bool, eventTabs: Bool, usagePlacement: String = "separate", volumeCount: Int = 1, processCount: Int = 0) -> (codex: Int, events: Int, processes: Int) {
         let rows = QuickPanelWidget.rows(widgets, usagePlacement: usagePlacement)
         let base = rows.reduce(CGFloat(0)) { total, row in
             let widget = row[0]
-            let size: CGFloat = row.contains(.codexLimit) && row.contains(.codex) && usagePlacement == "chats" ? 144 : widget.group == 1 ? 82 : widget.group == 2 ? 42 : widget == .codexLimit ? (usagePlacement == "separate" ? 64 : usagePlacement == "metrics" ? 86 : 64) : widget == .volume ? volumeHeight(count: volumeCount, compact: compactVolume) : widget == .liveFeed ? (eventTabs ? 118 : 88) : 64
+            let size: CGFloat = row.contains(.codexLimit) && row.contains(.codex) && usagePlacement == "chats" ? 144 : widget.group == 1 ? 82 : widget.group == 2 ? 42 : widget == .codexLimit ? (usagePlacement == "separate" ? 64 : usagePlacement == "metrics" ? 86 : 64) : widget == .volume ? volumeHeight(count: volumeCount, compact: compactVolume) : widget == .liveFeed ? (eventTabs ? 118 : 88) : widget == .processes ? 118 : 64
             return total + size
         } + CGFloat(max(0, rows.count - 1)) * 10
         var spare = height - base
-        var codex = 1, events = 1
+        var codex = 1, events = 1, processes = 1
         if widgets.contains(.codex), multipleRunningChats {
             if usagePlacement == "chats", widgets.contains(.codexLimit) { codex = 2 }
             else if spare >= 72 { codex = 2; spare -= 72 }
         }
+        if widgets.contains(.processes), processCount > 1, spare >= 72 { processes = 2; spare -= 72 }
         if widgets.contains(.liveFeed) {
             while events < min(4, eventCount), spare >= 72 { events += 1; spare -= 72 }
         }
-        return (codex, events)
+        return (codex, events, processes)
     }
 }

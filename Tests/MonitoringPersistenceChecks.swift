@@ -39,6 +39,9 @@ struct MonitoringPersistenceChecks {
         precondition(eventPages == [["infra", "trader", "docker1", "docker2"], ["docker3"]])
         let spareEvents = QuickPanelCardLayout.counts(widgets: [.liveFeed], height: 500, multipleRunningChats: false, eventCount: 8, compactVolume: false, eventTabs: false)
         precondition(spareEvents.events == 4)
+        let roomyProcesses = QuickPanelCardLayout.counts(widgets: [.processes], height: 220, multipleRunningChats: false, eventCount: 0, compactVolume: false, eventTabs: false, processCount: 5)
+        let tightProcesses = QuickPanelCardLayout.counts(widgets: [.processes], height: 118, multipleRunningChats: false, eventCount: 0, compactVolume: false, eventTabs: false, processCount: 5)
+        precondition(roomyProcesses.processes == 2 && tightProcesses.processes == 1)
         for section in ToolNavigation.Section.pinnable { pinSettings.setSidebarFavorite(section, enabled: false) }
         precondition(SettingsStore(defaults: pinDefaults).sidebarTools.isEmpty)
         precondition(SettingsStore(defaults: pinDefaults).pinnedTools == [.containers], "Sidebar preferences must be independent from macOS menu pins")

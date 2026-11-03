@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings.setPinned(.processes, enabled: true)
             UserDefaults.standard.set(true, forKey: "processMenuAdded101")
         }
+        if !UserDefaults.standard.bool(forKey: "quickPanelProcessesAdded103") {
+            if !settings.quickPanelWidgets.contains(.processes) {
+                let index = settings.quickPanelWidgets.firstIndex(of: .liveFeed).map { $0 + 1 } ?? 0
+                settings.quickPanelWidgets.insert(.processes, at: index)
+            }
+            UserDefaults.standard.set(true, forKey: "quickPanelProcessesAdded103")
+        }
         PrivateMCPStore.shared.start()
         WindowPinController.shared.start(onFailure: { [weak self] in self?.presentMainWindow(section: .windows) })
         if !UserDefaults.standard.bool(forKey: "codexLimitWidgetAdded26") {
