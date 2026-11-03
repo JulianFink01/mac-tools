@@ -24,13 +24,15 @@ import Combine
 extension Notification.Name { static let showMacToolsQuickPanel = Notification.Name("showMacToolsQuickPanel") }
 extension Notification.Name { static let showPinnedCodexChat = Notification.Name("showPinnedCodexChat") }
 extension Notification.Name { static let showCodexMenuStats = Notification.Name("showCodexMenuStats") }
+extension Notification.Name { static let showProcessMenu = Notification.Name("showProcessMenu") }
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSPopoverDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
     private var observer: NSObjectProtocol?
     private var codexObserver: NSObjectProtocol?
+    private var processObserver: NSObjectProtocol?
     private var mainSubscription: AnyCancellable?
     private var mainVisibility: StatusItemVisibility?
     private var folderVisibility: [String: StatusItemVisibility] = [:]
@@ -47,6 +49,8 @@ final class MenuBarController: NSObject {
     private var toolItems: [ToolNavigation.Section: NSStatusItem] = [:]
     private var toolActions: [ToolNavigation.Section: PinnedToolAction] = [:]
     private let codexPopover = NSPopover()
+    private let processPopover = NSPopover()
+    private var processRefreshTask: Task<Void, Never>?
     private let usagePopover = NSPopover()
     private var usageLabel: CodexStatusLabel?
     private var usageSubscription: AnyCancellable?
@@ -78,6 +82,16 @@ final class MenuBarController: NSObject {
             openChats: { [weak self] in self?.codexPopover.close(); openSection(.codex) },
             openSettings: { [weak self] in self?.codexPopover.close(); openSettings(.navigation) },
             openLimits: { [weak self] in self?.codexPopover.close(); openSection(.codexLimit) }, newChat: { [weak self] in self?.codexPopover.close(); CodexPopupController.shared.show(chatID: nil) }).frame(width: 390, height: statsHeight))
+        processPopover.behavior = .transient
+        processPopover.delegate = self
+        let processHeight = min(700, max(450, (NSScreen.main?.visibleFrame.height ?? 700) - 70))
+        processPopover.contentSize = NSSize(width: 390, height: processHeight)
+        processPopover.contentViewController = NSHostingController(rootView: UserProcessMenuView(
+            openWindow: { [weak self] in self?.processPopover.close(); UserProcessWindowController.shared.show() },
+            openSettings: { [weak self] in self?.processPopover.close(); openSettings(.navigation) },
+            openProcess: { [weak self] process in self?.processPopover.close(); UserProcessWindowController.shared.show(processID: process.id) },
+            height: processHeight
+        ).frame(width: 390, height: processHeight))
         codexSubscription = CodexStore.shared.$activityHistory.sink { [weak self] points in
             let point = points.last
             self?.codexLabel?.running = point?.running ?? 0
@@ -130,7 +144,7 @@ final class MenuBarController: NSObject {
                 if enabled.contains(tool), self.toolItems[tool] == nil {
                     let item = NSStatusBar.system.statusItem(withLength: tool == .codex ? 52 : tool == .codexLimit ? 46 : NSStatusItem.squareLength)
                     let action = PinnedToolAction { [weak self] in
-                        if tool == .codex { self?.toggleCodexStats() } else if tool == .codexLimit, let button = self?.toolItems[tool]?.button {
+                        if tool == .codex { self?.toggleCodexStats() } else if tool == .processes { self?.toggleProcessMenu() } else if tool == .codexLimit, let button = self?.toolItems[tool]?.button {
                             if self?.usagePopover.isShown == true { self?.usagePopover.close() } else { self?.usagePopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }; CodexStore.shared.start()
                         } else { openSection(tool) }
                     }
@@ -159,6 +173,7 @@ final class MenuBarController: NSObject {
                     }
                 } else if !enabled.contains(tool), let item = self.toolItems.removeValue(forKey: tool) {
                     if tool == .codex { self.codexPopover.close(); self.codexLabel = nil }
+                    if tool == .processes { self.processPopover.close(); self.processRefreshTask?.cancel(); self.processRefreshTask = nil }
                     if tool == .codexLimit { self.usagePopover.close(); self.usageLabel = nil }
                     self.toolVisibility.removeValue(forKey: tool)?.invalidate()
                     NSStatusBar.system.removeStatusItem(item); self.toolActions.removeValue(forKey: tool)
@@ -195,6 +210,7 @@ final class MenuBarController: NSObject {
             Task { @MainActor in self?.togglePanel() }
         }
         codexObserver = NotificationCenter.default.addObserver(forName: .showCodexMenuStats, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.toggleCodexStats() } }
+        processObserver = NotificationCenter.default.addObserver(forName: .showProcessMenu, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.toggleProcessMenu() } }
     }
 
     var diagnostics: [[String: Any]] {
@@ -212,15 +228,32 @@ final class MenuBarController: NSObject {
         folderVisibility.values.forEach { $0.invalidate() }; folderVisibility.removeAll()
         toolVisibility.values.forEach { $0.invalidate() }; toolVisibility.removeAll()
         mainSubscription?.cancel(); folderSubscription?.cancel(); toolSubscription?.cancel(); codexSubscription?.cancel(); usageSubscription?.cancel()
-        popover.close(); codexPopover.close(); usagePopover.close()
+        popover.close(); codexPopover.close(); processPopover.close(); usagePopover.close()
+        processRefreshTask?.cancel(); processRefreshTask = nil
         for item in Array(folderItems.values) + Array(toolItems.values) + Array(chatItems.values) { NSStatusBar.system.removeStatusItem(item) }
         folderItems.removeAll(); toolItems.removeAll(); chatItems.removeAll(); NSStatusBar.system.removeStatusItem(statusItem)
-        if let observer { NotificationCenter.default.removeObserver(observer) }; if let codexObserver { NotificationCenter.default.removeObserver(codexObserver) }
+        if let observer { NotificationCenter.default.removeObserver(observer) }; if let codexObserver { NotificationCenter.default.removeObserver(codexObserver) }; if let processObserver { NotificationCenter.default.removeObserver(processObserver) }
     }
     private func toggleCodexStats() {
         guard let button = toolItems[.codex]?.button else { return }
         if codexPopover.isShown { codexPopover.close() }
         else { CodexStore.shared.start(); codexPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+    }
+    private func toggleProcessMenu() {
+        guard let button = toolItems[.processes]?.button else { return }
+        if processPopover.isShown { processPopover.close(); return }
+        processPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        processRefreshTask?.cancel()
+        processRefreshTask = Task {
+            while !Task.isCancelled {
+                await UserProcessStore.shared.refresh()
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
+            }
+        }
+    }
+    func popoverDidClose(_ notification: Notification) {
+        guard (notification.object as? NSPopover) === processPopover else { return }
+        processRefreshTask?.cancel(); processRefreshTask = nil
     }
     private func updateHealthIndicator() {
         let critical = PrivateMCPStore.shared.criticalServices

@@ -25,6 +25,7 @@ struct MacToolsApp: App {
                     .keyboardShortcut("d")
                 Button("Neues Codex-Chatfenster") { CodexPopupController.shared.show() }
                 Button("Codex-Statistik") { SettingsStore.shared.setPinned(.codex, enabled: true); NotificationCenter.default.post(name: .showCodexMenuStats, object: nil) }
+                Button("Prozesse") { SettingsStore.shared.setPinned(.processes, enabled: true); NotificationCenter.default.post(name: .showProcessMenu, object: nil) }
                 Button("Codex-Chats öffnen") { appDelegate.presentMainWindow(section: .codex) }
                 Button("Systemmonitor öffnen") { appDelegate.presentMainWindow(section: .monitoring) }
                 Button("Schnellaktionen") { NotificationCenter.default.post(name: .showMacToolsQuickPanel, object: nil) }

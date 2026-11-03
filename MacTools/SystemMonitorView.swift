@@ -345,7 +345,66 @@ struct SystemMonitorView: View {
     }
 }
 
-private struct UserProcessManagerView: View {
+struct UserProcessMenuView: View {
+    @ObservedObject private var store = UserProcessStore.shared
+    @State private var search = ""
+    let openWindow: () -> Void
+    let openSettings: () -> Void
+    let openProcess: (UserProcess) -> Void
+    let height: CGFloat
+
+    private var shown: [UserProcess] {
+        store.listedProcesses.filter { process in
+            search.isEmpty || process.displayName.localizedCaseInsensitiveContains(search) ||
+                process.executable.localizedCaseInsensitiveContains(search) ||
+                process.command.localizedCaseInsensitiveContains(search) ||
+                process.workingDirectory.localizedCaseInsensitiveContains(search) ||
+                String(process.pid).contains(search) || process.ports.contains { String($0).contains(search) }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Label("Prozesse", systemImage: "terminal").font(.headline).foregroundStyle(.mint)
+                Spacer()
+                Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Prozesse aktualisieren").accessibilityLabel("Prozesse aktualisieren")
+                Button(action: openSettings) { Image(systemName: "gearshape") }
+                    .help("Menüleisten-Favoriten einstellen").accessibilityLabel("Menüleisten-Favoriten einstellen")
+                Button(action: openWindow) { Image(systemName: "arrow.up.right.square") }
+                    .help("Prozesse in eigenem Fenster öffnen").accessibilityLabel("Prozesse in eigenem Fenster öffnen")
+            }.buttonStyle(.plain)
+            HStack {
+                Text("\(store.scopedProcesses.count) laufend").font(.callout.weight(.medium))
+                Spacer()
+                if !store.bookmarks.isEmpty { Text("\(store.bookmarks.count) markiert").font(.caption).foregroundStyle(.secondary) }
+            }
+            UserProcessScopeTabs(scope: $store.scope)
+            HStack {
+                UserProcessViewModeToggle(mode: $store.viewMode)
+                Spacer()
+                if store.viewMode == .tree { UserProcessTreeActions(store: store, processes: store.listedProcesses) }
+            }
+            TextField("Name, PID oder Port suchen", text: $search).textFieldStyle(.roundedBorder)
+            ScrollView {
+                LazyVStack(spacing: 3) {
+                    if store.viewMode == .tree {
+                        UserProcessTreeList(store: store, processes: store.listedProcesses, search: search, selectedID: nil, open: openProcess)
+                    } else {
+                        ForEach(shown) { process in
+                            UserProcessRow(process: process, selected: false, bookmarked: store.isBookmarked(process.id), running: store.isRunning(process.id)) { openProcess(process) }
+                        }
+                    }
+                }
+            }.scrollIndicators(.visible)
+            if shown.isEmpty { Text(store.processes.isEmpty ? "Benutzerprozesse werden geladen …" : "Keine passenden Prozesse.").font(.caption).foregroundStyle(.secondary) }
+            if let error = store.error { Text(error).font(.caption2).foregroundStyle(.orange) }
+        }.padding(18).frame(width: 390, height: height)
+    }
+}
+
+struct UserProcessManagerView: View {
     @ObservedObject private var store = UserProcessStore.shared
     @ObservedObject private var monitor = SystemMonitor.shared
     @State private var search = ""
@@ -588,7 +647,7 @@ private struct UserProcessTreeList: View {
         let included = matched.union(forcedOpen)
         return entries.filter { entry in
             let inSearchTree = included.contains(entry.id) || entry.ancestors.contains(where: matched.contains)
-            let hiddenByCollapsed = entry.ancestors.contains { store.collapsedProcessIDs.contains($0) && !forcedOpen.contains($0) }
+            let hiddenByCollapsed = entry.ancestors.contains(where: store.collapsedProcessIDs.contains)
             return inSearchTree && !hiddenByCollapsed
         }
     }

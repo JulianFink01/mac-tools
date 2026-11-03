@@ -43,6 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let image = NSImage(contentsOf: url) { NSApp.applicationIconImage = image }
 
         configureMenuBar()
+        if !UserDefaults.standard.bool(forKey: "processMenuAdded101") {
+            settings.setPinned(.processes, enabled: true)
+            UserDefaults.standard.set(true, forKey: "processMenuAdded101")
+        }
         PrivateMCPStore.shared.start()
         WindowPinController.shared.start(onFailure: { [weak self] in self?.presentMainWindow(section: .windows) })
         if !UserDefaults.standard.bool(forKey: "codexLimitWidgetAdded26") {

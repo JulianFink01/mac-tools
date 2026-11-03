@@ -12,11 +12,12 @@ final class ToolNavigation: ObservableObject {
         case disk = "Disk & Sicherheit"
         case apps = "Apps"
         case monitoring = "Systemmonitor"
+        case processes = "Prozesse"
         case wallpaper = "Live-Hintergrund"
         case windows = "Fenster vorn halten"
         case codex = "Codex-Chats"
         case settings = "Einstellungen"
-        static var pinnable: [Section] { [.codex, .codexLimit, .mcp, .monitoring, .disk, .containers, .apps, .wallpaper, .windows] + (PrivateMCPAccess.enabled ? [.infrapilot, .alphaTrader] : []) }
+        static var pinnable: [Section] { [.codex, .processes, .codexLimit, .mcp, .monitoring, .disk, .containers, .apps, .wallpaper, .windows] + (PrivateMCPAccess.enabled ? [.infrapilot, .alphaTrader] : []) }
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -30,6 +31,7 @@ final class ToolNavigation: ObservableObject {
             case .apps: return "app.badge"
             case .disk: return "internaldrive"
             case .monitoring: return "waveform.path.ecg"
+            case .processes: return "terminal"
             case .wallpaper: return "play.rectangle"
             case .windows: return "pin"
             case .settings: return "gearshape"
@@ -47,6 +49,7 @@ final class ToolNavigation: ObservableObject {
             case .apps: return "Apps & zugehörige Daten"
             case .disk: return "Speicher & Schutz im Überblick"
             case .monitoring: return "CPU · RAM · GPU · I/O"
+            case .processes: return "Eigene Prozesse · Ports · Logs"
             case .wallpaper: return "Videos für deinen Desktop"
             case .windows: return "Always on top"
             case .settings: return "MacTools & deine Tools"
@@ -158,6 +161,7 @@ struct MacToolsView: View {
                 case .codex: CodexChatsView()
                 case .apps: AppsView()
                 case .monitoring: SystemMonitorView()
+                case .processes: UserProcessManagerView()
                 case .wallpaper: LibraryView(onOpenSettings: { navigation.openSettings(.wallpaper) })
                 case .windows: WindowToolView(onOpenSettings: { navigation.openSettings(.windows) })
                 case .settings: SettingsView(selectedCategory: $navigation.settingsCategory)
