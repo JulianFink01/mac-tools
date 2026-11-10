@@ -29,6 +29,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
     private var timer: Timer?
     private var subscriptions = Set<AnyCancellable>()
     private var pendingVirusScan = false
+    private var automaticVirusScanActive = false
     private var pipelineGeneration = UUID()
     private var lastRun = UserDefaults.standard.object(forKey: "automaticScanLastRun") as? Date
     private let warningsURL = VideoLibraryStore.appSupportDirectory.appendingPathComponent("scan-warnings.json")
@@ -60,6 +61,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
         }.store(in: &subscriptions)
         SecurityScanStore.shared.$report.compactMap { $0 }.sink { [weak self] report in
             guard SecurityScanStore.shared.isScanning else { return }
+            self?.automaticVirusScanActive = false
             self?.showNextScan()
             guard !report.cancelled else { return }
             if report.threatCount > 0 || (report.exitCode != 0 && report.exitCode != 1) {
@@ -67,6 +69,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
             }
         }.store(in: &subscriptions)
         SecurityScanStore.shared.$issue.compactMap { $0 }.sink { [weak self] message in
+            self?.automaticVirusScanActive = false
             self?.warn("Virenschutz benötigt Aufmerksamkeit", detail: message)
         }.store(in: &subscriptions)
         UNUserNotificationCenter.current().delegate = self
@@ -89,6 +92,14 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
 
     func checkSchedule() {
         guard enabled else { status = "Automatische Scans deaktiviert."; return }
+        if automaticVirusScanActive && MonitorBattery.read()?.isOnBattery == true {
+            automaticVirusScanActive = false
+            SecurityScanStore.shared.cancel()
+            lastRun = nil
+            UserDefaults.standard.removeObject(forKey: "automaticScanLastRun")
+            status = "Automatische Virenprüfung pausiert bis Netzstrom verfügbar ist."
+            return
+        }
         let interval = TimeInterval(max(1, intervalHours) * 3600)
         if let lastRun, Date().timeIntervalSince(lastRun) < interval {
             status = "Nächster automatischer Scan: \(lastRun.addingTimeInterval(interval).formatted(date: .abbreviated, time: .shortened))"
@@ -99,13 +110,17 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
             status = "Automatischer Scan wartet auf den laufenden Vorgang."
             return
         }
+        if MonitorBattery.read()?.isOnBattery == true {
+            status = "Automatische Virenprüfung wartet auf Netzstrom."
+            return
+        }
         lastRun = Date()
         UserDefaults.standard.set(lastRun, forKey: "automaticScanLastRun")
-        status = "Automatischer Scan läuft: \(DiskScanStore.shared.root.path)"
+        status = "Automatische Virenprüfung läuft: \(DiskScanStore.shared.root.path)"
         pipelineGeneration = UUID()
-        pendingVirusScan = true
-        DiskScanStore.shared.findDuplicates = true
-        DiskScanStore.shared.start()
+        pendingVirusScan = false
+        automaticVirusScanActive = true
+        startVirusScan(root: DiskScanStore.shared.root)
     }
 
     func runNow() {
@@ -132,6 +147,7 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
         status = "Automatische Virenprüfung läuft …"
         SecurityScanStore.shared.refresh()
         guard SecurityScanStore.shared.executable != nil else {
+            automaticVirusScanActive = false
             warn("Virenschutz nicht verfügbar", detail: "Die integrierte ClamAV-Engine fehlt im Anwendungspaket.")
             showNextScan()
             return
@@ -140,8 +156,9 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
         Task {
             if await SecurityScanStore.shared.updateSignaturesIfNeeded() {
                 guard pipelineGeneration == generation else { return }
-                SecurityScanStore.shared.start(root: root, inventory: inventory, inventoryIsCurrent: true)
+                SecurityScanStore.shared.start(root: root, inventory: inventory, inventoryIsCurrent: inventory != nil)
             } else {
+                automaticVirusScanActive = false
                 warn("Virenschutz benötigt Aufmerksamkeit", detail: SecurityScanStore.shared.status)
                 showNextScan()
             }

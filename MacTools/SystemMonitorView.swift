@@ -178,6 +178,15 @@ struct SystemMonitorView: View {
             processSort == "RAM" ? $0.memory > $1.memory : ($0.cpu ?? -1) > ($1.cpu ?? -1)
         }.prefix(12))
     }
+    private var energyProcesses: [(name: String, watts: Double)] {
+        let measured = (reading?.processes ?? []).compactMap { process -> (String, Double)? in
+            guard let watts = process.energyWatts, watts >= 0 else { return nil }
+            return (process.name, watts)
+        }
+        let grouped = Dictionary(grouping: measured, by: { $0.0 })
+        return grouped.map { (name: $0.key, watts: $0.value.reduce(0) { $0 + $1.1 }) }
+            .sorted { $0.watts > $1.watts }.prefix(8).map { $0 }
+    }
     private var shownUserProcesses: [UserProcess] {
         let featured = userProcesses.featured
         let featuredIDs = Set(featured.map(\.id))
@@ -208,6 +217,7 @@ struct SystemMonitorView: View {
                     MonitorMetricCard(title: "Disk · Schreiben", icon: "arrow.up.to.line", value: monitorRate(reading?.point.diskWrite), detail: "Alle erfassten Datenträger", color: .orange, points: points, key: \.diskWrite, percent: false)
                     MonitorMetricCard(title: "Netzwerk · Download", icon: "network", value: monitorRate(reading?.point.download), detail: "Upload " + monitorRate(reading?.point.upload), color: .pink, points: points, key: \.download, percent: false)
                 }
+                batteryCard
                 userProcessesCard
                 HStack(alignment: .top, spacing: 16) {
                     memoryCard
@@ -261,6 +271,64 @@ struct SystemMonitorView: View {
                     Button("Schließen") { selectedMetric = nil }.keyboardShortcut(.cancelAction).padding(.bottom, 14)
                 }
             }
+    }
+    private var batteryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Batterie", systemImage: "battery.100percent").font(.title3.bold())
+            if let battery = reading?.battery {
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(monitorPercent(battery.chargePercent)).font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
+                        ProgressView(value: battery.chargePercent, total: 100).tint(battery.chargePercent < 20 ? .orange : .green)
+                        Text(battery.isCharging ? "Lädt" : battery.isOnBattery ? "Batteriebetrieb" : "Netzbetrieb")
+                            .font(.callout).foregroundStyle(.secondary)
+                        if let minutes = battery.minutesRemaining {
+                            Text(battery.isCharging ? "Bis voll: \(minutes / 60) Std. \(minutes % 60) Min." : "Voraussichtlich: \(minutes / 60) Std. \(minutes % 60) Min.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("Batteriezustand").font(.caption).foregroundStyle(.secondary)
+                        Text(monitorPercent(battery.healthPercent)).font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text(battery.cycleCount.map { "\($0) Ladezyklen" } ?? "Ladezyklen nicht verfügbar")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Maximale Kapazität / Designkapazität").font(.caption2).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(battery.isCharging ? "Ladeleistung" : battery.isOnBattery ? "Batterieentnahme" : "Batterieleistung").font(.caption).foregroundStyle(.secondary)
+                        Text(battery.powerWatts.map { String(format: "%.1f W", $0) } ?? "—")
+                            .font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text("Momentan an der Batterie gemessen").font(.caption2).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                MonitorTrend(points: points, key: \.battery, color: .green)
+                    .frame(height: 80).accessibilityLabel("Batteriestand im Zeitverlauf")
+                Divider()
+                HStack {
+                    Text("Programme mit höchstem Energieverbrauch").font(.headline)
+                    Spacer()
+                    Text("Aktuelle Prozessleistung").font(.caption).foregroundStyle(.secondary)
+                }
+                if energyProcesses.isEmpty {
+                    Text("Prozessenergie wird noch gemessen oder ist für diese Prozesse nicht verfügbar.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(energyProcesses, id: \.name) { process in
+                        HStack {
+                            Text(process.name).lineLimit(1)
+                            Spacer()
+                            Text(String(format: "%.2f W", process.watts)).monospacedDigit()
+                        }.font(.callout)
+                    }
+                }
+                Text("Prozesswerte stammen aus macOS-Energiezählern und decken nicht Display, Funk und alle Systemverbraucher ab. Sie sind kein exakter Anteil an der Batterieentnahme.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("Keine interne Batterie erkannt oder Batteriedaten nicht verfügbar.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
     }
     private var userProcessesCard: some View {
         VStack(alignment: .leading, spacing: 12) {

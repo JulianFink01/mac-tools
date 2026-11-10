@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import IOKit
+import IOKit.ps
 import Metal
 
 struct MonitorPoint: Identifiable, Codable, Sendable {
@@ -15,12 +16,57 @@ struct MonitorPoint: Identifiable, Codable, Sendable {
     let download: Double?
     let upload: Double?
     let diskUsed: Double?
+    let battery: Double?
 }
 struct MonitorProcess: Identifiable, Sendable {
     let id: Int32
     let name: String
     let cpu: Double?
     let memory: UInt64
+    let energyWatts: Double?
+}
+struct MonitorBattery: Sendable {
+    let chargePercent: Double
+    let isOnBattery: Bool
+    let isCharging: Bool
+    let minutesRemaining: Int?
+    let healthPercent: Double?
+    let cycleCount: Int?
+    let powerWatts: Double?
+
+    static func read() -> MonitorBattery? {
+        let blob = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+        let sources = IOPSCopyPowerSourcesList(blob).takeRetainedValue() as [CFTypeRef]
+        guard let source = sources.first(where: {
+            (IOPSGetPowerSourceDescription(blob, $0)?.takeUnretainedValue() as? [String: Any])?["Type"] as? String == "InternalBattery"
+        }), let description = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any],
+              let current = (description["Current Capacity"] as? NSNumber)?.doubleValue,
+              let maximum = (description["Max Capacity"] as? NSNumber)?.doubleValue, maximum > 0 else { return nil }
+        let onBattery = description["Power Source State"] as? String == "Battery Power"
+        let charging = (description["Is Charging"] as? NSNumber)?.boolValue == true
+        let timeKey = charging ? "Time to Full Charge" : "Time to Empty"
+        let rawMinutes = (description[timeKey] as? NSNumber)?.intValue
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        var properties: [String: Any] = [:]
+        if service != 0 {
+            defer { IOObjectRelease(service) }
+            var values: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(service, &values, kCFAllocatorDefault, 0) == KERN_SUCCESS {
+                properties = values?.takeRetainedValue() as? [String: Any] ?? [:]
+            }
+        }
+        let data = properties["BatteryData"] as? [String: Any] ?? [:]
+        let full = (data["FullChargeCapacity"] as? NSNumber)?.doubleValue ?? (data["AppleRawMaxCapacity"] as? NSNumber)?.doubleValue
+        let design = (data["DesignCapacity"] as? NSNumber)?.doubleValue
+        let health = (full != nil && design != nil && design! > 0) ? min(100, full! / design! * 100) : nil
+        let amperage = (properties["Amperage"] as? NSNumber)?.doubleValue
+        let voltage = (properties["Voltage"] as? NSNumber)?.doubleValue
+        let power = (amperage != nil && voltage != nil && (onBattery || charging)) ? abs(amperage! * voltage!) / 1_000_000 : nil
+        return MonitorBattery(chargePercent: min(100, max(0, current / maximum * 100)), isOnBattery: onBattery,
+                              isCharging: charging, minutesRemaining: rawMinutes.flatMap { $0 > 0 && $0 < 1440 ? $0 : nil },
+                              healthPercent: health, cycleCount: (properties["CycleCount"] as? NSNumber)?.intValue,
+                              powerWatts: power)
+    }
 }
 struct MonitorVolume: Identifiable, Sendable {
     var id: String { path }
@@ -42,6 +88,7 @@ struct SystemReading: Sendable {
     let gpuName: String
     let gpuMemory: UInt64?
     let processes: [MonitorProcess]
+    let battery: MonitorBattery?
     let volumes: [MonitorVolume]
 }
 
@@ -52,6 +99,7 @@ final class SystemSampler {
     private var previousDisk: (UInt64, UInt64)?
     private var previousNetwork: (UInt64, UInt64)?
     private var previousProcesses: [Int32: UInt64] = [:]
+    private var previousEnergy: [Int32: (start: UInt64, nanojoules: UInt64)] = [:]
     private var previousTime: TimeInterval?
 
     func read() -> SystemReading {
@@ -64,16 +112,18 @@ final class SystemSampler {
         let disk = diskCounters()
         let net = networkCounters()
         let mountedVolumes = volumes()
+        let battery = MonitorBattery.read()
         let point = MonitorPoint(date: Date(), cpu: cpu, memory: memory.available ? min(100, Double(memory.app + memory.wired + memory.compressed) / Double(max(1, memory.total)) * 100) : nil,
                                  gpu: gpu.percent, diskRead: rate(disk?.0, previousDisk?.0, elapsed),
                                  diskWrite: rate(disk?.1, previousDisk?.1, elapsed),
                                  download: rate(net?.0, previousNetwork?.0, elapsed), upload: rate(net?.1, previousNetwork?.1, elapsed),
-                                 diskUsed: mountedVolumes.first(where: { $0.path == "/" }).map { $0.usedFraction * 100 })
+                                 diskUsed: mountedVolumes.first(where: { $0.path == "/" }).map { $0.usedFraction * 100 },
+                                 battery: battery?.chargePercent)
         previousDisk = disk; previousNetwork = net
         return SystemReading(point: point, cores: cores, totalMemory: memory.total, appMemory: memory.app,
                              wiredMemory: memory.wired, compressedMemory: memory.compressed, swap: memory.swap, memoryPressure: memoryPressure(),
                              gpuName: MTLCreateSystemDefaultDevice()?.name ?? "GPU", gpuMemory: gpu.memory,
-                             processes: processes(elapsed: elapsed), volumes: mountedVolumes)
+                             processes: processes(elapsed: elapsed), battery: battery, volumes: mountedVolumes)
     }
 
     private func rate(_ current: UInt64?, _ previous: UInt64?, _ elapsed: Double?) -> Double? {
@@ -182,7 +232,8 @@ final class SystemSampler {
         var pids = [Int32](repeating: 0, count: Int(count) + 64)
         let actual = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
         guard actual > 0 else { return [] }
-        var next: [Int32: UInt64] = [:]; var values: [MonitorProcess] = []
+        var next: [Int32: UInt64] = [:], nextEnergy: [Int32: (start: UInt64, nanojoules: UInt64)] = [:]
+        var values: [MonitorProcess] = []
         for pid in pids.prefix(min(Int(actual), pids.count)) where pid > 0 {
             var info = proc_taskinfo()
             let size = Int32(MemoryLayout<proc_taskinfo>.size)
@@ -193,9 +244,23 @@ final class SystemSampler {
             var buffer = [CChar](repeating: 0, count: 256)
             let length = proc_name(pid, &buffer, UInt32(buffer.count))
             let name = length > 0 ? String(cString: buffer) : "PID \(pid)"
-            values.append(MonitorProcess(id: pid, name: name, cpu: cpu, memory: info.pti_resident_size))
+            var usage = rusage_info_v6()
+            let energyStatus = withUnsafeMutablePointer(to: &usage) { pointer in
+                pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                    proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
+                }
+            }
+            var watts: Double?
+            if energyStatus == 0 {
+                if let previous = previousEnergy[pid], previous.start == usage.ri_proc_start_abstime {
+                    watts = rate(usage.ri_energy_nj, previous.nanojoules, elapsed).map { $0 / 1_000_000_000 }
+                }
+                nextEnergy[pid] = (usage.ri_proc_start_abstime, usage.ri_energy_nj)
+            }
+            values.append(MonitorProcess(id: pid, name: name, cpu: cpu, memory: info.pti_resident_size, energyWatts: watts))
         }
         previousProcesses = next
+        previousEnergy = nextEnergy
         return values
     }
     private func volumes() -> [MonitorVolume] {

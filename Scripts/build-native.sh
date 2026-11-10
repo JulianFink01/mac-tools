@@ -3,7 +3,7 @@
 set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
-BUILD_DIR="$PROJECT_ROOT/build"
+BUILD_DIR="${MACTOOLS_BUILD_DIR:-$PROJECT_ROOT/build}"
 APP_PATH="$BUILD_DIR/Release/MacTools.app"
 if [[ -n "${MACTOOLS_PRIVATE_CONFIG:-}" ]]; then APP_PATH="$BUILD_DIR/PrivateRelease/MacTools.app"; fi
 SAVER_PATH="$APP_PATH/Contents/PlugIns/MacToolsScreenSaver.saver"
@@ -67,7 +67,12 @@ import struct
 chunks = []
 for kind, filename in [('ic07', 'AppIcon-128.png'), ('ic08', 'AppIcon-256.png'),
                        ('ic09', 'AppIcon-512.png'), ('ic10', 'AppIcon-512@2x.png')]:
-    data = (pathlib.Path('MacTools/Assets.xcassets/AppIcon.appiconset') / filename).read_bytes()
+    icons = pathlib.Path('MacTools/Assets.xcassets/AppIcon.appiconset')
+    source = icons / filename
+    if not source.exists():
+        source = icons / {'AppIcon-256.png': 'AppIcon-128@2x.png',
+                          'AppIcon-512.png': 'AppIcon-256@2x.png'}[filename]
+    data = source.read_bytes()
     chunks.append(kind.encode() + struct.pack('>I', len(data) + 8) + data)
 payload = b''.join(chunks)
 (app / 'Contents/Resources/AppIcon.icns').write_bytes(b'icns' + struct.pack('>I', len(payload) + 8) + payload)

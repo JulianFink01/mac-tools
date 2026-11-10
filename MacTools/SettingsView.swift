@@ -140,7 +140,7 @@ struct SettingsView: View {
 
     private var diskSettings: some View {
         VStack(spacing: 18) {
-            ToolSettingsCard(title: "Automatische Prüfungen", description: "Jeder automatische Scan erfasst den Speicher, findet identische Inhalte und prüft mit ClamAV auf bekannte Bedrohungen.") {
+            ToolSettingsCard(title: "Automatische Prüfungen", description: "Die automatische Virenprüfung erfasst Dateimetadaten und prüft nur neue oder geänderte Inhalte. Der manuelle Gesamtscan enthält zusätzlich Speicher- und Duplikatanalyse.") {
                 Toggle("Automatische Scans aktivieren", isOn: $automatic.enabled)
                 Picker("Wie häufig?", selection: $automatic.intervalHours) {
                     Text("Stündlich").tag(1)
@@ -148,7 +148,7 @@ struct SettingsView: View {
                     Text("Täglich").tag(24)
                 }.frame(maxWidth: 340, alignment: .leading).disabled(!automatic.enabled)
                 Text(automatic.status).font(.callout).foregroundStyle(.secondary)
-                Text("Scans laufen nur, wenn MacTools geöffnet und dein Mac wach ist.").font(.caption).foregroundStyle(.secondary)
+                Text("Automatische Prüfungen laufen nur bei Netzstrom, wenn MacTools geöffnet und dein Mac wach ist.").font(.caption).foregroundStyle(.secondary)
             }
             ToolSettingsCard(title: "Scanbereich auf diesem Mac", description: "Automatische Scans verwenden diesen Bereich. Externe Laufwerke behalten unter Disk & Sicherheit eigene Scanstände.") {
                 HStack {
