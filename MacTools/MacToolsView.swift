@@ -69,8 +69,6 @@ final class ToolNavigation: ObservableObject {
 struct MacToolsView: View {
     @ObservedObject var navigation: ToolNavigation
     @ObservedObject private var settings = SettingsStore.shared
-    @ObservedObject private var disk = DiskScanStore.shared
-    @ObservedObject private var security = SecurityScanStore.shared
     @State private var showQuickPanel = false
     @AppStorage("macToolsSidebarBeforeCodex") private var sidebarBeforeCodex = true
     @State private var codexCollapsedSidebar = false
@@ -123,7 +121,7 @@ struct MacToolsView: View {
                 }.scrollIndicators(.hidden)
                 Spacer(minLength: 0)
                 Divider()
-                if disk.isScanning || disk.isSaving || security.isScanning || security.isUpdating { ScanActivityBadge(disk: disk, security: security) }
+                ScanActivityBadge()
                 Button { WindowPinController.shared.prepareMenuSelection(); showQuickPanel = true } label: { Label("Schnellaktionen", systemImage: "square.grid.2x2").frame(maxWidth: .infinity, alignment: .leading).padding(11) }.buttonStyle(.plain)
 
                 sectionButton(.settings)
@@ -323,22 +321,24 @@ struct ToolSettingsCard<Content: View>: View {
 }
 
 struct ScanActivityBadge: View {
-    @ObservedObject var disk: DiskScanStore
-    @ObservedObject var security: SecurityScanStore
+    @ObservedObject private var disk = DiskScanStore.shared
+    @ObservedObject private var security = SecurityScanStore.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.mini)
-                Text(security.isScanning || security.isUpdating ? "Virenschutz" : disk.isSaving ? "Scan speichern" : "Gesamtscan läuft")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.cyan)
-            }
-            Text(security.isScanning || security.isUpdating ? security.status : disk.progress.phase)
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            if let fraction = security.isScanning ? security.progressFraction : disk.progress.fraction {
-                ProgressView(value: fraction).tint(.cyan)
-            }
-        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.cyan.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
+        if disk.isScanning || disk.isSaving || security.isScanning || security.isUpdating {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text(security.isScanning || security.isUpdating ? "Virenschutz" : disk.isSaving ? "Scan speichern" : "Gesamtscan läuft")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.cyan)
+                }
+                Text(security.isScanning || security.isUpdating ? security.status : disk.progress.phase)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                if let fraction = security.isScanning ? security.progressFraction : disk.progress.fraction {
+                    ProgressView(value: fraction).tint(.cyan)
+                }
+            }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.cyan.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
+        }
     }
 }
 

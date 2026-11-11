@@ -31,7 +31,7 @@ Ein Gesamtscan erfasst den ausgewählten Ordner oder das Volume ohne feste Datei
 
 ![Duplikate mit Medien- und Dokumentfilter und getrennten Zählern](docs/screenshots/mactools-duplicates.png)
 
-Standardmäßig zeigt der Filter Bilder, GIFs, Videos, Audio, PDFs, Office-Dateien und CSV. Der Filter lässt sich ausschalten; getrennte Zähler zeigen Medien/Dokumente und alle Dateitypen.
+Standardmäßig zeigt der Filter Bilder, GIFs, Videos, Audio, PDFs, Office-Dateien und CSV. Der Filter lässt sich ausschalten; getrennte Zähler zeigen Medien/Dokumente und alle Dateitypen. Die Übersicht zählt alle identischen Inhalte als logische Mehrfachgröße. Die Ordnerliste folgt dem aktiven Filter und zeigt pro Ordner auswählbare Kopien; Ordnerwerte können sich bei Gruppen über mehrere Ordner überschneiden und sind nicht addierbar. Die logische Mehrfachgröße ist kein garantierter Speichergewinn.
 
 Die Erkennung prüft Dateigröße, liest bei großen Dateien zunächst Ausschnitte und bestätigt Übereinstimmungen mit vollständigem SHA-256. Bis zu vier begrenzte Arbeiter und ein Cache für unveränderte Dateien beschleunigen weitere Scans. Der Cache berücksichtigt Dateiidentität, Größe sowie Änderungszeiten inklusive ctime. Hardlinks zählen einmal; Symlinks werden nicht verfolgt und Cloud-Dateien werden für die Inhaltsprüfung nicht automatisch heruntergeladen.
 

@@ -25,6 +25,7 @@ final class DiskScanStore: ObservableObject {
     @Published private(set) var cachedResultAvailable = false
     @Published private(set) var result: DiskScanResult? { didSet { if let result { summary = DiskScanSummary(result) }; prepareDuplicateIndex() } }
     private let eagerRestore: Bool
+    private var duplicateIndexRequested = false
     private var inventoryConsumers = Set<UUID>()
     private var inventoryRelease: Task<Void,Never>?
     private var restorableDate: Date?
@@ -52,7 +53,12 @@ final class DiskScanStore: ObservableObject {
         guard !eagerRestore,inventoryConsumers.isEmpty,!isScanning,!isSaving,!isApplyingRemovals,!isRestoring,!isMigratingCache,
               let result,restorableDate == result.completedAt else { return }
         duplicateIndexTask?.cancel(); duplicateIndexTask = nil
+        duplicateIndexRequested = false
         self.result = nil; duplicateIndex = nil; FileBrowserStore.shared.releaseCache(root: result.root, date: result.completedAt)
+    }
+    func ensureDuplicateIndex() {
+        duplicateIndexRequested = true
+        if duplicateIndex == nil, duplicateIndexTask == nil { prepareDuplicateIndex() }
     }
     @Published private(set) var duplicateRevision: UInt64 = 0
     @Published private(set) var duplicateIndex: DuplicateViewIndex? { didSet { duplicateRevision &+= 1 } }
@@ -141,7 +147,16 @@ final class DiskScanStore: ObservableObject {
         if suppressDuplicateRebuild { return }
         duplicateIndexTask?.cancel()
         let token = UUID(); duplicateIndexGeneration = token
-        guard let result else { duplicateIndex = nil; return }
+        guard eagerRestore || duplicateIndexRequested else {
+            duplicateIndexTask = nil
+            if duplicateIndex != nil { duplicateIndex = nil }
+            return
+        }
+        guard let result else {
+            duplicateIndexTask = nil
+            if duplicateIndex != nil { duplicateIndex = nil }
+            return
+        }
         duplicateIndexTask = Task {
             let worker = Task.detached(priority: .userInitiated) { try DuplicateViewIndex.build(result.duplicates) }
             do {
@@ -150,6 +165,7 @@ final class DiskScanStore: ObservableObject {
                 guard duplicateIndexGeneration == token else { return }
                 duplicateIndex = value
             } catch { }
+            if duplicateIndexGeneration == token { duplicateIndexTask = nil }
         }
     }
 

@@ -9,7 +9,7 @@ struct DiskDashboardView: View {
     @ObservedObject private var automatic = AutomaticScans.shared
     @ObservedObject private var fileBrowser = FileBrowserStore.shared
     @State private var inventoryConsumer = UUID()
-    private var needsInventory: Bool { volumeMounted && (["Dateien & Ordner","Duplikate"].contains(tab) || store.result != nil || (tab == "Übersicht" && store.summary != nil && (store.summary?.preview == nil || store.summary?.largestFolders == nil))) }
+    private var needsInventory: Bool { volumeMounted && (["Dateien & Ordner","Duplikate"].contains(tab) || (tab == "Übersicht" && (store.result != nil || (store.summary != nil && (store.summary?.preview == nil || store.summary?.largestFolders == nil))))) }
     @State private var filePage = 0
     @State private var folderPage = 0
     @State private var largestPage = 0
@@ -154,6 +154,7 @@ struct DiskDashboardView: View {
                 else { store.endInventoryAccess(inventoryConsumer) }
             }
             .task(id: tab) {
+                if tab == "Duplikate" { store.ensureDuplicateIndex() }
                 if ["Virenscan", "Warnungen"].contains(tab) { await security.refreshCurrentFindings(legacyPaths: knownFindingPaths) }
             }
             .task(id: "\(tab)-\(mediaOnly)-\(store.duplicateRevision)") {
@@ -230,8 +231,9 @@ struct DiskDashboardView: View {
             HStack(spacing: 12) {
                 metric("Effektiv belegt", value: diskBytes(result.allocatedBytes), detail: "Lokale Dateiblöcke · ohne virtuelle Maximalgrößen", icon: "internaldrive")
                 metric("Dateien", value: (store.summary?.fileCount ?? result.files.count).formatted(), detail: "Hardlinks einmal gezählt", icon: "doc.on.doc")
-                metric("Doppelte Inhalte", value: result.duplicateSearch ? diskBytes(result.redundantBytes) : "–",
-                       detail: store.resultIsProvisional ? "Inhaltsprüfung läuft" : result.duplicateSearch ? "\(store.summary?.duplicateCount ?? result.duplicates.count) Gruppen · logische Größe" : "Prüfung deaktiviert", icon: "square.on.square")
+                metric("Doppelte Inhalte · alle Dateitypen", value: result.duplicateSearch ? diskBytes(result.redundantBytes) : "–",
+                       detail: store.resultIsProvisional ? "Inhaltsprüfung läuft" : result.duplicateSearch ? "\(store.summary?.duplicateCount ?? result.duplicates.count) Gruppen · logische Mehrfachgröße" : "Prüfung deaktiviert", icon: "square.on.square")
+                    .help("Alle Dateitypen im Scanbereich. Diese logische Größe ist kein garantierter freigebbarer Speicher; der Duplikatfilter kann einen kleineren Ausschnitt zeigen.")
             }
             HStack(alignment: .top, spacing: 16) {
                 panel("Speicher nach Dateityp") {
@@ -530,8 +532,16 @@ struct DiskDashboardView: View {
     private var duplicateFolderPicker: some View {
         let directory = duplicateFolder ?? store.root.path
         let request = "\(showDuplicateFolders)-\(mediaOnly)-\(directory)-\(store.duplicateRevision)"
-        return DisclosureGroup("Duplikate nach Ordner auswählen", isExpanded: $showDuplicateFolders) {
+        return DisclosureGroup(mediaOnly ? "Duplikate nach Ordner · nur Medien & Dokumente" : "Duplikate nach Ordner · alle Dateitypen", isExpanded: $showDuplicateFolders) {
             VStack(alignment: .leading, spacing: 12) {
+                if let index = duplicateIndex {
+                    Text(mediaOnly
+                         ? "Aktiver Filter: \(index.media.count.formatted()) Gruppen · \(diskBytes(index.mediaBytes)) logische Mehrfachgröße. Die Übersicht zählt alle Dateitypen: \(diskBytes(index.allBytes))."
+                         : "Alle Dateitypen: \(index.all.count.formatted()) Gruppen · \(diskBytes(index.allBytes)) logische Mehrfachgröße, wie in der Übersicht.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Ordnerwerte zeigen die pro Ordner auswählbaren Kopien. Bei Duplikaten in mehreren Ordnern können sich diese Werte überschneiden; sie sind nicht addierbar.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Wähle z. B. Unsorted gesammelt aus. Nur doppelte Dateien werden ausgewählt; eine Kopie bleibt erhalten, bevorzugt außerhalb des Ordners.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Alle Ordner") { duplicateFolder = nil; duplicateFolderPage = 0 }.disabled(duplicateFolder == nil)
@@ -551,7 +561,7 @@ struct DiskDashboardView: View {
                             Button { duplicateFolder = item.path; duplicateFolderPage = 0 } label: {
                                 Label((item.path as NSString).lastPathComponent, systemImage: "folder").font(.callout.weight(.semibold))
                             }.buttonStyle(.plain).help("Unterordner von " + item.path + " anzeigen")
-                            Text("\(item.copies.formatted()) Kopien · \(diskBytes(item.bytes))").font(.caption).foregroundStyle(.secondary)
+                            Text("\(item.copies.formatted()) auswählbare Kopien · \(diskBytes(item.bytes))").font(.caption).foregroundStyle(.secondary)
                             Spacer()
                             Button("Kopien auswählen") { selectedCopies = duplicateIndex?.copiesForRemoval(mediaOnly: mediaOnly, inFolder: item.path) ?? [:] }
                                 .disabled(store.isScanning || store.isApplyingRemovals).accessibilityLabel("Duplikate in " + item.path + " auswählen")

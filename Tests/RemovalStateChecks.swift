@@ -50,6 +50,9 @@ import Darwin
         let consumer=UUID(), secondConsumer=UUID()
         await lazy.beginInventoryAccess(consumer)
         precondition(lazy.result?.files.isEmpty == true)
+        precondition(lazy.duplicateIndex == nil, "The file browser must not build a duplicate index")
+        lazy.ensureDuplicateIndex()
+        while lazy.duplicateIndex == nil { try await Task.sleep(nanoseconds:10_000_000) }
         await lazy.beginInventoryAccess(secondConsumer)
         lazy.endInventoryAccess(consumer);lazy.releaseUnusedInventory()
         precondition(lazy.result != nil,"Second consumer still needs the inventory")
