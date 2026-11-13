@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AVFoundation
 import SwiftUI
 
 @main
@@ -283,7 +284,82 @@ struct MonitoringPersistenceChecks {
             let listed = detailed.gpuConsumers.reduce(0.0) { $0 + $1.percent }
             precondition(listed + 0.5 >= gpu, "Reported utilization is the summed GPU time of the listed processes")
         }
+        // Wallpaper optimization: what the displays need, and a real encode.
+        let fourK = CGSize(width: 3840, height: 2160)
+        let builtIn = CGSize(width: 3024, height: 1964)
+        guard let retinaTarget = WallpaperOptimizer.target(sourceSize: fourK, sourceFrameRate: 60, displays: [builtIn, CGSize(width: 2560, height: 1440)]) else {
+            fatalError("A 4K60 video on smaller displays must be worth optimizing")
+        }
+        precondition(retinaTarget.width == 3492 && retinaTarget.height == 1964 && retinaTarget.frameRate == 30)
+        precondition(retinaTarget.saving > 0.55 && retinaTarget.saving < 0.62)
+        precondition(WallpaperOptimizer.target(sourceSize: CGSize(width: 1920, height: 1080), sourceFrameRate: 30, displays: [CGSize(width: 2560, height: 1440)]) == nil,
+                     "A video smaller than the display must never be scaled up")
+        guard let rateOnly = WallpaperOptimizer.target(sourceSize: CGSize(width: 1920, height: 1080), sourceFrameRate: 60, displays: [CGSize(width: 1920, height: 1080)]) else {
+            fatalError("60 frames per second alone are worth halving")
+        }
+        precondition(rateOnly.width == 1920 && rateOnly.height == 1080 && rateOnly.frameRate == 30)
+        precondition(WallpaperOptimizer.target(sourceSize: fourK, sourceFrameRate: 24, displays: [fourK]) == nil,
+                     "A video that already matches must be left alone")
+        print("PASS: optimization target covers the largest display, never upscales and caps the frame rate")
+
+        let fixtureVideo = directory.appendingPathComponent("wallpaper-fixture.mp4")
+        try await writeFixtureVideo(to: fixtureVideo, width: 640, height: 480, frameRate: 60, seconds: 1)
+        guard let fixtureInfo = await WallpaperOptimizer.sourceInfo(of: fixtureVideo) else { fatalError("Fixture video unreadable") }
+        precondition(Int(fixtureInfo.size.width) == 640 && Int(fixtureInfo.size.height) == 480 && abs(fixtureInfo.frameRate - 60) < 2)
+        guard let fixtureTarget = WallpaperOptimizer.target(sourceSize: fixtureInfo.size, sourceFrameRate: fixtureInfo.frameRate, displays: [CGSize(width: 320, height: 240)]) else {
+            fatalError("Fixture must be worth optimizing")
+        }
+        let optimizedVideo = directory.appendingPathComponent("wallpaper-fixture-optimized.mp4")
+        try await WallpaperOptimizer.export(source: fixtureVideo, to: optimizedVideo, target: fixtureTarget) { _ in }
+        let optimizedAsset = AVURLAsset(url: optimizedVideo)
+        let optimizedTracks = try await optimizedAsset.loadTracks(withMediaType: .video)
+        precondition(optimizedTracks.count == 1)
+        let optimizedSize = try await optimizedTracks[0].load(.naturalSize)
+        precondition(Int(optimizedSize.width) == 320 && Int(optimizedSize.height) == 240, "Encoded copy must have the requested size")
+        let optimizedRate = try await optimizedTracks[0].load(.nominalFrameRate)
+        precondition(optimizedRate > 25 && optimizedRate < 33, "Encoded copy must play at the capped frame rate")
+        let optimizedAudio = try await optimizedAsset.loadTracks(withMediaType: .audio)
+        precondition(optimizedAudio.isEmpty, "A wallpaper copy carries no audio track")
+        let optimizedDuration = try await optimizedAsset.load(.duration).seconds
+        let fixtureDuration = try await AVURLAsset(url: fixtureVideo).load(.duration).seconds
+        precondition(abs(optimizedDuration - fixtureDuration) < 0.2, "The copy keeps the length of the original")
+        precondition(manager.fileExists(atPath: fixtureVideo.path), "The original file stays untouched")
+        print("PASS: real encode produces a video-only copy at the requested size, frame rate and length")
+
         print("LIVE: CPU \(monitorPercent(cpu)), RAM \(monitorPercent(ram)), GPU \(monitorPercent(detailed.point.gpu)), read \(monitorRate(reading.point.diskRead)), write \(monitorRate(reading.point.diskWrite)), \(reading.processes.count) visible processes, \(reading.volumes.count) volumes, cores \(reading.cores.count)")
         print("LIVE: GPU consumers " + (detailed.gpuConsumers.isEmpty ? "none measurable" : detailed.gpuConsumers.prefix(5).map { "\($0.name) \(monitorPercent($0.percent))" }.joined(separator: ", ")))
+    }
+
+    /// Writes a short real video so the optimizer can be checked end to end.
+    @MainActor private static func writeFixtureVideo(to url: URL, width: Int, height: Int, frameRate: Int, seconds: Int) async throws {
+        struct FixtureFailure: Error {}
+        try? FileManager.default.removeItem(at: url)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height])
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? FixtureFailure() }
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<(frameRate * seconds) {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 5_000_000) }
+            guard let pool = adaptor.pixelBufferPool else { throw FixtureFailure() }
+            var buffer: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess, let buffer else { throw FixtureFailure() }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            if let base = CVPixelBufferGetBaseAddress(buffer) {
+                memset(base, Int32(frame % 240), CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            guard adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(frameRate))) else {
+                throw writer.error ?? FixtureFailure()
+            }
+        }
+        input.markAsFinished()
+        await withCheckedContinuation { continuation in writer.finishWriting { continuation.resume() } }
+        guard writer.status == .completed else { throw writer.error ?? FixtureFailure() }
     }
 }

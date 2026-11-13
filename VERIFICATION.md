@@ -2,6 +2,16 @@
 
 Stand: 20. Oktober 2026. Lokale Nachweise sind keine Zusicherung für jede macOS-Version oder fremde App.
 
+## Optimierte Videokopie für die vorhandenen Bildschirme
+
+- Nach der Panel- und Sampling-Entlastung blieb die Dekodierung des Hintergrundvideos die verbleibende Dauerlast: 3840×2160 bei 60 fps, je sichtbarem Schreibtisch einmal. Kein Bildschirm dieses Macs kann das zeigen; der größte hat 3024×1964 Pixel.
+- Die App erzeugt auf Wunsch einmalig eine Kopie in der Größe, die der größte Bildschirm im Füllmodus tatsächlich braucht, mit höchstens 30 Bildern pro Sekunde, ohne Tonspur und mit hardwarebeschleunigtem HEVC. Das Original bleibt unverändert liegen, die Kopie ist jederzeit entfernbar. Gespielt wird ab dann die Kopie, auch im Bildschirmschoner.
+- Erzeugt für das vorhandene Video: 3492×1964 bei 30 fps, 75,7 MB statt 184,3 MB, Laufzeit des Encodes 16 Sekunden. Das sind 58 % weniger Bildpunkte pro Sekunde.
+- A/B-Messung bei identischer Fensteranordnung, je 60 s: Original 13,1 % CPU und 7,7 % WindowServer-GPU, optimierte Kopie 7,1 % CPU und 5,9 % WindowServer-GPU. Der Arbeitsspeicher lag bei 136 MB bzw. 130 MB. Die vollständige Kette gegenüber dem Ausgangszustand: 85 % CPU und 621 MB auf rund 7 % CPU und rund 130 MB.
+- Bestandene Prüfungen in `Scripts/test-monitoring-persistence.sh`: Zielberechnung deckt den größten Bildschirm ab, skaliert nie hoch, begrenzt die Bildrate und meldet nichts, wenn nichts zu gewinnen ist; ein echter Encode eines erzeugten Testvideos liefert die angeforderte Größe, Bildrate und Länge ohne Tonspur, das Original bleibt erhalten.
+- Universal-Private-Build 0.2.6 Build 108 gebaut, signiert und nach `/Applications` installiert; Signatur, Buildnummer, privater Build und bytegleiches Binary geprüft. Die installierte App spielt nachweislich die optimierte Datei (`lsof`). Benutzerabnahme im Alltag steht aus.
+- Nicht geprüft: andere macOS-Versionen, Intel-Macs und andere Videoformate als die importierbaren .mp4/.mov/.m4v. Ein nachträglich angeschlossener größerer Bildschirm würde die Kopie nicht automatisch neu erzeugen.
+
 ## Ressourcenverbrauch – gemessene Entlastung von CPU, GPU und Speicher
 
 - Ausgangslage: Benutzer meldet zu hohen GPU- und Speicherbedarf, zunehmendes Ruckeln je länger die App läuft, und laute Lüfter. Messung des installierten Builds über 60 s bei drei angeschlossenen Displays: 85 % CPU eines Kerns, RSS 345 MB steigend auf 621 MB, WindowServer-GPU 20,7 % gegenüber 8,4 % ohne MacTools.

@@ -135,6 +135,9 @@ final class WallpaperController {
         }
     }
 
+    /// The file currently in play, which is the optimized copy when one exists.
+    var playbackURL: URL? { currentVideoURL }
+
     /// How many displays currently decode the video. Also used by the native checks.
     var playingDisplayCount: Int {
         entries.values.filter { ($0.player?.rate ?? 0) > 0 }.count
@@ -161,13 +164,13 @@ final class WallpaperController {
 
     func applyCurrentVideo() {
         guard let video = library.video(with: settings.currentVideoID),
-              FileManager.default.fileExists(atPath: video.fileURL.path) else {
+              FileManager.default.fileExists(atPath: video.playbackURL.path) else {
             closeAllWindows()
             return
         }
 
         rebuildWindowsIfNeeded()
-        configurePlayers(with: video.fileURL)
+        configurePlayers(with: video.playbackURL)
     }
 
     func handleScreenConfigurationChanged() {

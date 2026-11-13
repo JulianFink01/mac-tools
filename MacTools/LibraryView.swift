@@ -92,11 +92,18 @@ struct LibraryView: View {
                         VideoCard(
                             video: video,
                             isCurrent: settings.currentVideoID == video.id,
+                            progress: library.optimization[video.id],
                             setWallpaperAction: {
                                 setWallpaper(video)
                             },
                             removeAction: {
                                 remove(video)
+                            },
+                            optimizeAction: {
+                                Task { await library.optimize(video) }
+                            },
+                            restoreOriginalAction: {
+                                library.removeOptimized(video)
                             }
                         )
                     }
@@ -167,8 +174,13 @@ struct LibraryView: View {
 private struct VideoCard: View {
     let video: WallpaperVideo
     let isCurrent: Bool
+    var progress: Double?
     let setWallpaperAction: () -> Void
     let removeAction: () -> Void
+    var optimizeAction: () -> Void = {}
+    var restoreOriginalAction: () -> Void = {}
+    @State private var source: WallpaperSourceInfo?
+    @State private var target: WallpaperOptimizationTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -211,6 +223,11 @@ private struct VideoCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
+            optimization
+        }
+        .task(id: video.optimizedFileName) {
+            source = await WallpaperOptimizer.sourceInfo(of: video.fileURL)
+            target = video.optimizedFileName == nil ? await WallpaperOptimizer.proposedTarget(for: video.fileURL) : nil
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -222,6 +239,43 @@ private struct VideoCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture(perform: setWallpaperAction)
+    }
+}
+
+private extension VideoCard {
+    /// A wallpaper is decoded on every display for as long as a desktop is
+    /// visible, so more pixels or frames than a display can show cost power for
+    /// nothing. The copy is written once; the original file stays.
+    @ViewBuilder var optimization: some View {
+        if let progress {
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: progress).progressViewStyle(.linear)
+                Text("Optimierte Kopie wird erstellt … \(Int(progress * 100)) %")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        } else if let label = video.optimizedLabel {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Für diesen Mac optimiert", systemImage: "bolt.badge.clock")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.mint)
+                Text(label + (source.map { " · Original " + $0.label } ?? ""))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Button("Original verwenden", action: restoreOriginalAction)
+                    .buttonStyle(.link).font(.caption2)
+            }
+        } else if let target {
+            VStack(alignment: .leading, spacing: 4) {
+                Text((source.map { $0.label + " → " } ?? "") + target.sizeLabel)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Button(action: optimizeAction) {
+                    Label("Für diesen Mac optimieren · \(Int(target.saving * 100)) % weniger", systemImage: "bolt")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .help("Erzeugt einmalig eine Kopie in Bildschirmgröße mit höchstens 30 Bildern pro Sekunde. Das Original bleibt erhalten.")
+            }
+        } else if let source {
+            Text(source.label + " · passt zu deinen Bildschirmen")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }
 

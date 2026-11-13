@@ -18,6 +18,8 @@ final class VideoLibraryStore: ObservableObject {
 
     @Published private(set) var videos: [WallpaperVideo] = []
     @Published var errorMessage: String?
+    /// Export progress per video while an optimized copy is being written.
+    @Published private(set) var optimization: [UUID: Double] = [:]
 
     private var removalSubscription: AnyCancellable?
     private let fileManager: FileManager
@@ -80,6 +82,10 @@ final class VideoLibraryStore: ObservableObject {
         errorMessage = nil
         var removed: [String] = []
         do {
+            if let optimized = video.optimizedURL, fileManager.fileExists(atPath: optimized.path) {
+                try fileManager.removeItem(at: optimized)
+                removed.append(optimized.path)
+            }
             if fileManager.fileExists(atPath: video.fileURL.path) {
                 try fileManager.removeItem(at: video.fileURL)
             }
@@ -95,6 +101,64 @@ final class VideoLibraryStore: ObservableObject {
             errorMessage = "Entfernen fehlgeschlagen für \(video.displayName): \(error.localizedDescription)"
         }
         FileActions.shared.recordRemoval(paths: removed)
+    }
+
+    /// Encodes a copy for this Mac's displays and plays it from then on. The
+    /// original file stays untouched and returns as soon as the copy is removed.
+    func optimize(_ video: WallpaperVideo) async {
+        guard optimization[video.id] == nil, videos.contains(where: { $0.id == video.id }) else { return }
+        errorMessage = nil
+        guard let target = await WallpaperOptimizer.proposedTarget(for: video.fileURL) else {
+            errorMessage = "„\(video.displayName)“ passt bereits zu deinen Bildschirmen."
+            return
+        }
+        optimization[video.id] = 0
+        let destination = Self.videosDirectory.appendingPathComponent(video.id.uuidString + "-optimized.mp4", isDirectory: false)
+        let source = video.fileURL
+        let id = video.id
+        do {
+            try await WallpaperOptimizer.export(source: source, to: destination, target: target) { [weak self] value in
+                Task { @MainActor in
+                    guard let self, self.optimization[id] != nil else { return }
+                    self.optimization[id] = min(1, max(0, value))
+                }
+            }
+            let bytes = (try? fileManager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)??.int64Value
+            if let index = videos.firstIndex(where: { $0.id == id }) {
+                removeOptimizedFile(of: videos[index], keeping: destination)
+                videos[index].optimizedFileName = destination.lastPathComponent
+                videos[index].optimizedWidth = target.width
+                videos[index].optimizedHeight = target.height
+                videos[index].optimizedFrameRate = target.frameRate
+                videos[index].optimizedBytes = bytes
+                saveLibrary()
+            } else {
+                try? fileManager.removeItem(at: destination)
+            }
+        } catch is CancellationError {
+            try? fileManager.removeItem(at: destination)
+        } catch {
+            try? fileManager.removeItem(at: destination)
+            errorMessage = "Die optimierte Kopie konnte nicht erstellt werden: \(error.localizedDescription)"
+        }
+        optimization[id] = nil
+    }
+
+    /// Returns playback to the original file and deletes the copy.
+    func removeOptimized(_ video: WallpaperVideo) {
+        guard let index = videos.firstIndex(where: { $0.id == video.id }) else { return }
+        removeOptimizedFile(of: videos[index], keeping: nil)
+        videos[index].optimizedFileName = nil
+        videos[index].optimizedWidth = nil
+        videos[index].optimizedHeight = nil
+        videos[index].optimizedFrameRate = nil
+        videos[index].optimizedBytes = nil
+        saveLibrary()
+    }
+
+    private func removeOptimizedFile(of video: WallpaperVideo, keeping: URL?) {
+        guard let url = video.optimizedURL, url != keeping, fileManager.fileExists(atPath: url.path) else { return }
+        try? fileManager.removeItem(at: url)
     }
 
     func randomVideo(excluding excludedID: UUID? = nil) -> WallpaperVideo? {
@@ -120,7 +184,13 @@ final class VideoLibraryStore: ObservableObject {
         do {
             let data = try Data(contentsOf: Self.libraryURL)
             let loadedVideos = try JSONDecoder.liveWallpaper.decode(LibraryFile.self, from: data).videos
-            videos = loadedVideos.filter { fileManager.fileExists(atPath: $0.fileURL.path) }
+            videos = loadedVideos.filter { fileManager.fileExists(atPath: $0.fileURL.path) }.map { video in
+                guard let optimized = video.optimizedURL, !fileManager.fileExists(atPath: optimized.path) else { return video }
+                var value = video
+                value.optimizedFileName = nil; value.optimizedWidth = nil
+                value.optimizedHeight = nil; value.optimizedFrameRate = nil; value.optimizedBytes = nil
+                return value
+            }
 
             if videos.count != loadedVideos.count {
                 saveLibrary()

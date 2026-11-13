@@ -5,7 +5,7 @@ import ScreenSaver
 enum ScreenSaverSupport {
     static func synchronize(video: WallpaperVideo?, aspect: AspectMode) {
         guard let defaults = ScreenSaverDefaults(forModuleWithName: "com.julianfink.MacTools.ScreenSaver") else { return }
-        if let video { defaults.set(video.fileURL.path, forKey: "videoPath") }
+        if let video { defaults.set(video.playbackURL.path, forKey: "videoPath") }
         else { defaults.removeObject(forKey: "videoPath") }
         defaults.set(aspect.rawValue, forKey: "aspectMode")
         defaults.synchronize()

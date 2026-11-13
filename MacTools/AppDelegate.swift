@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Same path as display sleep and screen lock, also used by the native check.
     func setWallpaperEnergySuspended(_ value: Bool) { wallpaperController.setEnergySuspended(value) }
     var wallpaperPlayingDisplayCount: Int { wallpaperController.playingDisplayCount }
+    var wallpaperPlaybackURL: URL? { wallpaperController.playbackURL }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if shouldTerminateLoginAgentDuplicate() {
@@ -225,6 +226,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if let currentVideoID = self.settings.currentVideoID,
                    !videos.contains(where: { $0.id == currentVideoID }) {
                     self.settings.setCurrentVideo(videos.first?.id)
+                    return
+                }
+                // An optimized copy that was just written replaces the file in play.
+                let playing = self.wallpaperPlaybackURL
+                if let current = videos.first(where: { $0.id == self.settings.currentVideoID }),
+                   playing != nil, current.playbackURL.standardizedFileURL != playing {
+                    self.wallpaperController.applyCurrentVideo()
+                    self.synchronizeScreenSaver()
                 }
             }
             .store(in: &cancellables)
