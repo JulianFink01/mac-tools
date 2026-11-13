@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 
 @main
 struct MonitoringPersistenceChecks {
@@ -231,10 +232,10 @@ struct MonitoringPersistenceChecks {
         precondition(virus.restoredReport && virus.scannedRoot == fixture && virus.completedAt == date)
         print("PASS: actual disk scan → atomic save → new store restore; cancelled scan preserves result; partial coverage restored; corrupt cache tolerated; virus findings/root/date restored as historical")
         let sampler = SystemSampler()
-        let first = sampler.read()
+        let first = sampler.read(detailed: true)
         precondition(first.point.cpu == nil && first.point.diskRead == nil, "Rates need two samples")
         try await Task.sleep(nanoseconds: 2_000_000_000)
-        let reading = sampler.read()
+        let reading = sampler.read(detailed: true)
         guard let cpu = reading.point.cpu, let ram = reading.point.memory else { fatalError("CPU/RAM unavailable") }
         precondition((0...100).contains(cpu) && (0...100).contains(ram))
         precondition(!reading.cores.isEmpty && reading.totalMemory > 0)
@@ -244,6 +245,45 @@ struct MonitoringPersistenceChecks {
         if let gpu = reading.point.gpu { precondition((0...100).contains(gpu)) }
         let decoded = try PropertyListDecoder().decode([MonitorPoint].self, from: encoder.encode([reading.point]))
         precondition(decoded.count == 1)
-        print("LIVE: CPU \(monitorPercent(cpu)), RAM \(monitorPercent(ram)), GPU \(monitorPercent(reading.point.gpu)), read \(monitorRate(reading.point.diskRead)), write \(monitorRate(reading.point.diskWrite)), \(reading.processes.count) visible processes, \(reading.volumes.count) volumes, cores \(reading.cores.count)")
+        let idle = sampler.read(detailed: false)
+        precondition(idle.processes.isEmpty, "Without a view asking for them, no pass over every PID runs")
+        precondition(idle.point.cpu != nil && idle.point.memory != nil, "CPU and memory stay live in the background")
+        precondition(idle.gpuName == reading.gpuName && !idle.gpuName.isEmpty)
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        let detailed = sampler.read(detailed: true)
+        precondition(!detailed.processes.isEmpty, "Processes return as soon as a view shows them")
+        precondition(detailed.point.cpu != nil && detailed.volumes.contains { $0.path == "/" })
+        let monitor = SystemMonitor.shared
+        precondition(!monitor.isDetailed && monitor.sampleInterval == 5, "Menu widgets alone sample slowly")
+        monitor.retainDetail()
+        precondition(monitor.isDetailed && monitor.sampleInterval == 2)
+        monitor.retainDetail(); monitor.releaseDetail()
+        precondition(monitor.isDetailed, "Balanced requests keep the fast cadence while one view remains")
+        monitor.releaseDetail(); monitor.releaseDetail()
+        precondition(!monitor.isDetailed && monitor.sampleInterval == 5)
+        // Panels are released when they close. Releasing the view has to give the
+        // fast cadence back, otherwise a closed panel would sample forever.
+        let detailWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 580), styleMask: [.titled], backing: .buffered, defer: false)
+        detailWindow.isReleasedWhenClosed = false
+        detailWindow.contentView = NSHostingView(rootView: MonitorDetailView(metric: .cpu))
+        detailWindow.orderFrontRegardless()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        precondition(SystemMonitor.shared.isDetailed, "A visible metric view asks for the fast cadence")
+        detailWindow.contentView = nil
+        detailWindow.close()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        precondition(!SystemMonitor.shared.isDetailed, "A released panel must hand the fast cadence back")
+        print("PASS: metric panel takes and returns the fast sampling cadence with its view")
+        for consumer in detailed.gpuConsumers {
+            precondition(consumer.pid > 0 && !consumer.name.isEmpty && consumer.seconds > 0 && (0...100).contains(consumer.percent))
+        }
+        precondition(!detailed.gpuConsumers.isEmpty, "The GPU client registry must name at least the window server")
+        if let gpu = detailed.point.gpu {
+            precondition((0...100).contains(gpu))
+            let listed = detailed.gpuConsumers.reduce(0.0) { $0 + $1.percent }
+            precondition(listed + 0.5 >= gpu, "Reported utilization is the summed GPU time of the listed processes")
+        }
+        print("LIVE: CPU \(monitorPercent(cpu)), RAM \(monitorPercent(ram)), GPU \(monitorPercent(detailed.point.gpu)), read \(monitorRate(reading.point.diskRead)), write \(monitorRate(reading.point.diskWrite)), \(reading.processes.count) visible processes, \(reading.volumes.count) volumes, cores \(reading.cores.count)")
+        print("LIVE: GPU consumers " + (detailed.gpuConsumers.isEmpty ? "none measurable" : detailed.gpuConsumers.prefix(5).map { "\($0.name) \(monitorPercent($0.percent))" }.joined(separator: ", ")))
     }
 }

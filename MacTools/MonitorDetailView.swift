@@ -124,6 +124,8 @@ struct MonitorDetailView: View {
             }
         }.frame(width: 360, height: metric == .ram || metric == .cpu ? 700 : 580)
             .background(Color(nsColor: .windowBackgroundColor))
+            .onAppear { monitor.retainDetail() }
+            .onDisappear { monitor.releaseDetail() }
     }
     private var ramDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -165,8 +167,9 @@ struct MonitorDetailView: View {
             Text(reading?.gpuName ?? "Grafikeinheit").font(.headline)
             detailRow("Auslastung", value: monitorPercent(reading?.point.gpu))
             detailRow("GPU-Speicher", value: reading?.gpuMemory.map { diskBytes(Int64($0)) } ?? "—")
-            Text(reading?.point.gpu == nil ? "Dieser Grafiktreiber liefert keine systemweite Auslastung." : "Messwerte des Grafiktreibers. GPU-Speicher kann mit dem Arbeitsspeicher geteilt sein.")
+            Text(reading?.point.gpu == nil ? "Dieser Grafiktreiber liefert keine systemweite Auslastung." : "Summe der GPU-Zeit aller Prozesse. GPU-Speicher kann mit dem Arbeitsspeicher geteilt sein.")
                 .font(.caption).foregroundStyle(.secondary)
+            GPUConsumerList(consumers: reading?.gpuConsumers ?? [], limit: 8)
         }
     }
     private var diskDetails: some View {

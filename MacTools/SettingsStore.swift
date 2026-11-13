@@ -35,6 +35,9 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Playing a video nobody can see is the app's largest single power draw.
+    @Published var pausesHiddenWallpaper: Bool { didSet { defaults.set(pausesHiddenWallpaper, forKey: "pausesHiddenWallpaper") } }
+
     @Published var quickPanelCompactVolume: Bool { didSet { defaults.set(quickPanelCompactVolume, forKey: "quickPanelCompactVolume") } }
     @Published var quickPanelEventTabs: Bool { didSet { defaults.set(quickPanelEventTabs, forKey: "quickPanelEventTabs") } }
     @Published var quickPanelWidgets: [QuickPanelWidget] {
@@ -124,6 +127,7 @@ final class SettingsStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.codexLimitPlacement = defaults.string(forKey: "codexLimitPlacement") ?? "chats"
+        pausesHiddenWallpaper = defaults.object(forKey: "pausesHiddenWallpaper") as? Bool ?? true
         quickPanelCompactVolume = defaults.bool(forKey: "quickPanelCompactVolume")
         quickPanelEventTabs = defaults.bool(forKey: "quickPanelEventTabs")
         quickPanelWidgets = defaults.stringArray(forKey: "quickPanelWidgets").map { { var seen = Set<QuickPanelWidget>(); return $0.compactMap(QuickPanelWidget.init(rawValue:)).filter { seen.insert($0).inserted } }($0) } ?? QuickPanelWidget.allCases
@@ -167,6 +171,10 @@ final class SettingsStore: ObservableObject {
 
     func setPaused(_ paused: Bool) {
         isPaused = paused
+    }
+
+    func setPausesHiddenWallpaper(_ enabled: Bool) {
+        pausesHiddenWallpaper = enabled
     }
 
     func setAspectMode(_ mode: AspectMode) {

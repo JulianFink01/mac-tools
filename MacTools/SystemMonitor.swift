@@ -18,6 +18,16 @@ struct MonitorPoint: Identifiable, Codable, Sendable {
     let diskUsed: Double?
     let battery: Double?
 }
+/// GPU time a single process spent in the measured span. macOS exposes no GPU
+/// percentage per process; the accumulated time per Metal command queue in the IO
+/// registry is the closest public figure and is what this reports.
+struct GPUConsumer: Identifiable, Sendable, Equatable {
+    let pid: Int32
+    let name: String
+    let seconds: Double
+    let percent: Double
+    var id: Int32 { pid }
+}
 struct MonitorProcess: Identifiable, Sendable {
     let id: Int32
     let name: String
@@ -87,6 +97,7 @@ struct SystemReading: Sendable {
     let memoryPressure: Int32?
     let gpuName: String
     let gpuMemory: UInt64?
+    let gpuConsumers: [GPUConsumer]
     let processes: [MonitorProcess]
     let battery: MonitorBattery?
     let volumes: [MonitorVolume]
@@ -96,34 +107,85 @@ struct SystemReading: Sendable {
 /// All work runs on a serial utility queue. Missing measurements stay unavailable.
 final class SystemSampler {
     private var previousCPU: [UInt64]?
-    private var previousDisk: (UInt64, UInt64)?
-    private var previousNetwork: (UInt64, UInt64)?
+    private var previousDisk: (read: UInt64, write: UInt64, at: TimeInterval)?
+    private var previousNetwork: (received: UInt64, sent: UInt64, at: TimeInterval)?
     private var previousProcesses: [Int32: UInt64] = [:]
     private var previousEnergy: [Int32: (start: UInt64, nanojoules: UInt64)] = [:]
     private var previousTime: TimeInterval?
+    private var diskRates: (read: Double?, write: Double?) = (nil, nil)
+    private var networkRates: (download: Double?, upload: Double?) = (nil, nil)
+    private var cachedGPU: (value: (percent: Double?, memory: UInt64?), at: TimeInterval)?
+    private var cachedBattery: (value: MonitorBattery?, at: TimeInterval)?
+    private var cachedVolumes: (value: [MonitorVolume], at: TimeInterval)?
+    private var previousGPUClients: (values: [Int32: UInt64], at: TimeInterval)?
+    private var gpuClients: (percent: Double?, consumers: [GPUConsumer]) = (nil, [])
+    /// One Metal device for the adapter name. Creating it per sample asked the GPU
+    /// driver for a new device every two seconds to read a string that never changes.
+    private lazy var adapterName = MTLCreateSystemDefaultDevice()?.name ?? "GPU"
 
-    func read() -> SystemReading {
+    /// `detailed` is set while a view actually shows per-process rows or fast live
+    /// values. Without it the expensive measurements keep their last result: IOKit
+    /// registry walks (GPU, drive counters), the battery property dictionary, mounted
+    /// volume lookups and the pass over every PID cost far more than the Mach
+    /// counters behind CPU and memory.
+    func read(detailed: Bool) -> SystemReading {
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = previousTime.map { now - $0 }
         previousTime = now
         let (cpu, cores) = cpuLoad()
         let memory = memoryUsage()
-        let gpu = gpuUsage()
-        let disk = diskCounters()
-        let net = networkCounters()
-        let mountedVolumes = volumes()
-        let battery = MonitorBattery.read()
+        let gpu = cached(&cachedGPU, now: now, maxAge: detailed ? 1 : 8) { self.gpuUsage() }
+        let battery = cached(&cachedBattery, now: now, maxAge: detailed ? 1 : 10) { MonitorBattery.read() }
+        let mountedVolumes = cached(&cachedVolumes, now: now, maxAge: 30) { self.volumes() }
+        sampleTransferRates(now: now, maxAge: detailed ? 1 : 8)
+        sampleGPUClients(now: now, maxAge: detailed ? 1 : 8)
         let point = MonitorPoint(date: Date(), cpu: cpu, memory: memory.available ? min(100, Double(memory.app + memory.wired + memory.compressed) / Double(max(1, memory.total)) * 100) : nil,
-                                 gpu: gpu.percent, diskRead: rate(disk?.0, previousDisk?.0, elapsed),
-                                 diskWrite: rate(disk?.1, previousDisk?.1, elapsed),
-                                 download: rate(net?.0, previousNetwork?.0, elapsed), upload: rate(net?.1, previousNetwork?.1, elapsed),
+                                 gpu: gpuClients.percent ?? gpu.percent, diskRead: diskRates.read,
+                                 diskWrite: diskRates.write,
+                                 download: networkRates.download, upload: networkRates.upload,
                                  diskUsed: mountedVolumes.first(where: { $0.path == "/" }).map { $0.usedFraction * 100 },
                                  battery: battery?.chargePercent)
-        previousDisk = disk; previousNetwork = net
+        let values = detailed ? processes(elapsed: elapsed) : []
+        if !detailed, !previousProcesses.isEmpty { previousProcesses.removeAll(); previousEnergy.removeAll() }
         return SystemReading(point: point, cores: cores, totalMemory: memory.total, appMemory: memory.app,
                              wiredMemory: memory.wired, compressedMemory: memory.compressed, swap: memory.swap, memoryPressure: memoryPressure(),
-                             gpuName: MTLCreateSystemDefaultDevice()?.name ?? "GPU", gpuMemory: gpu.memory,
-                             processes: processes(elapsed: elapsed), battery: battery, volumes: mountedVolumes)
+                             gpuName: adapterName, gpuMemory: gpu.memory,
+                             gpuConsumers: gpuClients.consumers,
+                             processes: values, battery: battery, volumes: mountedVolumes)
+    }
+
+    private func cached<Value>(_ store: inout (value: Value, at: TimeInterval)?, now: TimeInterval, maxAge: TimeInterval, read: () -> Value) -> Value {
+        if let store, now >= store.at, now - store.at < maxAge { return store.value }
+        let value = read()
+        store = (value, now)
+        return value
+    }
+
+    /// Byte counters only yield a rate together with the span they cover, so each
+    /// previous reading carries its own timestamp instead of the sample timestamp.
+    private func sampleTransferRates(now: TimeInterval, maxAge: TimeInterval) {
+        if let previous = previousDisk, now - previous.at < maxAge {
+            // The last rate stays valid until the counters are read again.
+        } else if let counters = diskCounters() {
+            if let previous = previousDisk, now > previous.at {
+                let span = now - previous.at
+                diskRates = (rate(counters.0, previous.read, span), rate(counters.1, previous.write, span))
+            }
+            previousDisk = (counters.0, counters.1, now)
+        } else {
+            diskRates = (nil, nil); previousDisk = nil
+        }
+        if let previous = previousNetwork, now - previous.at < maxAge {
+            // The last rate stays valid until the counters are read again.
+        } else if let counters = networkCounters() {
+            if let previous = previousNetwork, now > previous.at {
+                let span = now - previous.at
+                networkRates = (rate(counters.0, previous.received, span), rate(counters.1, previous.sent, span))
+            }
+            previousNetwork = (counters.0, counters.1, now)
+        } else {
+            networkRates = (nil, nil); previousNetwork = nil
+        }
     }
 
     private func rate(_ current: UInt64?, _ previous: UInt64?, _ elapsed: Double?) -> Double? {
@@ -199,6 +261,85 @@ final class SystemSampler {
         let memory = stats.compactMap { ($0["In use system memory"] as? NSNumber)?.uint64Value }.max()
         return (loads.filter { $0 >= 0 && $0 <= 100 }.max(), memory)
     }
+    /// The GPU's client objects are not registered services, so a class lookup does
+    /// not find them. They hang below the accelerator in the registry, which is how
+    /// `ioreg` shows them too.
+    private func gpuClientProperties() -> [[String: Any]] {
+        var accelerators: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &accelerators) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(accelerators) }
+        var values: [[String: Any]] = []
+        while true {
+            let accelerator = IOIteratorNext(accelerators)
+            if accelerator == 0 { break }
+            var children: io_iterator_t = 0
+            if IORegistryEntryCreateIterator(accelerator, kIOServicePlane, IOOptionBits(kIORegistryIterateRecursively), &children) == KERN_SUCCESS {
+                while true {
+                    let child = IOIteratorNext(children)
+                    if child == 0 { break }
+                    var properties: Unmanaged<CFMutableDictionary>?
+                    if IORegistryEntryCreateCFProperties(child, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                       let dictionary = properties?.takeRetainedValue() as? [String: Any],
+                       dictionary["IOUserClientCreator"] is String, dictionary["AppUsage"] != nil {
+                        values.append(dictionary)
+                    }
+                    IOObjectRelease(child)
+                }
+                IOObjectRelease(children)
+            }
+            IOObjectRelease(accelerator)
+        }
+        return values
+    }
+
+    /// Format of the registry entry: "pid 411, WindowServer". The name is cut off
+    /// there, so the process name is preferred when it can still be read.
+    private static func clientOwner(_ creator: String) -> (pid: Int32, name: String)? {
+        guard creator.hasPrefix("pid "), let comma = creator.firstIndex(of: ",") else { return nil }
+        let digits = creator[creator.index(creator.startIndex, offsetBy: 4)..<comma]
+        guard let pid = Int32(digits) else { return nil }
+        var buffer = [CChar](repeating: 0, count: 256)
+        let length = proc_name(pid, &buffer, UInt32(buffer.count))
+        let registryName = creator[creator.index(after: comma)...].trimmingCharacters(in: .whitespaces)
+        let name = length > 0 ? String(cString: buffer) : registryName
+        return (pid, name.isEmpty ? "PID \(pid)" : name)
+    }
+
+    /// Every Metal client holds one `AppUsage` entry per command queue carrying a
+    /// cumulative GPU time. The difference between two readings is the GPU time a
+    /// process really used. Compositing a window appears under the window server,
+    /// not under the app that owns the window. Checked on Apple silicon; where the
+    /// registry offers no such client the list stays empty and the driver's own
+    /// utilization value is used again.
+    private func sampleGPUClients(now: TimeInterval, maxAge: TimeInterval) {
+        if let previous = previousGPUClients, now - previous.at < maxAge { return }
+        var totals: [Int32: UInt64] = [:]
+        var names: [Int32: String] = [:]
+        for client in gpuClientProperties() {
+            guard let creator = client["IOUserClientCreator"] as? String,
+                  let owner = Self.clientOwner(creator) else { continue }
+            let usage = client["AppUsage"] as? [[String: Any]] ?? []
+            let time = usage.reduce(UInt64(0)) { $0 &+ (($1["accumulatedGPUTime"] as? NSNumber)?.uint64Value ?? 0) }
+            totals[owner.pid, default: 0] &+= time
+            names[owner.pid] = owner.name
+        }
+        defer { previousGPUClients = (totals, now) }
+        guard let previous = previousGPUClients, now > previous.at, !totals.isEmpty else { return }
+        let span = now - previous.at
+        var consumers: [GPUConsumer] = []
+        var busy = 0.0
+        for (pid, total) in totals {
+            guard let before = previous.values[pid], total > before else { continue }
+            let seconds = Double(total - before) / 1_000_000_000
+            // A restarted counter or a reused PID would otherwise invent GPU time.
+            guard seconds > 0, seconds < span * 64 else { continue }
+            busy += seconds
+            consumers.append(GPUConsumer(pid: pid, name: names[pid] ?? "PID \(pid)", seconds: seconds,
+                                         percent: min(100, seconds / span * 100)))
+        }
+        gpuClients = (min(100, busy / span * 100), consumers.sorted { $0.seconds > $1.seconds })
+    }
+
     private func diskCounters() -> (UInt64, UInt64)? {
         let values = properties(className: "IOBlockStorageDriver", key: "Statistics")
         guard !values.isEmpty else { return nil }
@@ -275,6 +416,16 @@ final class SystemSampler {
     }
 }
 
+/// The sampling cadence is set on the main actor and read on the sampling queue.
+private final class SamplingMode: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var detailed: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+}
+
 @MainActor
 final class SystemMonitor: ObservableObject {
     static let shared = SystemMonitor()
@@ -285,24 +436,74 @@ final class SystemMonitor: ObservableObject {
     private var timer: DispatchSourceTimer?
     private let historyURL = VideoLibraryStore.appSupportDirectory.appendingPathComponent("monitor-history.plist")
     private var samples = 0
+    private let mode = SamplingMode()
+    private var detailConsumers = 0
+    private var started = false
+    private var suspended = false
+    private var historyLoaded = false
+    /// Menu-bar widgets only need a slow trickle. The two-second cadence belongs to
+    /// views that are actually on screen.
+    private var interval: TimeInterval { detailConsumers > 0 ? 2 : 5 }
+    var isDetailed: Bool { detailConsumers > 0 }
+    var sampleInterval: TimeInterval { interval }
+
+    /// Balanced by `releaseDetail`. A view calls it while it shows live values or
+    /// per-process rows; only then does a sample include the pass over every PID.
+    func retainDetail() {
+        detailConsumers += 1
+        if detailConsumers == 1 { restartTimer() }
+    }
+    func releaseDetail() {
+        guard detailConsumers > 0 else { return }
+        detailConsumers -= 1
+        if detailConsumers == 0 { restartTimer() }
+    }
 
     func start() {
-        guard timer == nil else { return }
+        guard !suspended else { return }
+        started = true
+        loadHistory()
+        restartTimer()
+    }
+    func stop() { started = false; timer?.cancel(); timer = nil }
+
+    /// Nothing reads a measurement while the display sleeps or the screen is locked.
+    func suspend() {
+        guard !suspended else { return }
+        suspended = true
+        timer?.cancel(); timer = nil
+    }
+    func resume() {
+        guard suspended else { return }
+        suspended = false
+        restartTimer()
+    }
+
+    private func loadHistory() {
+        guard !historyLoaded else { return }
+        historyLoaded = true
         let url = historyURL
         queue.async { [weak self] in
             let history = (try? Data(contentsOf: url)).flatMap { try? PropertyListDecoder().decode([MonitorPoint].self, from: $0) } ?? []
             Task { @MainActor in self?.history = history.filter { Date().timeIntervalSince($0.date) < 3600 } }
         }
+    }
+
+    private func restartTimer() {
+        guard started, !suspended else { return }
+        mode.detailed = detailConsumers > 0
+        timer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: 2, leeway: .milliseconds(150))
+        // A wide leeway lets the system coalesce the idle wake-ups with other work.
+        timer.schedule(deadline: .now(), repeating: interval, leeway: detailConsumers > 0 ? .milliseconds(150) : .seconds(1))
         let sampler = self.sampler
+        let mode = self.mode
         timer.setEventHandler { [weak self] in
-            let reading = sampler.read()
+            let reading = sampler.read(detailed: mode.detailed)
             Task { @MainActor in self?.receive(reading) }
         }
         self.timer = timer; timer.resume()
     }
-    func stop() { timer?.cancel(); timer = nil }
     private func receive(_ value: SystemReading) {
         reading = value
         history.append(value.point)
@@ -490,7 +691,7 @@ enum UserProcessSampler {
     @Published private(set) var error: String?
     @Published var selectedID: String?
     @Published var scope: UserProcessScope {
-        didSet { UserDefaults.standard.set(scope.rawValue, forKey: "userProcessScope") }
+        didSet { UserDefaults.standard.set(scope.rawValue, forKey: "userProcessScope"); rebuildLists() }
     }
     @Published var viewMode: UserProcessViewMode {
         didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: "userProcessViewMode") }
@@ -503,12 +704,31 @@ enum UserProcessSampler {
         if let data = UserDefaults.standard.data(forKey: "userProcessBookmarks") {
             bookmarks = (try? JSONDecoder().decode([UserProcessBookmark].self, from: data)) ?? []
         }
+        rebuildLists()
     }
-    var scopedProcesses: [UserProcess] { processes.filter(scope.contains) }
-    var listedProcesses: [UserProcess] {
+    private var cachedScoped: [UserProcess] = []
+    private var cachedListed: [UserProcess] = []
+    private var cachedFeatured: [UserProcess] = []
+    /// Classifying a process parses every argument of its command line, and the
+    /// panels read these lists several times per redraw. They are therefore built
+    /// once per refresh instead of on every access.
+    private func rebuildLists() {
+        cachedScoped = processes.filter(scope.contains)
         let marked = bookmarks.map { bookmark in processes.first(where: { $0.id == bookmark.id }) ?? bookmark.process }
-        return marked + scopedProcesses.filter { process in !bookmarks.contains(where: { $0.id == process.id }) }
+        let markedIDs = Set(bookmarks.map(\.id))
+        cachedListed = marked + cachedScoped.filter { !markedIDs.contains($0.id) }
+        cachedFeatured = cachedScoped.filter { taskScore($0) > 0 }
+            .sorted { a, b in
+                let ac = a.cpu ?? 0, bc = b.cpu ?? 0
+                if ac >= 10 || bc >= 10, ac != bc { return ac > bc }
+                let ascore = taskScore(a), bscore = taskScore(b)
+                if ascore != bscore { return ascore > bscore }
+                if ac != bc { return ac > bc }
+                return a.pid < b.pid
+            }
     }
+    var scopedProcesses: [UserProcess] { cachedScoped }
+    var listedProcesses: [UserProcess] { cachedListed }
     func isBookmarked(_ id: String) -> Bool { bookmarks.contains { $0.id == id } }
     func isRunning(_ id: String) -> Bool { processes.contains { $0.id == id } }
     func toggleCollapsed(_ id: String) {
@@ -520,11 +740,13 @@ enum UserProcessSampler {
     private func saveBookmarks() {
         if let data = try? JSONEncoder().encode(bookmarks) { UserDefaults.standard.set(data, forKey: "userProcessBookmarks") }
         lastBookmarkSaveAt = Date()
+        rebuildLists()
     }
     func toggleBookmark(_ process: UserProcess, logPath: String? = nil) {
         if let index = bookmarks.firstIndex(where: { $0.id == process.id }) {
             bookmarks.remove(at: index)
             saveBookmarks()
+            rebuildLists()
             return
         }
         let now = Date()
@@ -538,17 +760,7 @@ enum UserProcessSampler {
             self.saveBookmarks()
         }
     }
-    var featured: [UserProcess] {
-        scopedProcesses.filter { taskScore($0) > 0 }
-            .sorted { a, b in
-                let ac = a.cpu ?? 0, bc = b.cpu ?? 0
-                if ac >= 10 || bc >= 10, ac != bc { return ac > bc }
-                let ascore = taskScore(a), bscore = taskScore(b)
-                if ascore != bscore { return ascore > bscore }
-                if ac != bc { return ac > bc }
-                return a.pid < b.pid
-            }
-    }
+    var featured: [UserProcess] { cachedFeatured }
     private func taskScore(_ process: UserProcess) -> Int {
         let name = process.name.lowercased()
         if process.command.contains("/server/runs/") { return 5 }
@@ -583,6 +795,7 @@ enum UserProcessSampler {
             saveBookmarks()
         }
         error = portResult.status == -1 ? "Ports konnten nicht gelesen werden: " + portResult.error : nil
+        rebuildLists()
     }
     func stop(_ process: UserProcess, force: Bool = false) -> String? {
         guard process.pid > 1, process.pid != getpid(),

@@ -84,6 +84,12 @@ struct SettingsView: View {
                 Text(settings.loginItemStatusText).font(.callout).foregroundStyle(.secondary)
                 if let error = settings.loginItemError { Text(error).foregroundStyle(.orange) }
             }
+            ToolSettingsCard(title: "Energie sparen", description: "Der Live-Hintergrund dekodiert nur Bilder, die wirklich zu sehen sind.") {
+                Toggle("Live-Hintergrund anhalten, wenn der Schreibtisch verdeckt ist", isOn: Binding(
+                    get: { settings.pausesHiddenWallpaper }, set: { settings.setPausesHiddenWallpaper($0) }
+                ))
+                Text("Verdecken andere Fenster den Schreibtisch vollständig, pausiert die Wiedergabe und läuft beim Freiwerden an derselben Stelle weiter. Gesperrter Bildschirm und Ruhezustand des Displays halten sie unabhängig davon an.").font(.caption).foregroundStyle(.secondary)
+            }
             ToolSettingsCard(title: "Codex-Chatfenster", description: "Öffne bestehende Chats aus der Schnellansicht in einem eigenen Fenster. Das globale Tastenkürzel öffnet einen neuen Chat-Entwurf.") {
                 HStack { Text("Neuer Chat per Tastenkürzel"); Spacer(); CodexPopupShortcutRecorder().frame(width: 280, height: 28) }
                 Toggle("Chatfenster standardmäßig im Vordergrund halten", isOn: $settings.chatPopupAlwaysOnTop)

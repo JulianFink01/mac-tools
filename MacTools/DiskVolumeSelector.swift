@@ -18,13 +18,13 @@ struct DiskVolumeSelector: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Laufwerke").font(.headline)
-                Text("Eigene Scanstände je Laufwerk").font(.caption).foregroundStyle(.secondary)
+                Text("Verbundene Laufwerke mit eigenem Scanstand").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("Angeschlossene Laufwerke aktualisieren").accessibilityLabel("Laufwerke aktualisieren")
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(store.volumes) { volume in
+                    ForEach(store.connectedVolumes) { volume in
                         DiskVolumeChoice(volume: volume, disk: store.profile(for: volume.id).disk, selected: store.selectedVolume?.id == volume.id) { store.selectedID = volume.id }
                     }
                 }.padding(.vertical, 2)

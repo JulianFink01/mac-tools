@@ -68,6 +68,7 @@ struct ContainersView: View {
                     }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
                 }
             }.padding(32).frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity)
-        }.onAppear { store.start() }
+        }.onAppear { store.start(); store.retainFastRefresh() }
+            .onDisappear { store.releaseFastRefresh() }
     }
 }

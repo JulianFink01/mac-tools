@@ -85,7 +85,12 @@ struct DiskScanVolume: Codable, Identifiable, Equatable {
             }
         }
     }
-    var selectedVolume: DiskScanVolume? { volumes.first { $0.id == selectedID } ?? volumes.first { $0.isPrimary } ?? volumes.first }
+    /// Only drives that are actually connected belong in the user interface. A
+    /// disconnected drive keeps its saved scan and returns when it is plugged in.
+    var connectedVolumes: [DiskScanVolume] { volumes.filter(\.isMounted) }
+    var selectedVolume: DiskScanVolume? {
+        volumes.first { $0.id == selectedID && $0.isMounted } ?? volumes.first { $0.isPrimary } ?? connectedVolumes.first ?? volumes.first
+    }
     var selectedProfile: DiskVolumeProfile? { selectedVolume.map { profile(for: $0.id) } }
 
     func profile(for id: String) -> DiskVolumeProfile {
@@ -127,7 +132,12 @@ struct DiskScanVolume: Codable, Identifiable, Equatable {
             }
         }
         if volumes != ordered { volumes = ordered }
-        if !volumes.contains(where: { $0.id == selectedID }), let first = volumes.first { selectedID = first.id }
+        // Unplugging the selected drive must not leave the view on a drive that is
+        // no longer there.
+        if !volumes.contains(where: { $0.id == selectedID && $0.isMounted }),
+           let fallback = volumes.first(where: { $0.isMounted && $0.isPrimary }) ?? volumes.first(where: \.isMounted) ?? volumes.first {
+            if selectedID != fallback.id { selectedID = fallback.id }
+        }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(volumes) { try? data.write(to: catalogURL, options: .atomic) }
     }

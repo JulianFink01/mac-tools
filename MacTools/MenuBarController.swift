@@ -59,6 +59,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var remainingLabel = "—"
     private var healthSubscription: AnyCancellable?
     private var normalMenuImage: NSImage?
+    /// A hosting view that stays alive keeps re-evaluating its body on every change
+    /// in the stores it observes, even while its panel is closed and invisible. The
+    /// panels are therefore built when they open and released when they close.
+    private var panelContent: [ObjectIdentifier: () -> NSViewController] = [:]
 
     init(settings: SettingsStore, library: VideoLibraryStore,
          openSection: @escaping (ToolNavigation.Section) -> Void,
@@ -66,7 +70,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
          randomWallpaper: @escaping () -> Void) {
         super.init()
         usagePopover.behavior = .transient; usagePopover.contentSize = NSSize(width: 360, height: 430)
-        usagePopover.contentViewController = NSHostingController(rootView: CodexUsageView(inPopover: true).frame(width: 360, height: 430))
+        usagePopover.delegate = self
+        panelContent[ObjectIdentifier(usagePopover)] = {
+            NSHostingController(rootView: CodexUsageView(inPopover: true).frame(width: 360, height: 430))
+        }
         usageSubscription = CodexStore.shared.$usageBuckets.combineLatest(CodexStore.shared.$usageError).sink { [weak self] buckets,error in
             let remaining = error == nil ? (buckets.first(where: { $0.id == "codex" }) ?? buckets.first)?.windows.map(\.remaining).min() : nil
             let text = remaining.map { "\(Int($0.rounded()))%" } ?? "—"
@@ -78,20 +85,26 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         codexPopover.behavior = .transient
         let statsHeight = min(740, max(500, (NSScreen.main?.visibleFrame.height ?? 810) - 70))
         codexPopover.contentSize = NSSize(width: 390, height: statsHeight)
-        codexPopover.contentViewController = NSHostingController(rootView: CodexMenuStatsView(
-            openChats: { [weak self] in self?.codexPopover.close(); openSection(.codex) },
-            openSettings: { [weak self] in self?.codexPopover.close(); openSettings(.navigation) },
-            openLimits: { [weak self] in self?.codexPopover.close(); openSection(.codexLimit) }, newChat: { [weak self] in self?.codexPopover.close(); CodexPopupController.shared.show(chatID: nil) }).frame(width: 390, height: statsHeight))
+        codexPopover.delegate = self
+        panelContent[ObjectIdentifier(codexPopover)] = { [weak self] in
+            NSHostingController(rootView: CodexMenuStatsView(
+                openChats: { [weak self] in self?.codexPopover.close(); openSection(.codex) },
+                openSettings: { [weak self] in self?.codexPopover.close(); openSettings(.navigation) },
+                openLimits: { [weak self] in self?.codexPopover.close(); openSection(.codexLimit) },
+                newChat: { [weak self] in self?.codexPopover.close(); CodexPopupController.shared.show(chatID: nil) }).frame(width: 390, height: statsHeight))
+        }
         processPopover.behavior = .transient
         processPopover.delegate = self
         let processHeight = min(700, max(450, (NSScreen.main?.visibleFrame.height ?? 700) - 70))
         processPopover.contentSize = NSSize(width: 390, height: processHeight)
-        processPopover.contentViewController = NSHostingController(rootView: UserProcessMenuView(
-            openWindow: { [weak self] in self?.processPopover.close(); UserProcessWindowController.shared.show() },
-            openSettings: { [weak self] in self?.processPopover.close(); openSettings(.navigation) },
-            openProcess: { [weak self] process in self?.processPopover.close(); UserProcessWindowController.shared.show(processID: process.id) },
-            height: processHeight
-        ).frame(width: 390, height: processHeight))
+        panelContent[ObjectIdentifier(processPopover)] = { [weak self] in
+            NSHostingController(rootView: UserProcessMenuView(
+                openWindow: { [weak self] in self?.processPopover.close(); UserProcessWindowController.shared.show() },
+                openSettings: { [weak self] in self?.processPopover.close(); openSettings(.navigation) },
+                openProcess: { [weak self] process in self?.processPopover.close(); UserProcessWindowController.shared.show(processID: process.id) },
+                height: processHeight
+            ).frame(width: 390, height: processHeight))
+        }
         codexSubscription = CodexStore.shared.$activityHistory.sink { [weak self] points in
             let point = points.last
             self?.codexLabel?.running = point?.running ?? 0
@@ -145,7 +158,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                     let item = NSStatusBar.system.statusItem(withLength: tool == .codex ? 52 : tool == .codexLimit ? 46 : NSStatusItem.squareLength)
                     let action = PinnedToolAction { [weak self] in
                         if tool == .codex { self?.toggleCodexStats() } else if tool == .processes { self?.toggleProcessMenu() } else if tool == .codexLimit, let button = self?.toolItems[tool]?.button {
-                            if self?.usagePopover.isShown == true { self?.usagePopover.close() } else { self?.usagePopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }; CodexStore.shared.start()
+                            if self?.usagePopover.isShown == true { self?.usagePopover.close() } else if let panel = self?.usagePopover { self?.prepareContent(panel); panel.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }; CodexStore.shared.start()
                         } else { openSection(tool) }
                     }
                     self.toolItems[tool] = item; self.toolActions[tool] = action
@@ -201,11 +214,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         mainSubscription = settings.$showMainMenuIcon.sink { [weak self] visible in self?.statusItem.isVisible = visible }
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 420, height: min(900, max(520, (NSScreen.main?.visibleFrame.height ?? 680) - 40)))
-        popover.contentViewController = NSHostingController(rootView: QuickPanelView(settings: settings, library: library,
-            openSection: { [weak self] section in self?.popover.close(); openSection(section) },
-            openSettings: { [weak self] category in self?.popover.close(); openSettings(category) },
-            pin: { [weak self] in self?.popover.close(); WindowPinController.shared.toggleCurrentWindow(useMenuSelection: true) },
-            randomWallpaper: randomWallpaper, closePanel: { [weak self] in self?.popover.close() }))
+        popover.delegate = self
+        panelContent[ObjectIdentifier(popover)] = { [weak self] in
+            NSHostingController(rootView: QuickPanelView(settings: settings, library: library,
+                openSection: { [weak self] section in self?.popover.close(); openSection(section) },
+                openSettings: { [weak self] category in self?.popover.close(); openSettings(category) },
+                pin: { [weak self] in self?.popover.close(); WindowPinController.shared.toggleCurrentWindow(useMenuSelection: true) },
+                randomWallpaper: randomWallpaper, closePanel: { [weak self] in self?.popover.close() }))
+        }
         observer = NotificationCenter.default.addObserver(forName: .showMacToolsQuickPanel, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.togglePanel() }
         }
@@ -237,23 +253,39 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private func toggleCodexStats() {
         guard let button = toolItems[.codex]?.button else { return }
         if codexPopover.isShown { codexPopover.close() }
-        else { CodexStore.shared.start(); codexPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        else { CodexStore.shared.start(); prepareContent(codexPopover); codexPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
     }
     private func toggleProcessMenu() {
         guard let button = toolItems[.processes]?.button else { return }
         if processPopover.isShown { processPopover.close(); return }
+        prepareContent(processPopover)
         processPopover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         processRefreshTask?.cancel()
+        SystemMonitor.shared.retainDetail()
         processRefreshTask = Task {
+            defer { SystemMonitor.shared.releaseDetail() }
             while !Task.isCancelled {
                 await UserProcessStore.shared.refresh()
                 do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
             }
         }
     }
+    /// Builds the panel's view right before it opens. Without this the panel would
+    /// show the state it had when the app started.
+    private func prepareContent(_ panel: NSPopover) {
+        guard panel.contentViewController == nil, let make = panelContent[ObjectIdentifier(panel)] else { return }
+        panel.contentViewController = make()
+    }
+
     func popoverDidClose(_ notification: Notification) {
-        guard (notification.object as? NSPopover) === processPopover else { return }
-        processRefreshTask?.cancel(); processRefreshTask = nil
+        guard let panel = notification.object as? NSPopover else { return }
+        if panel === processPopover { processRefreshTask?.cancel(); processRefreshTask = nil }
+        guard panelContent[ObjectIdentifier(panel)] != nil else { return }
+        // After the closing animation, so the view is not torn down under it.
+        DispatchQueue.main.async { [weak panel] in
+            guard let panel, !panel.isShown else { return }
+            panel.contentViewController = nil
+        }
     }
     private func updateHealthIndicator() {
         let critical = PrivateMCPStore.shared.criticalServices
@@ -287,6 +319,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         if popover.isShown { popover.close(); return }
         guard let button = statusItem.button else { return }
         WindowPinController.shared.prepareMenuSelection()
+        prepareContent(popover)
         popover.showFocused(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 }
@@ -471,7 +504,7 @@ struct MonitorWidgetPreview: NSViewRepresentable {
 }
 
 @MainActor
-final class MonitorMenuWidgets: NSObject {
+final class MonitorMenuWidgets: NSObject, NSPopoverDelegate {
     private var items: [MonitorMetric: NSStatusItem] = [:]
     private var labels: [MonitorMetric: MonitorWidgetLabel] = [:]
     private var visibility: [MonitorMetric: StatusItemVisibility] = [:]
@@ -495,6 +528,7 @@ final class MonitorMenuWidgets: NSObject {
         super.init()
         popover.behavior = .transient
         popover.animates = false
+        popover.delegate = self
         settings.$enabledMonitorWidgets.sink { [weak self] metrics in self?.synchronize(metrics) }.store(in: &subscriptions)
         SystemMonitor.shared.$reading.sink { [weak self] reading in self?.update(reading) }.store(in: &subscriptions)
     }
@@ -556,6 +590,17 @@ final class MonitorMenuWidgets: NSObject {
         detailController?.preferredContentSize = popover.contentSize
         detailController?.view.setFrameSize(popover.contentSize)
         popover.showFocused(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+    /// A closed detail view keeps observing the monitor and asking for the fast
+    /// cadence, so it is released together with its panel.
+    func popoverDidClose(_ notification: Notification) {
+        guard (notification.object as? NSPopover) === popover else { return }
+        selected = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.popover.isShown else { return }
+            self.popover.contentViewController = nil
+            self.detailController = nil
+        }
     }
 }
 
@@ -649,7 +694,7 @@ struct QuickPanelView: View {
             }.foregroundStyle(.secondary)
         }.padding(16).frame(width: 420, height: panelHeight, alignment: .top).background(Color(nsColor: .windowBackgroundColor))
             .task { await security.refreshCurrentFindings(legacyPaths: warnings.warnings.flatMap(\.findingPaths)) }
-            .onAppear { if startsEditing { editingWidgets = true }; audio.start(); containers.start(); codex.start(); menuChats = codex.menuChats; multipleRunningChats = codex.menuChats.filter { $0.status == "active" }.count > 1 }
+            .onAppear { if startsEditing { editingWidgets = true }; monitor.retainDetail(); audio.start(); containers.start(); containers.retainFastRefresh(); codex.start(); menuChats = codex.menuChats; multipleRunningChats = codex.menuChats.filter { $0.status == "active" }.count > 1 }
             .onChange(of: codex.menuChats) { chats in
                 codexVisibilityTask?.cancel()
                 if !chats.isEmpty { menuChats = chats }
@@ -658,7 +703,7 @@ struct QuickPanelView: View {
                 codexRowsTask?.cancel()
                 if multiple { multipleRunningChats = true }
                 else { codexRowsTask = Task { do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }; if codex.menuChats.filter({ $0.status == "active" }).count <= 1 { multipleRunningChats = false } } }
-            }.onDisappear { codexVisibilityTask?.cancel(); codexRowsTask?.cancel() }
+            }.onDisappear { monitor.releaseDetail(); containers.releaseFastRefresh(); codexVisibilityTask?.cancel(); codexRowsTask?.cancel() }
             .onChange(of: audio.error) { if $0 != nil { showControlError = true } }
             .onChange(of: containers.error) { if $0 != nil { showControlError = true } }
             .alert("Aktion nicht abgeschlossen", isPresented: $showControlError) {

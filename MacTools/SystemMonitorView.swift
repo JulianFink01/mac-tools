@@ -61,9 +61,29 @@ struct MonitorTrend: View {
         }.accessibilityLabel("Messverlauf")
             .accessibilityValue(samples.last.flatMap { $0.0[keyPath: key] }.map { percent ? monitorPercent($0) : monitorRate($0) } ?? "Keine Messung")
     }
+    /// Swift Charts lays out and keeps every single mark. Half an hour of samples is
+    /// far more marks than the plot has pixels, so the curve is drawn from a reduced
+    /// set of points instead of several thousand.
+    private func reduced(_ samples: [(MonitorPoint, Int)], limit: Int) -> [(MonitorPoint, Int)] {
+        guard limit > 1, samples.count > limit else { return samples }
+        let step = Double(samples.count) / Double(limit)
+        var result: [(MonitorPoint, Int)] = []
+        var next = 0.0
+        for (index, sample) in samples.enumerated() {
+            // Both ends of a segment stay, so missing measurements remain a gap.
+            let edge = index == 0 || index == samples.count - 1 || sample.1 != samples[index - 1].1
+                || (index + 1 < samples.count && samples[index + 1].1 != sample.1)
+            guard edge || Double(index) >= next else { continue }
+            result.append(sample)
+            next = Double(index) + step
+        }
+        return result
+    }
     private var chart: some View {
-        Chart {
-            ForEach(values, id: \.0.id) { point, segment in
+        let samples = reduced(values, limit: 180)
+        let maximum = percent ? 100 : max(1, samples.compactMap { $0.0[keyPath: key] }.max() ?? 1)
+        return Chart {
+            ForEach(samples, id: \.0.id) { point, segment in
                 if let value = point[keyPath: key] {
                     AreaMark(x: .value("Zeit", point.date), yStart: .value("Basis", 0), yEnd: .value("Wert", value), series: .value("Abschnitt", segment))
                         .foregroundStyle(LinearGradient(colors: [color.opacity(0.3), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
@@ -72,7 +92,7 @@ struct MonitorTrend: View {
                 }
             }
         }
-        .chartYScale(domain: percent ? 0...100 : 0...max(1, values.compactMap { $0.0[keyPath: key] }.max() ?? 1))
+        .chartYScale(domain: 0...maximum)
         .chartLegend(.hidden)
         .chartXAxis {
             if !compact { AxisMarks(values: .automatic(desiredCount: 2)) { value in
@@ -91,6 +111,38 @@ struct MonitorTrend: View {
             } }
         }
         .accessibilityLabel("Messverlauf")
+    }
+}
+
+/// Which process asks the GPU to do work. The window server appears for everything
+/// that is composited on screen, including this app's own live wallpaper, because
+/// macOS draws window content there rather than in the owning app.
+struct GPUConsumerList: View {
+    let consumers: [GPUConsumer]
+    var limit = 8
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("GPU-VERBRAUCHER").font(.caption2.weight(.semibold))
+                Spacer()
+                Text("GPU-ZEIT").font(.caption2)
+            }.foregroundStyle(.secondary)
+            if consumers.isEmpty {
+                Text("Derzeit nutzt kein Prozess messbare GPU-Zeit.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(consumers.prefix(limit)) { consumer in
+                    HStack(spacing: 8) {
+                        Text(consumer.name).lineLimit(1).truncationMode(.middle)
+                        Text("\(consumer.pid)").font(.caption2).foregroundStyle(.tertiary)
+                        Spacer()
+                        ProgressView(value: min(1, consumer.percent / 100)).tint(.mint).frame(width: 54)
+                        Text(String(format: "%.0f %%", consumer.percent)).monospacedDigit().frame(width: 46, alignment: .trailing)
+                    }.font(.caption)
+                }
+                Text("Anteil der Messspanne, in der dieser Prozess GPU-Arbeit eingereicht hat. Mehrere Recheneinheiten können gleichzeitig laufen, Videodekodierung läuft an der GPU vorbei.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -239,6 +291,11 @@ struct SystemMonitorView: View {
                     }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 VStack(alignment: .leading, spacing: 12) {
+                    Text("GPU").font(.title3.bold())
+                    GPUConsumerList(consumers: reading?.gpuConsumers ?? [], limit: 10)
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text("Top-Prozesse").font(.title3.bold())
                         Spacer()
@@ -258,7 +315,8 @@ struct SystemMonitorView: View {
                     Text("¹ 100 % je CPU-Kern. Geschützte Prozesse können fehlen. RAM zeigt residenten Prozessspeicher; gemeinsame Seiten können mehrfach gezählt werden.").font(.caption2).foregroundStyle(.secondary)
                 }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 14))
             }.padding(28)
-        }.onAppear { monitor.start() }
+        }.onAppear { monitor.start(); monitor.retainDetail() }
+            .onDisappear { monitor.releaseDetail() }
             .task {
                 while !Task.isCancelled {
                     await userProcesses.refresh()
@@ -589,7 +647,10 @@ struct UserProcessManagerView: View {
                 }
                 Spacer(minLength: 0)
             }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }.onChange(of: store.scope) { _ in store.selectedID = nil }.task {
+        }.onChange(of: store.scope) { _ in store.selectedID = nil }
+        .onAppear { monitor.start(); monitor.retainDetail() }
+        .onDisappear { monitor.releaseDetail() }
+        .task {
             while !Task.isCancelled {
                 await store.refresh()
                 do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }

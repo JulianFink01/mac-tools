@@ -71,16 +71,22 @@ private struct SavedVolumeSecurity: Codable { let report: SecurityReport; let ro
         try reportEncoder.encode(SavedVolumeSecurity(report: report, root: driveFiles, date: Date())).write(to: externalCache.appendingPathComponent("last-virus-scan.plist"))
 
         mounted = [internalVolume]; volumes.refresh()
-        precondition(volumes.selectedVolume?.isMounted == false && !external.disk.acceptsFileChanges && !external.security.acceptsFileChanges)
-        volumes.startSelectedDiskScan()
+        // A disconnected drive leaves the view, and the selection returns to this
+        // Mac instead of pointing at a drive that is no longer there.
+        precondition(volumes.connectedVolumes.map(\.id) == ["internal"])
+        precondition(volumes.selectedVolume?.id == "internal" && volumes.selectedVolume?.isMounted == true)
+        precondition(volumes.profile(for: externalID).volume.isMounted == false)
+        precondition(!external.disk.acceptsFileChanges && !external.security.acceptsFileChanges)
         precondition(!external.disk.isScanning && pc.root == pcFiles)
+        print("PASS: an unplugged drive disappears from the drive list and releases the selection")
         let detached = root.appendingPathComponent("Detached")
         try fm.moveItem(at: drive, to: detached)
         volumes.stop()
 
         let restoredPC = DiskScanStore(defaults: prefs, directory: cache, eagerRestore: false)
         let restored = DiskVolumeStore(primary: restoredPC, security: pcSecurity, defaults: prefs, directory: cache, discover: { mounted }, observeMounts: false)
-        let offline = restored.selectedProfile!
+        precondition(restored.connectedVolumes.map(\.id) == ["internal"], "The drive list only shows what is connected")
+        let offline = restored.profile(for: externalID)
         precondition(offline.volume.id == externalID && !offline.volume.isMounted && offline.disk.root.path == driveFiles.path)
         precondition(offline.disk.summary?.fileCount == 1 && offline.disk.result == nil && offline.disk.cachedResultAvailable)
         precondition(offline.disk.root != fm.homeDirectoryForCurrentUser, "Disconnected drives must never silently fall back to scanning the home directory")
@@ -90,7 +96,10 @@ private struct SavedVolumeSecurity: Codable { let report: SecurityReport; let ro
         try fm.moveItem(at: detached, to: drive)
         mounted = [internalVolume, externalVolume]; restored.refresh()
         let consumer = UUID(); await offline.disk.beginInventoryAccess(consumer)
-        precondition(restored.selectedProfile === offline && offline.volume.isMounted && offline.disk.result?.files.count == 1)
+        precondition(restored.profile(for: externalID) === offline && offline.volume.isMounted && offline.disk.result?.files.count == 1)
+        precondition(restored.connectedVolumes.map(\.id).sorted() == ["internal", externalID].sorted(), "A reconnected drive appears again with its saved scan")
+        restored.selectedID = externalID
+        precondition(restored.selectedProfile === offline)
         let afterReconnectCache = try Data(contentsOf: cache.appendingPathComponent("last-disk-scan.plist"))
         precondition(afterReconnectCache == initialCache)
         offline.disk.endInventoryAccess(consumer)

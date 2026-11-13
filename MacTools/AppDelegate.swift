@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     var wallpaperPlaybackSnapshot: [(seconds: TimeInterval, rate: Float)] { wallpaperController.playbackSnapshot }
     var wallpaperPlaybackAssets: [AVAsset] { wallpaperController.playbackAssets }
+    /// Same path as display sleep and screen lock, also used by the native check.
+    func setWallpaperEnergySuspended(_ value: Bool) { wallpaperController.setEnergySuspended(value) }
+    var wallpaperPlayingDisplayCount: Int { wallpaperController.playingDisplayCount }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if shouldTerminateLoginAgentDuplicate() {
@@ -196,6 +199,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        settings.$pausesHiddenWallpaper
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.wallpaperController.refreshOcclusionState() }
+            .store(in: &cancellables)
+
         settings.$isPaused
             .dropFirst()
             .receive(on: RunLoop.main)
@@ -242,6 +251,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+
+        // A dark display and a locked screen show nothing: neither the video frames
+        // nor the live measurements behind the menu-bar widgets are read by anyone.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(displayWentDark), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(displayCameBack), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(displayWentDark), name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(displayCameBack), name: Notification.Name("com.apple.screenIsUnlocked"), object: nil)
+    }
+
+    @objc private func displayWentDark() {
+        wallpaperController.setEnergySuspended(true)
+        SystemMonitor.shared.suspend()
+    }
+
+    @objc private func displayCameBack() {
+        SystemMonitor.shared.resume()
+        // The desktop may still be covered, so the occlusion state decides.
+        wallpaperController.setEnergySuspended(false)
+        wallpaperController.refreshOcclusionState()
     }
 
     private func synchronizeScreenSaver() {
@@ -270,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
+        window.setFrameAutosaveName("MacTools.Main")
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         mainWindow = window
@@ -278,8 +311,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === mainWindow else { return }
         // A retained NSWindow keeps its hosting view alive. Remove tool pages so
-        // their onDisappear handlers release inventories and detail subscriptions.
+        // their onDisappear handlers release inventories and detail subscriptions,
+        // then drop the window itself: the hosting view holds every page's state,
+        // images and caches, which stayed in memory until the next launch.
         navigation.section = .tools
+        mainWindow = nil
+        DispatchQueue.main.async {
+            window.delegate = nil
+            window.contentView = nil
+        }
     }
 
     func presentSettings(_ category: SettingsCategory = .general) {

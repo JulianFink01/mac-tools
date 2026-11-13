@@ -101,12 +101,34 @@ final class ContainerStore: ObservableObject {
          ("Podman", ["/opt/homebrew/bin/podman", "/usr/local/bin/podman", NSHomeDirectory() + "/.local/bin/podman"])]
             .compactMap { name, paths in paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { (name, URL(fileURLWithPath: $0)) } })
     }
+    private var consumers = 0
+    /// Each refresh runs the Docker/Podman CLI, which talks to the daemon. The eight
+    /// second cadence belongs to a visible list; in the background a minute is
+    /// enough to have an up-to-date count ready when a view opens.
+    private var interval: UInt64 { consumers > 0 ? 8_000_000_000 : 60_000_000_000 }
+
+    /// Balanced by `releaseFastRefresh`, called by the views showing containers.
+    func retainFastRefresh() {
+        consumers += 1
+        if consumers == 1, task != nil { schedule() }
+    }
+    func releaseFastRefresh() {
+        guard consumers > 0 else { return }
+        consumers -= 1
+    }
+
     func start() {
         guard task == nil else { return }
+        schedule()
+    }
+    private func schedule() {
+        task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
-                do { try await Task.sleep(nanoseconds: 8_000_000_000) } catch { return }
+                guard let self else { return }
+                await self.refresh()
+                let interval = self.interval
+                do { try await Task.sleep(nanoseconds: interval) } catch { return }
             }
         }
     }

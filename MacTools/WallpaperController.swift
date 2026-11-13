@@ -20,17 +20,134 @@ final class WallpaperController {
     private var currentVideoURL: URL?
     private var configureTask: Task<Void, Never>?
     private var healthCheckTimer: Timer?
+    private var occlusionObserver: NSObjectProtocol?
+    private var releaseTasks: [UInt32: Task<Void, Never>] = [:]
+    private var preparedAsset: AVAsset?
+    /// Decoding frames nobody can see was the app's largest constant GPU and power
+    /// draw. Playback stops while every desktop window is covered, the display
+    /// sleeps or the screen is locked, and picks up again on its own.
+    private var energySuspended = false
 
     init(settings: SettingsStore, library: VideoLibraryStore) {
         self.settings = settings
         self.library = library
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? WallpaperWindow else { return }
+            Task { @MainActor in self?.handleOcclusionChange(of: window) }
+        }
     }
 
-    /// Read-only playback telemetry also supports native pause/resume regression checks.
+    deinit {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+    }
+
+    /// Set by display sleep and screen lock, independent of the user's setting.
+    func setEnergySuspended(_ value: Bool) {
+        guard energySuspended != value else { return }
+        energySuspended = value
+        applyPlaybackState()
+    }
+
+    var isEnergySuspended: Bool { energySuspended }
+
+    private func handleOcclusionChange(of window: WallpaperWindow) {
+        guard entries.values.contains(where: { $0.window === window }) else { return }
+        applyPlaybackState()
+    }
+
+    /// Applies the current state without waiting for the next occlusion change.
+    func refreshOcclusionState() { applyPlaybackState() }
+
+    /// A desktop window reports itself occluded as soon as other windows cover it
+    /// completely. Each display decodes the video in its own player, so a covered
+    /// desktop would pay the full price for frames nobody sees.
+    private func shouldPlay(_ entry: WallpaperEntry) -> Bool {
+        guard !settings.isPaused, !energySuspended else { return false }
+        guard settings.pausesHiddenWallpaper else { return true }
+        return entry.window.occlusionState.contains(.visible)
+    }
+
+    private func applyPlaybackState() {
+        var running = false
+        for (id, entry) in entries {
+            if shouldPlay(entry) {
+                releaseTasks.removeValue(forKey: id)?.cancel()
+                if entry.player == nil { restorePlayer(for: id) }
+                guard let player = entries[id]?.player else { continue }
+                running = true
+                if player.timeControlStatus == .paused {
+                    player.play()
+                    entries[id]?.lastProgressAt = Date()
+                }
+            } else if let player = entry.player {
+                if player.timeControlStatus != .paused { player.pause() }
+                scheduleRelease(for: id)
+            }
+        }
+        if running { startHealthCheck() } else { stopHealthCheck() }
+    }
+
+    /// A covered desktop keeps its paused decoder for a short while, because
+    /// switching between windows is constant. Staying covered releases the player:
+    /// its pool of decoded frames is the largest block of memory this app holds, and
+    /// a 4K frame alone takes several megabytes.
+    private func scheduleRelease(for id: UInt32) {
+        guard entries[id]?.player != nil, releaseTasks[id] == nil else { return }
+        releaseTasks[id] = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+            guard let self else { return }
+            self.releaseTasks[id] = nil
+            guard let entry = self.entries[id], entry.player != nil, !self.shouldPlay(entry) else { return }
+            self.releasePlayer(for: id)
+        }
+    }
+
+    private func releasePlayer(for id: UInt32) {
+        guard var entry = entries[id], let player = entry.player else { return }
+        if let observer = entry.timeObserver { player.removeTimeObserver(observer) }
+        entry.timeObserver = nil
+        player.pause()
+        entry.playerView.setPlayer(nil)
+        entry.looper = nil
+        entry.player = nil
+        // The playback position survives so the desktop continues where it stopped.
+        entries[id] = entry
+    }
+
+    private func restorePlayer(for id: UInt32) {
+        guard var entry = entries[id], entry.player == nil else { return }
+        guard let asset = preparedAsset else {
+            if let url = currentVideoURL {
+                currentVideoURL = nil
+                configurePlayers(with: url)
+            }
+            return
+        }
+        let resumeAt = entry.lastObservedTime
+        replacePlayer(in: &entry, with: asset)
+        entry.lastObservedTime = resumeAt
+        entries[id] = entry
+        if resumeAt > 0 {
+            entry.player?.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                               toleranceBefore: .positiveInfinity, toleranceAfter: .positiveInfinity)
+        }
+    }
+
+    /// How many displays currently decode the video. Also used by the native checks.
+    var playingDisplayCount: Int {
+        entries.values.filter { ($0.player?.rate ?? 0) > 0 }.count
+    }
+
+    /// Read-only playback telemetry also supports native pause/resume regression
+    /// checks. The position comes from the player itself, so it does not depend on
+    /// how often the progress observer runs.
     var playbackSnapshot: [(seconds: TimeInterval, rate: Float)] {
         entries.values.compactMap { entry in
             guard let player = entry.player else { return nil }
-            return (entry.lastObservedTime, player.rate)
+            let seconds = player.currentTime().seconds
+            return (seconds.isFinite ? seconds : entry.lastObservedTime, player.rate)
         }
     }
 
@@ -73,25 +190,22 @@ final class WallpaperController {
     }
 
     func resumePlayback() {
-        guard !settings.isPaused else { return }
+        guard !settings.isPaused, !energySuspended else { return }
 
         if entries.isEmpty {
             applyCurrentVideo()
         }
 
-        for id in Array(entries.keys) {
-            guard var entry = entries[id] else { continue }
-            entry.player?.play()
-            entry.lastProgressAt = Date()
-            entries[id] = entry
-        }
         refreshWallpaperWindows()
-        startHealthCheck()
+        applyPlaybackState()
     }
 
     func closeAllWindows() {
         configureTask?.cancel()
         configureTask = nil
+        releaseTasks.values.forEach { $0.cancel() }
+        releaseTasks.removeAll()
+        preparedAsset = nil
         entries.values.forEach { entry in
             if let player = entry.player, let observer = entry.timeObserver { player.removeTimeObserver(observer) }
             entry.player?.pause()
@@ -152,13 +266,8 @@ final class WallpaperController {
         if currentVideoURL == standardizedURL,
            entries.values.allSatisfy({ $0.player != nil }) {
             refreshWallpaperWindows()
-            entries.values.forEach { entry in
-                entry.playerView.setAspectMode(settings.aspectMode)
-                if !settings.isPaused {
-                    entry.player?.play()
-                }
-            }
-            startHealthCheck()
+            entries.values.forEach { $0.playerView.setAspectMode(settings.aspectMode) }
+            applyPlaybackState()
             return
         }
 
@@ -168,13 +277,14 @@ final class WallpaperController {
             do {
                 let asset = try await Self.videoOnlyAsset(at: standardizedURL)
                 guard let self, !Task.isCancelled, self.currentVideoURL == standardizedURL else { return }
+                self.preparedAsset = asset
                 for id in Array(self.entries.keys) {
                     guard var entry = self.entries[id] else { continue }
                     self.replacePlayer(in: &entry, with: asset)
                     self.entries[id] = entry
                 }
                 self.refreshWallpaperWindows()
-                self.startHealthCheck()
+                self.applyPlaybackState()
             } catch {
                 guard let self, !Task.isCancelled, self.currentVideoURL == standardizedURL else { return }
                 self.library.errorMessage = "Live-Hintergrund konnte nicht gestartet werden: \(error.localizedDescription)"
@@ -231,7 +341,7 @@ final class WallpaperController {
         entry.lastObservedTime = 0
         entry.lastProgressAt = Date()
         let screenID = entry.screenID
-        entry.timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self, weak player] time in
+        entry.timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 600), queue: .main) { [weak self, weak player] time in
             Task { @MainActor in
                 guard let self, let player, var current = self.entries[screenID], current.player === player,
                       time.seconds.isFinite else { return }
@@ -243,15 +353,17 @@ final class WallpaperController {
             }
         }
 
-        if !settings.isPaused {
+        if shouldPlay(entry) {
             player.play()
         }
     }
 
     private func startHealthCheck() {
-        guard healthCheckTimer == nil, !settings.isPaused else { return }
+        guard healthCheckTimer == nil, !settings.isPaused, !energySuspended else { return }
 
-        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 4.7, repeats: true) { [weak self] _ in
+        // Every tick re-orders the desktop windows, so it stays as rare as the
+        // recovery it exists for allows.
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.healthCheckPlayback()
             }
@@ -265,6 +377,7 @@ final class WallpaperController {
 
     private func healthCheckPlayback() {
         guard !settings.isPaused,
+              !energySuspended,
               !entries.isEmpty,
               let playbackURL = currentVideoURL else {
             return
@@ -273,8 +386,10 @@ final class WallpaperController {
         var shouldRebuildPlayback = false
 
         for id in Array(entries.keys) {
-            guard var entry = entries[id],
-                  let player = entry.player else {
+            guard let candidate = entries[id] else { continue }
+            // A display whose desktop is covered has deliberately no player.
+            guard shouldPlay(candidate) else { continue }
+            guard let entry = entries[id], let player = entry.player else {
                 shouldRebuildPlayback = true
                 continue
             }
@@ -285,7 +400,7 @@ final class WallpaperController {
             }
 
             if player.timeControlStatus == .paused {
-                player.play()
+                if shouldPlay(entry) { player.play() } else { continue }
             }
 
             if player.rate > 0, Date().timeIntervalSince(entry.lastProgressAt) >= 15 {

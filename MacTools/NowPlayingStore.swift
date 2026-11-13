@@ -72,6 +72,7 @@ final class NowPlayingStore: ObservableObject {
     private let readSources: (() -> [AudioPlaybackSource])?
     private var cachedSources: [AudioPlaybackSource] = []
     private var sampling = false
+    private var idleTicks = 0
 
     init(readSources: (() -> [AudioPlaybackSource])? = nil) { self.readSources = readSources }
 
@@ -111,6 +112,14 @@ final class NowPlayingStore: ObservableObject {
     }
     private func pollSources() {
         guard !sampling else { return }
+        // Each poll asks coreaudiod for its process list. While nothing plays, the
+        // player notifications arrive anyway, so the polling backs off.
+        if playing.isEmpty, !metadata.values.contains(where: { $0.playing == true }) {
+            idleTicks += 1
+            guard idleTicks % 3 == 1 else { return }
+        } else {
+            idleTicks = 0
+        }
         sampling = true
         Task {
             let sources = await Task.detached(priority: .utility) { SystemAudioPlayback.sources() }.value
