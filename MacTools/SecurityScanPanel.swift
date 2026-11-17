@@ -79,10 +79,10 @@ struct SecurityScanPanel: View {
             }.padding(20).background(Color(nsColor: .controlBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 16))
 
             if let issue = security.findingCheckIssue { Label(issue, systemImage: "info.circle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
-            Text("Folgescans prüfen neue und geänderte Dateien. Nach Änderungen an Engine oder Virensignaturen wird erneut vollständig geprüft.").font(.caption).foregroundStyle(.secondary)
+            Text("Folgescans prüfen neue und geänderte Dateien mit den aktuellen Signaturen. Unveränderte Dateien behalten das Ergebnis ihrer letzten Inhaltsprüfung.").font(.caption).foregroundStyle(.secondary)
             if let report = security.report {
                 HStack(spacing: 12) {
-                    metric("Dateien im letzten Scan", value: (report.scannedFiles + (report.reusedFiles ?? 0) + (report.unchangedFiles ?? 0)).formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
+                    metric("Dateien neu geprüft", value: report.scannedFiles.formatted(), icon: "doc.text.magnifyingglass", color: .cyan)
                     metric("Aktuelle Funde", value: security.isCheckingFindings ? "…" : threatCount.formatted(), icon: "exclamationmark.shield", color: threatCount > 0 ? .red : .cyan)
                     metric("Testdateien", value: findings.filter(\.isTest).count.formatted(), icon: "checkmark.seal", color: .blue)
                 }

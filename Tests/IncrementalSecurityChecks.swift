@@ -42,12 +42,30 @@ import Darwin
         let db = directory.appendingPathComponent("fixture.hdb")
         try Data("signatures-v1".utf8).write(to: db)
         let databaseArguments = ["--database=\(db.path)"]
-        let newSignatures = try scan(executable, cache: verdicts, arguments: databaseArguments)
-        let sameSignatures = try scan(executable, cache: verdicts, arguments: databaseArguments)
-        precondition(newSignatures.scannedFiles == 3 && sameSignatures.scannedFiles == 0)
+        let legacyVerdicts = directory.appendingPathComponent("legacy-verdicts.sqlite")
+        do {
+            let context = SecurityVerdictCache.legacyContext(executable: executable, arguments: databaseArguments)
+            let cache = SecurityVerdictCache(url: legacyVerdicts, context: context)!
+            for file in try DiskScanner.scan(root: root, findDuplicates: false).files {
+                var info = stat()
+                precondition(lstat(file.path, &info) == 0)
+                cache.prepare(path: file.path, info: info)
+                cache.record(path: file.path, signature: file.url.lastPathComponent == "test.txt" ? "Eicar-Test-Signature" : "")
+            }
+        }
+        SecurityVerdictCache.rememberLegacyContext(executable: executable, arguments: databaseArguments)
         try Data("signatures-v2".utf8).write(to: db)
+        let migrated = try scan(executable, cache: legacyVerdicts, arguments: databaseArguments)
+        precondition(migrated.scannedFiles == 0 && migrated.unchangedFiles == 3 && migrated.items.first?.isTest == true)
+        let newPolicy = try scan(executable, cache: verdicts, arguments: databaseArguments)
+        precondition(newPolicy.scannedFiles == 3)
+        try Data("signatures-v3".utf8).write(to: db)
+        try Data("content-d".utf8).write(to: a)
         let changedSignatures = try scan(executable, cache: verdicts, arguments: databaseArguments)
-        precondition(changedSignatures.scannedFiles == 3)
+        precondition(changedSignatures.scannedFiles == 1 && changedSignatures.unchangedFiles == 2)
+        let newEngine = try script("replacement-engine", body: "while IFS= read -r path; do printf '%s: OK\\n' \"$path\"; done < \"$list\"\nprintf 'Scanned files: 3\\n'\n")
+        let changedEngine = try scan(newEngine, cache: legacyVerdicts, arguments: databaseArguments)
+        precondition(changedEngine.scannedFiles == 3 && changedEngine.unchangedFiles == 0)
         let failed = try script("failed", body: "while IFS= read -r path; do printf '%s: unreadable ERROR\\n' \"$path\"; done < \"$list\"\nexit 2\n")
         let failure = try scan(failed, cache: verdicts), retry = try scan(failed, cache: verdicts)
         precondition(failure.hasCriticalIssue && retry.unchangedFiles == 0, "Failed attempts must never become cached clean results")
@@ -63,7 +81,7 @@ import Darwin
         precondition(!security.isCheckingFindings && security.currentFindings?.items.isEmpty == true)
         let saved = try PropertyListDecoder().decode(SecurityReport.self, from: PropertyListEncoder().encode(warm))
         precondition(saved.unchangedFiles == 3 && saved.items.first?.isTest == true)
-        print("PASS: persisted verdicts; unchanged 3→0 engine reads; same-size/restored-mtime mutation; additions/deletions; signature invalidation; retained findings; failures/cancellation/in-scan changes; idle findings settled")
+        print("PASS: persisted verdicts; unchanged 3→0 engine reads; additions/deletions; legacy cache and findings carried across signature refresh; changed engine invalidates; failures/cancellation/in-scan changes")
 
         if ProcessInfo.processInfo.environment["MACTOOLS_REAL_ENGINE"] == "1" {
             let actualRoot = directory.appendingPathComponent("Actual")

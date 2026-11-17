@@ -20,16 +20,15 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
     @Published var enabled = UserDefaults.standard.object(forKey: "automaticScans") as? Bool ?? true {
         didSet { UserDefaults.standard.set(enabled, forKey: "automaticScans"); if enabled { requestNotifications() }; checkSchedule() }
     }
-    @Published var intervalHours = UserDefaults.standard.object(forKey: "scanIntervalHours") as? Int ?? 24 {
-        didSet { UserDefaults.standard.set(intervalHours, forKey: "scanIntervalHours"); checkSchedule() }
-    }
+    private static let interval: TimeInterval = 7 * 24 * 3600
     @Published private(set) var status = "Automatische Scans werden vorbereitet."
     @Published private(set) var warnings: [ScanWarning] = []
     @Published private(set) var notificationStatus = "Mitteilungsberechtigung wird geprüft."
     private var timer: Timer?
     private var subscriptions = Set<AnyCancellable>()
-    private var pendingVirusScan = false
-    private var automaticVirusScanActive = false
+    private enum Phase { case disk, preparingVirusScan, virus }
+    private var phase: Phase?
+    private var isAutomaticRun = false
     private var pipelineGeneration = UUID()
     private var lastRun = UserDefaults.standard.object(forKey: "automaticScanLastRun") as? Date
     private let warningsURL = VideoLibraryStore.appSupportDirectory.appendingPathComponent("scan-warnings.json")
@@ -44,32 +43,28 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
     func start() {
         guard timer == nil else { return }
         DiskScanStore.shared.$result.compactMap { $0 }.sink { [weak self] result in
-            guard DiskScanStore.shared.isScanning, !DiskScanStore.shared.resultIsProvisional else { return }
-            self?.inspect(result)
-            if self?.pendingVirusScan == true {
-                self?.pendingVirusScan = false
-                self?.startVirusScan(root: result.root, inventory: result)
-            }
+            guard let self, DiskScanStore.shared.isScanning, !DiskScanStore.shared.resultIsProvisional else { return }
+            self.inspect(result)
+            if self.phase == .disk { self.startVirusScan(with: result) }
         }.store(in: &subscriptions)
         DiskScanStore.shared.$isScanning.dropFirst().sink { [weak self] scanning in
-            guard !scanning, let self, self.pendingVirusScan else { return }
-            self.pendingVirusScan = false
-            self.showNextScan()
+            guard !scanning, self?.phase == .disk else { return }
+            self?.finishCombined()
         }.store(in: &subscriptions)
         DiskScanStore.shared.$status.dropFirst().sink { [weak self] status in
             if status.hasPrefix("Scan fehlgeschlagen:") { self?.warn("Disk-Scan fehlgeschlagen", detail: status) }
         }.store(in: &subscriptions)
         SecurityScanStore.shared.$report.compactMap { $0 }.sink { [weak self] report in
-            guard SecurityScanStore.shared.isScanning else { return }
-            self?.automaticVirusScanActive = false
-            self?.showNextScan()
-            guard !report.cancelled else { return }
+            guard SecurityScanStore.shared.isScanning, !report.cancelled else { return }
             if report.threatCount > 0 || (report.exitCode != 0 && report.exitCode != 1) {
                 self?.warn(report.title, detail: report.explanation + "\n" + report.items.filter { !$0.isLimit && !$0.isTest }.prefix(10).map { $0.path }.joined(separator: "\n"))
             }
         }.store(in: &subscriptions)
+        SecurityScanStore.shared.$isScanning.dropFirst().sink { [weak self] scanning in
+            guard !scanning, self?.phase == .virus else { return }
+            self?.finishCombined()
+        }.store(in: &subscriptions)
         SecurityScanStore.shared.$issue.compactMap { $0 }.sink { [weak self] message in
-            self?.automaticVirusScanActive = false
             self?.warn("Virenschutz benötigt Aufmerksamkeit", detail: message)
         }.store(in: &subscriptions)
         UNUserNotificationCenter.current().delegate = self
@@ -92,76 +87,95 @@ final class AutomaticScans: NSObject, ObservableObject, UNUserNotificationCenter
 
     func checkSchedule() {
         guard enabled else { status = "Automatische Scans deaktiviert."; return }
-        if automaticVirusScanActive && MonitorBattery.read()?.isOnBattery == true {
-            automaticVirusScanActive = false
-            SecurityScanStore.shared.cancel()
+        if isAutomaticRun && MonitorBattery.read()?.isOnBattery == true {
+            cancelCombined()
             lastRun = nil
             UserDefaults.standard.removeObject(forKey: "automaticScanLastRun")
-            status = "Automatische Virenprüfung pausiert bis Netzstrom verfügbar ist."
+            status = "Automatischer Gesamtscan pausiert bis Netzstrom verfügbar ist."
             return
         }
-        let interval = TimeInterval(max(1, intervalHours) * 3600)
-        if let lastRun, Date().timeIntervalSince(lastRun) < interval {
-            status = "Nächster automatischer Scan: \(lastRun.addingTimeInterval(interval).formatted(date: .abbreviated, time: .shortened))"
-            return
-        }
-        guard !DiskScanStore.shared.isScanning, !DiskScanStore.shared.isRestoring, !DiskScanStore.shared.isSaving, !DiskScanStore.shared.isApplyingRemovals, !SecurityScanStore.shared.isScanning,
-              !SecurityScanStore.shared.isUpdating, !FileActions.shared.isCleaning else {
-            status = "Automatischer Scan wartet auf den laufenden Vorgang."
+        guard phase == nil else { return }
+        if let lastRun, Date().timeIntervalSince(lastRun) < Self.interval {
+            showNextScan()
             return
         }
         if MonitorBattery.read()?.isOnBattery == true {
-            status = "Automatische Virenprüfung wartet auf Netzstrom."
+            status = "Automatischer Gesamtscan wartet auf Netzstrom."
             return
         }
-        lastRun = Date()
-        UserDefaults.standard.set(lastRun, forKey: "automaticScanLastRun")
-        status = "Automatische Virenprüfung läuft: \(DiskScanStore.shared.root.path)"
-        pipelineGeneration = UUID()
-        pendingVirusScan = false
-        automaticVirusScanActive = true
-        startVirusScan(root: DiskScanStore.shared.root)
+        let startedAt = Date()
+        guard startCombined(automatic: true) else {
+            status = "Automatischer Gesamtscan wartet auf den laufenden Vorgang."
+            return
+        }
+        lastRun = startedAt
+        UserDefaults.standard.set(startedAt, forKey: "automaticScanLastRun")
     }
 
     func runNow() {
-        guard !DiskScanStore.shared.isScanning, !DiskScanStore.shared.isSaving, !DiskScanStore.shared.isRestoring,
-              !SecurityScanStore.shared.isScanning, !SecurityScanStore.shared.isUpdating else { return }
-        pipelineGeneration = UUID(); pendingVirusScan = true
-        status = "Gesamtscan · Speicher, Duplikate und Virenprüfung"
+        _ = startCombined(automatic: false)
+    }
+
+    private func startCombined(automatic: Bool) -> Bool {
+        guard phase == nil, !DiskScanStore.shared.isScanning, !DiskScanStore.shared.isSaving,
+              !DiskScanStore.shared.isRestoring, !DiskScanStore.shared.isApplyingRemovals,
+              !SecurityScanStore.shared.isScanning, !SecurityScanStore.shared.isUpdating,
+              !FileActions.shared.isCleaning else { return false }
         DiskScanStore.shared.findDuplicates = true
         DiskScanStore.shared.start()
+        guard DiskScanStore.shared.isScanning else { return false }
+        pipelineGeneration = UUID()
+        phase = .disk
+        isAutomaticRun = automatic
+        status = automatic ? "Automatischer Gesamtscan · Speicher und Duplikate" : "Gesamtscan · Speicher und Duplikate"
+        return true
     }
+
     func cancelCombined() {
-        pipelineGeneration = UUID(); pendingVirusScan = false
+        pipelineGeneration = UUID()
+        finishCombined()
         if DiskScanStore.shared.isScanning { DiskScanStore.shared.cancel() }
         if SecurityScanStore.shared.isScanning || SecurityScanStore.shared.isUpdating { SecurityScanStore.shared.cancel() }
     }
 
+    private func finishCombined() {
+        phase = nil
+        isAutomaticRun = false
+        showNextScan()
+    }
+
     private func showNextScan() {
-        if let lastRun {
-            status = "Nächster automatischer Scan: \(lastRun.addingTimeInterval(TimeInterval(max(1, intervalHours) * 3600)).formatted(date: .abbreviated, time: .shortened))"
+        if !enabled {
+            status = "Automatische Scans deaktiviert."
+        } else if let lastRun {
+            status = "Nächster automatischer Gesamtscan: \(lastRun.addingTimeInterval(Self.interval).formatted(date: .abbreviated, time: .shortened))"
+        } else {
+            status = "Der erste automatische Gesamtscan steht aus."
         }
     }
 
-    private func startVirusScan(root: URL, inventory: DiskScanResult? = nil) {
-        status = "Automatische Virenprüfung läuft …"
+    private func startVirusScan(with inventory: DiskScanResult) {
+        phase = .preparingVirusScan
+        status = isAutomaticRun ? "Automatischer Gesamtscan · Virenprüfung" : "Gesamtscan · Virenprüfung"
         SecurityScanStore.shared.refresh()
         guard SecurityScanStore.shared.executable != nil else {
-            automaticVirusScanActive = false
             warn("Virenschutz nicht verfügbar", detail: "Die integrierte ClamAV-Engine fehlt im Anwendungspaket.")
-            showNextScan()
+            finishCombined()
             return
         }
         let generation = pipelineGeneration
         Task {
-            if await SecurityScanStore.shared.updateSignaturesIfNeeded() {
-                guard pipelineGeneration == generation else { return }
-                SecurityScanStore.shared.start(root: root, inventory: inventory, inventoryIsCurrent: inventory != nil)
-            } else {
-                automaticVirusScanActive = false
+            guard pipelineGeneration == generation else { return }
+            let ready = await SecurityScanStore.shared.updateSignaturesIfNeeded()
+            guard pipelineGeneration == generation else { return }
+            guard ready else {
                 warn("Virenschutz benötigt Aufmerksamkeit", detail: SecurityScanStore.shared.status)
-                showNextScan()
+                finishCombined()
+                return
             }
+            SecurityScanStore.shared.start(root: inventory.root, inventory: inventory, inventoryIsCurrent: true)
+            if SecurityScanStore.shared.isScanning { phase = .virus }
+            else { finishCombined() }
         }
     }
 

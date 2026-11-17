@@ -146,13 +146,8 @@ struct SettingsView: View {
 
     private var diskSettings: some View {
         VStack(spacing: 18) {
-            ToolSettingsCard(title: "Automatische Prüfungen", description: "Die automatische Virenprüfung erfasst Dateimetadaten und prüft nur neue oder geänderte Inhalte. Der manuelle Gesamtscan enthält zusätzlich Speicher- und Duplikatanalyse.") {
-                Toggle("Automatische Scans aktivieren", isOn: $automatic.enabled)
-                Picker("Wie häufig?", selection: $automatic.intervalHours) {
-                    Text("Stündlich").tag(1)
-                    Text("Alle 6 Stunden").tag(6)
-                    Text("Täglich").tag(24)
-                }.frame(maxWidth: 340, alignment: .leading).disabled(!automatic.enabled)
+            ToolSettingsCard(title: "Automatische Prüfungen", description: "Speicher, Duplikate und Virenprüfung laufen gemeinsam alle sieben Tage. Folgescans gleichen Dateimetadaten ab und übernehmen gespeicherte Prüfergebnisse für unveränderte Dateien.") {
+                Toggle("Wöchentlichen Gesamtscan aktivieren", isOn: $automatic.enabled)
                 Text(automatic.status).font(.callout).foregroundStyle(.secondary)
                 Text("Automatische Prüfungen laufen nur bei Netzstrom, wenn MacTools geöffnet und dein Mac wach ist.").font(.caption).foregroundStyle(.secondary)
             }

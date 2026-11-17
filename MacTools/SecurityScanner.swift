@@ -81,7 +81,7 @@ struct SecurityReport: Codable, Sendable {
         if threatCount > 0 { return "Öffne diese Dateien vorerst nicht. Prüfe ihren Ursprung. Bei Unsicherheit kannst du sie in den Papierkorb verschieben." }
         if items.contains(where: \.isTest) { return "Die harmlose EICAR-Testdatei wurde erkannt. Sie dient zur Prüfung des Virenschutzes und ist kein echter Virus." }
         if !(removedPaths ?? []).isEmpty && items.isEmpty { return "Die ausgewählten Dateien wurden aus dem Scan-Ergebnis entfernt. Die übrigen Dateien benötigen dafür keinen neuen Scan." }
-        if scannedFiles == 0 && (unchangedFiles ?? 0) > 0 { return "Seit der letzten Prüfung unverändert. Die gespeicherten Ergebnisse gelten für dieselbe Engine und dieselben Virensignaturen." }
+        if scannedFiles == 0 && (unchangedFiles ?? 0) > 0 { return "Für unveränderte Dateien wurden die Ergebnisse der letzten Inhaltsprüfung übernommen." }
         if scannedFiles == 0 { return "Im gewählten Bereich wurden keine Dateien geprüft. Wähle einen anderen Ordner oder prüfe die Zugriffsrechte." }
         return "In diesem Scan wurde keine bekannte Bedrohung gefunden. Eine Prüfung kann neue oder unbekannte Schadsoftware übersehen."
     }
@@ -114,9 +114,7 @@ final class ClamAVRunner: @unchecked Sendable {
     /// Page opening checks metadata/cache only. It must never decompress historical archives.
     func inspectFindings(executable: URL?, paths: [String], verdictURL: URL,
                          extraArguments: [String] = []) throws -> CurrentSecurityFindings {
-        let cache = executable.flatMap { SecurityVerdictCache(url: verdictURL,
-            context: SecurityVerdictCache.context(executable: $0, arguments: extraArguments),
-            reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments), readOnly: true) }
+        let cache = executable.flatMap { SecurityVerdictCache(url: verdictURL, executable: $0, arguments: extraArguments, readOnly: true) }
         var items: [SecurityFinding] = [], pending: [String] = []
         for path in Set(paths).sorted() {
             if isCancelled { throw CancellationError() }; try Task.checkCancellation()
@@ -160,9 +158,7 @@ final class ClamAVRunner: @unchecked Sendable {
         pending += files.filter { $0.path.contains("\n") }.map(\.path)
         guard !safe.isEmpty else { return CurrentSecurityFindings(items: [], pendingPaths: pending, checkedAt: Date()) }
         try Data((safe.map(\.path).joined(separator: "\n") + "\n").utf8).write(to: list)
-        let cache = verdictURL.flatMap { SecurityVerdictCache(url: $0,
-            context: SecurityVerdictCache.context(executable: executable, arguments: extraArguments),
-            reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments)) }
+        let cache = verdictURL.flatMap { SecurityVerdictCache(url: $0, executable: executable, arguments: extraArguments) }
         for file in safe { var info = stat(); if lstat(file.path, &info) == 0, SecurityVerdictCache.stamp(info) == stamps[file.path] { cache?.prepare(path: file.path, info: info) } }
         progress(0, safe.count)
         let result = try runProcess(executable: executable, arguments: Self.scanArguments + ["--verbose", "--file-list=\(list.path)"] + extraArguments,
@@ -295,7 +291,7 @@ final class ClamAVRunner: @unchecked Sendable {
                       fileProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) throws -> SecurityReport {
         let list = FileManager.default.temporaryDirectory.appendingPathComponent("MacTools-virus-\(UUID()).txt")
         defer { try? FileManager.default.removeItem(at: list) }
-        let verdicts = verdictURL.flatMap { SecurityVerdictCache(url: $0, context: SecurityVerdictCache.context(executable: executable, arguments: extraArguments), reusable: SecurityVerdictCache.signaturesAreFresh(arguments: extraArguments)) }
+        let verdicts = verdictURL.flatMap { SecurityVerdictCache(url: $0, executable: executable, arguments: extraArguments) }
         let proof = ScanFingerprintProof(url: proofURL)
         var reusedPaths: Set<String> = []
         var reusedGroups: [(original: DiskFile, digest: String, copies: [DiskFile])] = []
@@ -329,7 +325,7 @@ final class ClamAVRunner: @unchecked Sendable {
             for (index, file) in inventory.files.reversed().enumerated() {
                 if index % 4096 == 0 {
                     lock.lock(); let stopped = cancelled; lock.unlock(); if stopped { throw CancellationError() }
-                    progress("Virenprüfung vorbereiten · \(index.formatted()) / \(inventory.files.count.formatted()) Dateien")
+                    progress("Dateistand für Virenprüfung abgleichen · \(index.formatted()) / \(inventory.files.count.formatted()) Dateien")
                     fileProgress(index, inventory.files.count)
                 }
                 if reusedPaths.contains(file.path) { continue }
@@ -559,9 +555,7 @@ final class SecurityScanStore: ObservableObject {
         let generation = UUID(); findingGeneration = generation
         let worker = ClamAVRunner(); findingRunner = worker
         let executable = self.executable, verdictURL = self.verdictURL, timeout = findingTimeLimit
-        let arguments = ["--database=\(Self.databaseDirectory.path)"] + (executable.map {
-            ["--cvdcertsdir=\($0.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("etc/certs").path)"]
-        } ?? [])
+        let arguments = executable.map(Self.databaseArguments) ?? []
         findingProgress = verifyContents ? "Fundstellen prüfen · 0 / \(paths.count)" : "Fundstatus aktualisieren …"
         isCheckingFindings = true
         let task = Task.detached(priority: .utility) {
@@ -645,8 +639,13 @@ final class SecurityScanStore: ObservableObject {
 
     func refresh() {
         executable = executableOverride ?? ClamAVRunner.executable()
-        signatureStatus = hasSignatures ? "Lokale Virensignaturen verfügbar. Vor automatischen Scans wird täglich aktualisiert."
+        signatureStatus = hasSignatures ? "Lokale Virensignaturen verfügbar. Vor dem Scan wird bei Bedarf aktualisiert."
             : "Erster Start: Virensignaturen werden per Internet geladen."
+    }
+
+    nonisolated private static func databaseArguments(for executable: URL) -> [String] {
+        let certificates = executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("etc/certs")
+        return ["--database=\(databaseDirectory.path)", "--cvdcertsdir=\(certificates.path)"]
     }
 
     private var hasSignatures: Bool {
@@ -654,6 +653,9 @@ final class SecurityScanStore: ObservableObject {
     }
 
     func updateSignaturesIfNeeded() async -> Bool {
+        if let executable {
+            SecurityVerdictCache.rememberLegacyContext(executable: executable, arguments: Self.databaseArguments(for: executable))
+        }
         do {
             if let baseline = Bundle.main.resourceURL?.appendingPathComponent("ClamAV/database") {
                 let database = Self.databaseDirectory
@@ -680,6 +682,7 @@ final class SecurityScanStore: ObservableObject {
     @discardableResult
     func updateSignatures() async -> Bool {
         guard !isScanning, !isUpdating, let executable else { return false }
+        SecurityVerdictCache.rememberLegacyContext(executable: executable, arguments: Self.databaseArguments(for: executable))
         isUpdating = true
         issue = nil
         cancelFindingCheck(message: nil)
@@ -734,7 +737,7 @@ final class SecurityScanStore: ObservableObject {
         Task {
             do {
                 let value = try await Task.detached(priority: .utility) {
-                    let arguments = ["--database=\(Self.databaseDirectory.path)", "--cvdcertsdir=\(executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("etc/certs").path)"]
+                    let arguments = Self.databaseArguments(for: executable)
                     let currentInventory: DiskScanResult
                     if inventoryIsCurrent, let inventory { currentInventory = inventory }
                     else {
@@ -792,8 +795,20 @@ final class SecurityVerdictCache: @unchecked Sendable {
     static func stamp(_ info: stat) -> String {
         "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec):\(info.st_flags)"
     }
+    private static func digest(_ parts: [String]) -> String {
+        SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func identity(_ url: URL) -> String {
+        var info = stat()
+        return url.path + ":" + (lstat(url.path, &info) == 0 ? stamp(info) : "missing")
+    }
+
     static func context(executable: URL, arguments: [String]) -> String {
-        var parts = ["verdict-v1"] + ClamAVRunner.scanArguments + arguments
+        digest(["verdict-delta-v1"] + ClamAVRunner.scanArguments + arguments + [identity(executable)])
+    }
+
+    static func legacyContext(executable: URL, arguments: [String]) -> String {
         var urls = [executable]
         for argument in arguments where argument.hasPrefix("--database=") {
             let url = URL(fileURLWithPath: String(argument.dropFirst("--database=".count)))
@@ -803,11 +818,16 @@ final class SecurityVerdictCache: @unchecked Sendable {
                     .filter { ["cvd", "cld", "cud", "hdb", "ndb", "ldb", "ign", "ign2", "cbc", "yar", "yara"].contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
             } else { urls.append(url) }
         }
-        for url in urls {
-            var info = stat()
-            parts.append(url.path + ":" + (lstat(url.path, &info) == 0 ? stamp(info) : "missing"))
+        return digest(["verdict-v1"] + ClamAVRunner.scanArguments + arguments + urls.map(identity))
+    }
+
+    // Old verdicts were keyed to exact signature files. Remember that key
+    // before the first refresh, without rewriting the multi-million-row cache.
+    static func rememberLegacyContext(executable: URL, arguments: [String]) {
+        let key = "legacyVirusVerdictContext." + context(executable: executable, arguments: arguments)
+        if UserDefaults.standard.string(forKey: key) == nil {
+            UserDefaults.standard.set(legacyContext(executable: executable, arguments: arguments), forKey: key)
         }
-        return SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
     }
     static func signaturesAreFresh(arguments: [String]) -> Bool {
         var newest: Double?
@@ -825,11 +845,21 @@ final class SecurityVerdictCache: @unchecked Sendable {
         // ClamAV applies database age to the latest update; main.cvd is intentionally older.
         return newest.map { Date().timeIntervalSince1970 - $0 <= 7 * 86400 } ?? true
     }
-    init?(url: URL, context: String, reusable: Bool = true, readOnly: Bool = false) {
-        self.context = context; self.reusable = reusable
+    convenience init?(url: URL, executable: URL, arguments: [String], readOnly: Bool = false) {
+        let context = Self.context(executable: executable, arguments: arguments)
+        let legacy = UserDefaults.standard.string(forKey: "legacyVirusVerdictContext." + context)
+            ?? Self.legacyContext(executable: executable, arguments: arguments)
+        self.init(url: url, context: context, legacyContext: legacy,
+                  reusable: Self.signaturesAreFresh(arguments: arguments), readOnly: readOnly)
+    }
+
+    private let legacyContext: String
+    init?(url: URL, context: String, legacyContext: String? = nil, reusable: Bool = true, readOnly: Bool = false) {
+        self.context = context; self.legacyContext = legacyContext ?? context; self.reusable = reusable
+        let lookupSQL = "SELECT signature FROM verdicts WHERE path=? AND stamp=? AND context IN (?,?)"
         if readOnly {
             guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-                  sqlite3_prepare_v2(db, "SELECT signature FROM verdicts WHERE path=? AND stamp=? AND context=?", -1, &lookup, nil) == SQLITE_OK else {
+                  sqlite3_prepare_v2(db, lookupSQL, -1, &lookup, nil) == SQLITE_OK else {
                 sqlite3_finalize(lookup); if let db { sqlite3_close(db) }; return nil
             }
             return
@@ -839,7 +869,7 @@ final class SecurityVerdictCache: @unchecked Sendable {
         sqlite3_busy_timeout(db, 3000)
         let setup = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS verdicts(path TEXT PRIMARY KEY, stamp TEXT NOT NULL, context TEXT NOT NULL, signature TEXT NOT NULL); CREATE TEMP TABLE attempts(path TEXT PRIMARY KEY, stamp TEXT NOT NULL); BEGIN;"
         guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK,
-              sqlite3_prepare_v2(db, "SELECT signature FROM verdicts WHERE path=? AND stamp=? AND context=?", -1, &lookup, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(db, lookupSQL, -1, &lookup, nil) == SQLITE_OK,
               sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO attempts VALUES (?,?)", -1, &stage, nil) == SQLITE_OK,
               sqlite3_prepare_v2(db, "SELECT stamp FROM attempts WHERE path=?", -1, &staged, nil) == SQLITE_OK,
               sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO verdicts VALUES (?,?,?,?)", -1, &insert, nil) == SQLITE_OK else {
@@ -853,7 +883,7 @@ final class SecurityVerdictCache: @unchecked Sendable {
     func verdict(path: String, info: stat) -> String? {
         guard reusable else { return nil }
         lock.lock(); defer { lock.unlock() }
-        bind([path, Self.stamp(info), context], to: lookup)
+        bind([path, Self.stamp(info), context, legacyContext], to: lookup)
         defer { sqlite3_reset(lookup) }
         guard sqlite3_step(lookup) == SQLITE_ROW, let value = sqlite3_column_text(lookup, 0) else { return nil }
         return String(cString: value)

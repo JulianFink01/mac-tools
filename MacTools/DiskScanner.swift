@@ -239,7 +239,7 @@ enum DiskScanner {
                     checked += batch.count
                     if Date().timeIntervalSince(lastProgress) > 0.25 {
                         progress(DiskScanProgress(files: files.count, bytes: total,
-                            phase: "Duplikate prüfen · \(checked.formatted()) / \(candidateCount.formatted())", fraction: Double(checked) / Double(max(1, candidateCount))))
+                            phase: "Duplikate abgleichen · \(checked.formatted()) / \(candidateCount.formatted())", fraction: Double(checked) / Double(max(1, candidateCount))))
                         lastProgress = Date()
                     }
                 }
@@ -309,6 +309,16 @@ enum DiskScanner {
         try digest(file, sampled: false, cache: nil)
     }
 
+    // Preserve the key format of existing on-disk fingerprints.
+    fileprivate static func fingerprintKey(_ info: stat) -> String {
+        "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec)"
+    }
+
+    fileprivate static func matches(_ info: stat, file: DiskFile) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFREG && "\(info.st_dev):\(info.st_ino)" == file.identity && info.st_size == file.bytes
+            && (file.modified.map { abs(modificationDate(info).timeIntervalSince($0)) < 0.000001 } ?? false)
+    }
+
     private static func digest(_ file: DiskFile, sampled: Bool, cache: FingerprintCache?, cancellation: FingerprintBatch? = nil,
                                progress: (Int64) -> Void = { _ in }) throws -> String {
         try Task.checkCancellation()
@@ -316,63 +326,57 @@ enum DiskScanner {
         var local = stat()
         guard lstat(file.path, &local) == 0 else { throw ScanError.unreadable(file.path) }
         guard local.st_flags & UInt32(SF_DATALESS) == 0 else { throw ScanError.cloudFile }
+        guard matches(local, file: file) else { throw ScanError.changedFile }
+        // ctime invalidates the fingerprint even if a same-size edit restores mtime.
+        let key = fingerprintKey(local)
+        if let cached = cache?.get(key, sampled: sampled) {
+            var current = stat()
+            guard lstat(file.path, &current) == 0, current.st_flags == local.st_flags,
+                  fingerprintKey(current) == key else { throw ScanError.changedFile }
+            return cached
+        }
         let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard descriptor >= 0 else { throw ScanError.unreadable(file.path) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         var before = stat()
-        guard fstat(descriptor, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
-              "\(before.st_dev):\(before.st_ino)" == file.identity,
-              before.st_size == file.bytes,
-              file.modified.map({ abs(modificationDate(before).timeIntervalSince($0)) < 0.000001 }) ?? false
-        else { throw ScanError.changedFile }
-        // ctime prevents cache reuse when a same-sized edit restores the old mtime.
-        let key = "\(file.identity):\(before.st_size):\(before.st_mtimespec.tv_sec):\(before.st_mtimespec.tv_nsec):\(before.st_ctimespec.tv_sec):\(before.st_ctimespec.tv_nsec)"
+        guard fstat(descriptor, &before) == 0, before.st_flags == local.st_flags,
+              fingerprintKey(before) == key else { throw ScanError.changedFile }
         var hasher = SHA256()
-        var readBytes: Int64 = 0
-        var hash = cache?.get(key, sampled: sampled)
-        let cached = hash != nil
-        if hash == nil {
-            if sampled {
-                let count: Int64 = 64 * 1024
-                let offsets: [Int64] = [0, max(0, (file.bytes - count) / 2), max(0, file.bytes - count)]
-                for offset in offsets {
-                    try Task.checkCancellation()
-        if cancellation?.isCancelled == true { throw CancellationError() }
-                    try handle.seek(toOffset: UInt64(offset))
-                    let expected = Int(min(count, file.bytes - offset))
-                    guard let data = try handle.read(upToCount: expected), data.count == expected else { throw ScanError.changedFile }
-                    hasher.update(data: data)
-                }
-            } else {
-                while readBytes < file.bytes {
-                    try Task.checkCancellation()
-        if cancellation?.isCancelled == true { throw CancellationError() }
-                    let count = try autoreleasepool { () -> Int in
-                        guard let data = try handle.read(upToCount: Int(min(1024 * 1024, file.bytes - readBytes))), !data.isEmpty else { return 0 }
-                        hasher.update(data: data)
-                        return data.count
-                    }
-                    guard count > 0 else { break }
-                    readBytes += Int64(count)
-                    progress(readBytes)
-                }
-                guard readBytes == file.bytes else { throw ScanError.changedFile }
+        if sampled {
+            let count: Int64 = 64 * 1024
+            let offsets: [Int64] = [0, max(0, (file.bytes - count) / 2), max(0, file.bytes - count)]
+            for offset in offsets {
+                try Task.checkCancellation()
+                if cancellation?.isCancelled == true { throw CancellationError() }
+                try handle.seek(toOffset: UInt64(offset))
+                let expected = Int(min(count, file.bytes - offset))
+                guard let data = try handle.read(upToCount: expected), data.count == expected else { throw ScanError.changedFile }
+                hasher.update(data: data)
             }
-            let alphabet = Array("0123456789abcdef".utf8)
-            hash = String(bytes: hasher.finalize().flatMap { [alphabet[Int($0 >> 4)], alphabet[Int($0 & 15)]] }, encoding: .utf8)!
+        } else {
+            var readBytes: Int64 = 0
+            while readBytes < file.bytes {
+                try Task.checkCancellation()
+                if cancellation?.isCancelled == true { throw CancellationError() }
+                let count = try autoreleasepool { () -> Int in
+                    guard let data = try handle.read(upToCount: Int(min(1024 * 1024, file.bytes - readBytes))), !data.isEmpty else { return 0 }
+                    hasher.update(data: data)
+                    return data.count
+                }
+                guard count > 0 else { break }
+                readBytes += Int64(count)
+                progress(readBytes)
+            }
+            guard readBytes == file.bytes else { throw ScanError.changedFile }
         }
-        var after = stat(), pathInfo = stat()
-        guard fstat(descriptor, &after) == 0, lstat(file.path, &pathInfo) == 0,
-              pathInfo.st_dev == before.st_dev, pathInfo.st_ino == before.st_ino,
-              after.st_size == before.st_size,
-              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
-              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
-              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec
-        else { throw ScanError.changedFile }
-        if !cached { cache?.put(key, sampled: sampled, digest: hash!) }
-        return hash!
+        var current = stat()
+        guard lstat(file.path, &current) == 0, current.st_flags == local.st_flags,
+              fingerprintKey(current) == key else { throw ScanError.changedFile }
+        let alphabet = Array("0123456789abcdef".utf8)
+        let hash = String(decoding: hasher.finalize().flatMap { [alphabet[Int($0 >> 4)], alphabet[Int($0 & 15)]] }, as: UTF8.self)
+        cache?.put(key, sampled: sampled, digest: hash)
+        return hash
     }
 
     /// Keep a small overview without sorting/copying the entire directory table on the main actor.
@@ -483,15 +487,11 @@ final class ScanFingerprintProof {
     }
     func matches(_ file: DiskFile, digest: String) -> Bool {
         var before = stat(), after = stat()
-        guard lstat(file.path, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
-              before.st_flags & UInt32(SF_DATALESS) == 0,
-              "\(before.st_dev):\(before.st_ino)" == file.identity, before.st_size == file.bytes,
-              file.modified.map({ abs(DiskScanner.modificationDate(before).timeIntervalSince($0)) < 0.000001 }) ?? false else { return false }
-        let key = "\(file.identity):\(before.st_size):\(before.st_mtimespec.tv_sec):\(before.st_mtimespec.tv_nsec):\(before.st_ctimespec.tv_sec):\(before.st_ctimespec.tv_nsec)"
+        guard lstat(file.path, &before) == 0, before.st_flags & UInt32(SF_DATALESS) == 0,
+              DiskScanner.matches(before, file: file) else { return false }
+        let key = DiskScanner.fingerprintKey(before)
         guard cache.get(key, sampled: false) == digest, lstat(file.path, &after) == 0 else { return false }
-        return before.st_dev == after.st_dev && before.st_ino == after.st_ino && before.st_size == after.st_size
-            && before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec && before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec
-            && before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec && before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec
+        return before.st_flags == after.st_flags && DiskScanner.fingerprintKey(after) == key
     }
 }
 
