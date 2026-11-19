@@ -255,6 +255,8 @@ struct MonitoringPersistenceChecks {
         precondition(!detailed.processes.isEmpty, "Processes return as soon as a view shows them")
         precondition(detailed.point.cpu != nil && detailed.volumes.contains { $0.path == "/" })
         let monitor = SystemMonitor.shared
+        precondition(!monitor.isDetailed && monitor.sampleInterval == 30, "Without any display the monitor only trickles")
+        monitor.retainDisplay()
         precondition(!monitor.isDetailed && monitor.sampleInterval == 5, "Menu widgets alone sample slowly")
         monitor.retainDetail()
         precondition(monitor.isDetailed && monitor.sampleInterval == 2)
@@ -262,6 +264,11 @@ struct MonitoringPersistenceChecks {
         precondition(monitor.isDetailed, "Balanced requests keep the fast cadence while one view remains")
         monitor.releaseDetail(); monitor.releaseDetail()
         precondition(!monitor.isDetailed && monitor.sampleInterval == 5)
+        monitor.retainDisplay(); monitor.releaseDisplay()
+        precondition(monitor.sampleInterval == 5, "Balanced requests keep the widget cadence while one widget remains")
+        monitor.releaseDisplay(); monitor.releaseDisplay()
+        precondition(monitor.sampleInterval == 30, "A hidden widget set gives the slow cadence back")
+        monitor.retainDisplay()
         // Panels are released when they close. Releasing the view has to give the
         // fast cadence back, otherwise a closed panel would sample forever.
         let detailWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 580), styleMask: [.titled], backing: .buffered, defer: false)

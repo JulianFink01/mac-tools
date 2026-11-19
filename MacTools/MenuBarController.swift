@@ -522,6 +522,7 @@ final class MonitorMenuWidgets: NSObject, NSPopoverDelegate {
         visibility.values.forEach { $0.invalidate() }; visibility.removeAll()
         subscriptions.removeAll(); popover.close(); detailController = nil
         items.values.forEach { NSStatusBar.system.removeStatusItem($0) }; items.removeAll(); labels.removeAll()
+        if holdsMonitorDisplay { holdsMonitorDisplay = false; SystemMonitor.shared.releaseDisplay() }
     }
     init(settings: SettingsStore, openMonitor: @escaping () -> Void, openSettings: @escaping () -> Void) {
         self.settings = settings; self.openMonitor = openMonitor; self.openSettings = openSettings
@@ -557,8 +558,16 @@ final class MonitorMenuWidgets: NSObject, NSPopoverDelegate {
                 NSStatusBar.system.removeStatusItem(item)
             }
         }
+        // With every widget hidden nothing shows a live value, and the monitor can
+        // fall back to its slow trickle instead of sampling every five seconds.
+        let wantsDisplay = !items.isEmpty
+        if wantsDisplay != holdsMonitorDisplay {
+            holdsMonitorDisplay = wantsDisplay
+            if wantsDisplay { SystemMonitor.shared.retainDisplay() } else { SystemMonitor.shared.releaseDisplay() }
+        }
         update(SystemMonitor.shared.reading)
     }
+    private var holdsMonitorDisplay = false
     private func update(_ reading: SystemReading?) {
         for (metric, item) in items {
             guard let button = item.button else { continue }

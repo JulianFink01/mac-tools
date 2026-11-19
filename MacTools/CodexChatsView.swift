@@ -50,7 +50,8 @@ struct CodexChatRow: View {
                     .background(Color.blue.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
-        }.onAppear { store.start(); selectedChatID = chats.dropFirst(index * rows).first?.id }
+        }.onAppear { store.start(); store.retainLiveUpdates(); selectedChatID = chats.dropFirst(index * rows).first?.id }
+        .onDisappear { store.releaseLiveUpdates() }
         .onChange(of: pages) { page = min(page, max(0, $0 - 1)) }
         .onChange(of: chats.map(\.id)) { ids in
             page = QuickPanelCardLayout.page(selectedID: selectedChatID, fallback: page, ids: ids, rows: rows)
@@ -119,7 +120,11 @@ struct CodexChatsView: View {
                     sidebar
                 } detail: { conversation }
             }
-        }.background(Color(nsColor: .windowBackgroundColor)).onAppear { store.start() }.task(id: store.selectedID) { await store.loadGoal() }.sheet(isPresented: $showGoal) { CodexGoalEditor(store: store) }
+        }.background(Color(nsColor: .windowBackgroundColor))
+            // A visible transcript is what the fast app-server cadence exists for.
+            .onAppear { store.start(); store.retainLiveUpdates() }
+            .onDisappear { store.releaseLiveUpdates() }
+            .task(id: store.selectedID) { await store.loadGoal() }.sheet(isPresented: $showGoal) { CodexGoalEditor(store: store) }
     }
     private var conversation: some View {
         Group {

@@ -545,6 +545,11 @@ final class CodexStore: ObservableObject {
     private var readingNativeQueues = Set<String>()
     private var nativeQueueTask: Task<Void, Never>?
     private var broadcastQueueIDs = Set<String>()
+    /// Which chat the legacy queue was last read for, and the size and date the
+    /// global-state file had then. Re-reading and parsing more than a megabyte of
+    /// JSON every two seconds was constant work for a file that changes only when a
+    /// queue actually changes.
+    private var legacyStateStamp: (chat: String, size: Int, modified: Date)?
     func setQueueEditing(_ message: UUID, in id: String, editing: Bool) {
         if editing { queue.editing.insert(message) } else { queue.editing.remove(message); scheduleQueue(id) }
     }
@@ -665,12 +670,37 @@ final class CodexStore: ObservableObject {
             self.queue.releaseChats(owner: self.runtimeOwner)
         }
     }
+    private var liveConsumers = 0
+    /// A menu-bar widget that only shows the usage limits is served by any cadence;
+    /// the fast one belongs to a view that actually shows a chat and its queue. The
+    /// store used to poll the app-server every two and ten seconds for the whole
+    /// life of the app, whether or not anything displayed the result.
+    private var nativeQueueInterval: UInt64 { liveConsumers > 0 ? 2_000_000_000 : 20_000_000_000 }
+    private var pollInterval: UInt64 { liveConsumers > 0 ? 10_000_000_000 : 45_000_000_000 }
+
+    /// Balanced by `releaseLiveUpdates`, called by the views showing chats.
+    func retainLiveUpdates() {
+        liveConsumers += 1
+        guard liveConsumers == 1 else { return }
+        // The running loops are still inside their slow sleep, so the view would
+        // otherwise wait for it. Both measurements are taken right away instead.
+        Task { [weak self] in
+            await self?.refresh()
+            await self?.refreshNativeQueue()
+        }
+    }
+    func releaseLiveUpdates() {
+        guard liveConsumers > 0 else { return }
+        liveConsumers -= 1
+    }
+
     func start() {
         guard poll == nil else { return }
         if enableDesktop { nativeQueueTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }; await self.refreshNativeQueue()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let interval = self.nativeQueueInterval
+                do { try await Task.sleep(nanoseconds: interval) } catch { return }
             }
         } }
         poll = Task { [weak self] in
@@ -685,7 +715,8 @@ final class CodexStore: ObservableObject {
                     if self.selectedID != nil { await self.loadGoal() }
                     if let root = self.selectedRootID { await self.loadSubagents(root) }
                 }
-                do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
+                let interval = self.pollInterval
+                do { try await Task.sleep(nanoseconds: interval) } catch { return }
             }
         }
     }
@@ -1023,11 +1054,29 @@ final class CodexStore: ObservableObject {
         } catch { /* Keep the last confirmed server snapshot on transient errors. */ }
         if !broadcastQueueIDs.contains(id) {
             let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"
-            let values = await Task.detached(priority: .utility) { () -> [[String: Any]]? in
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: home + "/.codex-global-state.json")) else { return nil }
-                return Self.nativeQueueSnapshot(data, for: id)
-            }.value
-            if let values, !broadcastQueueIDs.contains(id) { legacyQueues[id] = values.compactMap(CodexNativeQueuedMessage.init) }
+            let url = URL(fileURLWithPath: home + "/.codex-global-state.json")
+            // The same file and the same chat give the same queue, so an unchanged
+            // file is skipped and only its size and date are read.
+            let stamp = (try? FileManager.default.attributesOfItem(atPath: url.path)).flatMap { info -> (chat: String, size: Int, modified: Date)? in
+                guard let size = (info[.size] as? NSNumber)?.intValue, let modified = info[.modificationDate] as? Date else { return nil }
+                return (id, size, modified)
+            }
+            let unchanged = stamp.map { current in
+                legacyStateStamp.map { $0 == current } == true
+            } == true
+            if !unchanged {
+                let values = await Task.detached(priority: .utility) { () -> [[String: Any]]? in
+                    guard let data = try? Data(contentsOf: url) else { return nil }
+                    return Self.nativeQueueSnapshot(data, for: id)
+                }.value
+                if let values, !broadcastQueueIDs.contains(id) {
+                    legacyQueues[id] = values.compactMap(CodexNativeQueuedMessage.init)
+                    legacyStateStamp = stamp
+                } else {
+                    // A missing or malformed file must be read again next time.
+                    legacyStateStamp = nil
+                }
+            }
         }
         publishNativeQueue(id)
     }

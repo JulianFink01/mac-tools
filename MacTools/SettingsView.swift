@@ -89,6 +89,10 @@ struct SettingsView: View {
                     get: { settings.pausesHiddenWallpaper }, set: { settings.setPausesHiddenWallpaper($0) }
                 ))
                 Text("Verdecken andere Fenster den Schreibtisch vollständig, pausiert die Wiedergabe und läuft beim Freiwerden an derselben Stelle weiter. Gesperrter Bildschirm und Ruhezustand des Displays halten sie unabhängig davon an.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Live-Hintergrund im Energiesparmodus anhalten", isOn: Binding(
+                    get: { settings.pausesOnLowPower }, set: { settings.setPausesOnLowPower($0) }
+                ))
+                Text("Der Energiesparmodus von macOS ist die Bitte, überall weniger Strom zu verbrauchen. Das Dekodieren des Videos ist der größte einzelne Posten dieser App und ruht dann, bis der Modus wieder aus ist.").font(.caption).foregroundStyle(.secondary)
             }
             ToolSettingsCard(title: "Codex-Chatfenster", description: "Öffne bestehende Chats aus der Schnellansicht in einem eigenen Fenster. Das globale Tastenkürzel öffnet einen neuen Chat-Entwurf.") {
                 HStack { Text("Neuer Chat per Tastenkürzel"); Spacer(); CodexPopupShortcutRecorder().frame(width: 280, height: 28) }

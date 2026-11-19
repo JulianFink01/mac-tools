@@ -438,12 +438,15 @@ final class SystemMonitor: ObservableObject {
     private var samples = 0
     private let mode = SamplingMode()
     private var detailConsumers = 0
+    private var displayConsumers = 0
     private var started = false
     private var suspended = false
     private var historyLoaded = false
-    /// Menu-bar widgets only need a slow trickle. The two-second cadence belongs to
-    /// views that are actually on screen.
-    private var interval: TimeInterval { detailConsumers > 0 ? 2 : 5 }
+    /// Three cadences for three situations: a view that shows live values, a
+    /// menu-bar widget that shows a number, and nobody at all. Without a display
+    /// the samples only keep the history and the bridge's overview current, which a
+    /// much slower trickle does just as well.
+    private var interval: TimeInterval { detailConsumers > 0 ? 2 : displayConsumers > 0 ? 5 : 30 }
     var isDetailed: Bool { detailConsumers > 0 }
     var sampleInterval: TimeInterval { interval }
 
@@ -457,6 +460,17 @@ final class SystemMonitor: ObservableObject {
         guard detailConsumers > 0 else { return }
         detailConsumers -= 1
         if detailConsumers == 0 { restartTimer() }
+    }
+
+    /// Balanced by `releaseDisplay`, held while a menu-bar widget shows a value.
+    func retainDisplay() {
+        displayConsumers += 1
+        if displayConsumers == 1 { restartTimer() }
+    }
+    func releaseDisplay() {
+        guard displayConsumers > 0 else { return }
+        displayConsumers -= 1
+        if displayConsumers == 0 { restartTimer() }
     }
 
     func start() {
@@ -495,7 +509,8 @@ final class SystemMonitor: ObservableObject {
         timer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         // A wide leeway lets the system coalesce the idle wake-ups with other work.
-        timer.schedule(deadline: .now(), repeating: interval, leeway: detailConsumers > 0 ? .milliseconds(150) : .seconds(1))
+        timer.schedule(deadline: .now(), repeating: interval,
+                       leeway: detailConsumers > 0 ? .milliseconds(150) : displayConsumers > 0 ? .seconds(1) : .seconds(10))
         let sampler = self.sampler
         let mode = self.mode
         timer.setEventHandler { [weak self] in

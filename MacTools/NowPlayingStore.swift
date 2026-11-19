@@ -31,6 +31,133 @@ enum SystemAudioPlayback {
             return AudioPlaybackSource(pid: pid, bundleID: identifier?.takeRetainedValue() as String? ?? "")
         }
     }
+
+    /// Every process object the system currently knows, playing or not, so a
+    /// listener can be attached to each one.
+    static func processObjects() -> [AudioObjectID] {
+        guard #available(macOS 14.2, *) else { return [] }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard objects.withUnsafeMutableBytes({ AudioObjectGetPropertyData(system, &address, 0, nil, &size, $0.baseAddress!) }) == noErr else { return [] }
+        return Array(objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+    }
+}
+
+/// Core Audio reports a change of the playing processes on its own, so nothing has
+/// to ask it on a schedule: while no audio runs, this costs nothing at all.
+///
+/// The notifications themselves are not rare. `IsRunningOutput` flips as a process
+/// opens and closes output buffers, which during playback happens many times a
+/// second across every process that holds an audio client. Reading the whole list
+/// on each one is far more expensive than the polling it replaces, so events are
+/// collected and answered with at most one measurement every two seconds — the
+/// cadence a visible card needs, and no work in between.
+final class SystemAudioPlaybackWatcher {
+    private let queue = DispatchQueue(label: "MacTools.AudioPlayback", qos: .utility)
+    private var listListener: AudioObjectPropertyListenerBlock?
+    private var processListeners: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    private var onChange: (@Sendable ([AudioPlaybackSource]) -> Void)?
+    private var scheduled = false
+    private var lastReport: TimeInterval = 0
+    private var lastWasSilent = true
+    /// An app may hold an audio client that opens and closes output without anything
+    /// being audible, and those notifications arrive too. While the last measurement
+    /// found nothing playing, the next one waits longer.
+    private var minimumSpacing: TimeInterval { lastWasSilent ? 6 : 2 }
+
+    /// Everything below `queue` is reached only from `queue`, which is what makes
+    /// the listener registry and the collecting flag safe without a lock.
+    func start(onChange: @escaping @Sendable ([AudioPlaybackSource]) -> Void) {
+        guard #available(macOS 14.2, *) else { return }
+        queue.async { [weak self] in
+            self?.onChange = onChange
+            self?.subscribeList()
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            self?.onChange = nil
+            self?.unsubscribe()
+        }
+    }
+
+    /// Re-reads the measurement outside any notification, as the safety net for a
+    /// change no listener reported.
+    func refresh() {
+        queue.async { [weak self] in self?.schedule() }
+    }
+
+    /// The process list changes when a process gains or loses an audio client, and
+    /// a new object then needs its own listener. This listener is registered once.
+    private func subscribeList() {
+        guard #available(macOS 14.2, *), listListener == nil else { return }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.subscribeProcesses()
+            self?.schedule()
+        }
+        guard AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block) == noErr else { return }
+        listListener = block
+        subscribeProcesses()
+        schedule()
+    }
+
+    /// Adds a listener to each object that has none and drops the ones whose object
+    /// is gone, instead of tearing the whole set down on every list change.
+    private func subscribeProcesses() {
+        guard #available(macOS 14.2, *) else { return }
+        let current = Set(SystemAudioPlayback.processObjects())
+        for object in processListeners.keys where !current.contains(object) {
+            guard let block = processListeners.removeValue(forKey: object) else { continue }
+            var address = Self.runningOutputAddress
+            AudioObjectRemovePropertyListenerBlock(object, &address, queue, block)
+        }
+        for object in current where processListeners[object] == nil {
+            var address = Self.runningOutputAddress
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.schedule() }
+            guard AudioObjectAddPropertyListenerBlock(object, &address, queue, block) == noErr else { continue }
+            processListeners[object] = block
+        }
+    }
+
+    private static var runningOutputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningOutput, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private func unsubscribe() {
+        if let listListener {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listListener)
+            self.listListener = nil
+        }
+        for (object, block) in processListeners {
+            var address = Self.runningOutputAddress
+            AudioObjectRemovePropertyListenerBlock(object, &address, queue, block)
+        }
+        processListeners.removeAll()
+    }
+
+    /// Collects a burst of notifications into one measurement. Everything here runs
+    /// on the watcher's own serial queue, which is what keeps the flag safe.
+    private func schedule() {
+        guard onChange != nil, !scheduled else { return }
+        scheduled = true
+        let now = ProcessInfo.processInfo.systemUptime
+        let delay = max(0, minimumSpacing - (now - lastReport))
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.lastReport = ProcessInfo.processInfo.systemUptime
+            guard let onChange = self.onChange else { return }
+            let sources = SystemAudioPlayback.sources()
+            self.lastWasSilent = sources.isEmpty
+            onChange(sources)
+        }
+    }
 }
 
 struct PlayingAudio: Identifiable, Equatable {
@@ -71,8 +198,7 @@ final class NowPlayingStore: ObservableObject {
     private var timer: Timer?
     private let readSources: (() -> [AudioPlaybackSource])?
     private var cachedSources: [AudioPlaybackSource] = []
-    private var sampling = false
-    private var idleTicks = 0
+    private let watcher = SystemAudioPlaybackWatcher()
 
     init(readSources: (() -> [AudioPlaybackSource])? = nil) { self.readSources = readSources }
 
@@ -85,15 +211,29 @@ final class NowPlayingStore: ObservableObject {
                 Task { @MainActor [weak self] in self?.receive(info, bundleID: bundleID) }
             })
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.pollSources() }
+        watcher.start { [weak self] sources in
+            Task { @MainActor [weak self] in self?.receive(sources: sources) }
         }
-        pollSources()
+        // Core Audio delivers every start and stop on its own. This timer only
+        // covers a change that no listener reported, so it stays rare and tolerant.
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.watcher.refresh() }
+        }
+        timer.tolerance = 30
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        watcher.refresh()
     }
     func stop() {
         timer?.invalidate(); timer = nil
+        watcher.stop()
         observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }; observers.removeAll()
         playing = []; metadata.removeAll()
+    }
+    private func receive(sources: [AudioPlaybackSource]) {
+        guard cachedSources != sources else { return }
+        cachedSources = sources
+        refresh()
     }
     func receive(_ info: [AnyHashable: Any], bundleID: String) {
         var value = metadata[bundleID] ?? PlaybackMetadata(); value.update(info); metadata[bundleID] = value
@@ -109,23 +249,6 @@ final class NowPlayingStore: ObservableObject {
         let response = await LocalCommand.run(URL(fileURLWithPath: "/usr/bin/osascript"), arguments: ["-e", script], timeout: 45)
         if response.status != 0 { error = "Player-Steuerung nicht bestätigt. Erlaube MacTools bei Bedarf unter Datenschutz & Sicherheit → Automation den Zugriff auf " + track.application + ". " + String(response.error.prefix(250)) }
         refresh()
-    }
-    private func pollSources() {
-        guard !sampling else { return }
-        // Each poll asks coreaudiod for its process list. While nothing plays, the
-        // player notifications arrive anyway, so the polling backs off.
-        if playing.isEmpty, !metadata.values.contains(where: { $0.playing == true }) {
-            idleTicks += 1
-            guard idleTicks % 3 == 1 else { return }
-        } else {
-            idleTicks = 0
-        }
-        sampling = true
-        Task {
-            let sources = await Task.detached(priority: .utility) { SystemAudioPlayback.sources() }.value
-            cachedSources = sources; sampling = false
-            refresh()
-        }
     }
     func refresh() {
         var result: [String: PlayingAudio] = [:]

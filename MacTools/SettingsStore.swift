@@ -38,6 +38,10 @@ final class SettingsStore: ObservableObject {
     /// Playing a video nobody can see is the app's largest single power draw.
     @Published var pausesHiddenWallpaper: Bool { didSet { defaults.set(pausesHiddenWallpaper, forKey: "pausesHiddenWallpaper") } }
 
+    /// Low Power Mode is the user asking the whole Mac to spend less energy, and a
+    /// decoded video wallpaper is the most expensive thing this app does.
+    @Published var pausesOnLowPower: Bool { didSet { defaults.set(pausesOnLowPower, forKey: "pausesOnLowPower") } }
+
     @Published var quickPanelCompactVolume: Bool { didSet { defaults.set(quickPanelCompactVolume, forKey: "quickPanelCompactVolume") } }
     @Published var quickPanelEventTabs: Bool { didSet { defaults.set(quickPanelEventTabs, forKey: "quickPanelEventTabs") } }
     @Published var quickPanelWidgets: [QuickPanelWidget] {
@@ -128,6 +132,7 @@ final class SettingsStore: ObservableObject {
         self.defaults = defaults
         self.codexLimitPlacement = defaults.string(forKey: "codexLimitPlacement") ?? "chats"
         pausesHiddenWallpaper = defaults.object(forKey: "pausesHiddenWallpaper") as? Bool ?? true
+        pausesOnLowPower = defaults.object(forKey: "pausesOnLowPower") as? Bool ?? true
         quickPanelCompactVolume = defaults.bool(forKey: "quickPanelCompactVolume")
         quickPanelEventTabs = defaults.bool(forKey: "quickPanelEventTabs")
         quickPanelWidgets = defaults.stringArray(forKey: "quickPanelWidgets").map { { var seen = Set<QuickPanelWidget>(); return $0.compactMap(QuickPanelWidget.init(rawValue:)).filter { seen.insert($0).inserted } }($0) } ?? QuickPanelWidget.allCases
@@ -175,6 +180,10 @@ final class SettingsStore: ObservableObject {
 
     func setPausesHiddenWallpaper(_ enabled: Bool) {
         pausesHiddenWallpaper = enabled
+    }
+
+    func setPausesOnLowPower(_ enabled: Bool) {
+        pausesOnLowPower = enabled
     }
 
     func setAspectMode(_ mode: AspectMode) {

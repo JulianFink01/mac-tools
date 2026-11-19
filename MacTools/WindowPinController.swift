@@ -443,7 +443,15 @@ final class WindowPinController: ObservableObject {
         if result != noErr { status = "Das Tastenkürzel konnte nicht registriert werden (\(result)). Bitte eine andere Kombination wählen." }
     }
 
+    private var permissionCheckedAt: TimeInterval = -.greatestFiniteMagnitude
+
     func refreshAccessibilityPermission(userInitiated: Bool = false) {
+        // Every app the user switches to asks for this, and the two system calls
+        // behind it are not free. A granted permission does not change by the
+        // second, so a rapid series of switches is answered from the last reading.
+        let now = ProcessInfo.processInfo.systemUptime
+        if !userInitiated, now - permissionCheckedAt < 2 { return }
+        permissionCheckedAt = now
         // Read only: toggling a feature must never repeatedly open the system prompt.
         let trusted = AXIsProcessTrusted()
         let capture = CGPreflightScreenCaptureAccess()

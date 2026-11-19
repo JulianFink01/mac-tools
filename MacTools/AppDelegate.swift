@@ -206,6 +206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] _ in self?.wallpaperController.refreshOcclusionState() }
             .store(in: &cancellables)
 
+        settings.$pausesOnLowPower
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.wallpaperController.refreshOcclusionState() }
+            .store(in: &cancellables)
+
         settings.$isPaused
             .dropFirst()
             .receive(on: RunLoop.main)
