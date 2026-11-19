@@ -13,7 +13,7 @@
       "size" : "16x16"
     },
     {
-      "filename" : "AppIcon-32.png",
+      "filename" : "AppIcon-16@2x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "32x32"
@@ -37,7 +37,7 @@
       "size" : "128x128"
     },
     {
-      "filename" : "AppIcon-256.png",
+      "filename" : "AppIcon-128@2x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "256x256"
@@ -49,7 +49,7 @@
       "size" : "256x256"
     },
     {
-      "filename" : "AppIcon-512.png",
+      "filename" : "AppIcon-256@2x.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "512x512"
